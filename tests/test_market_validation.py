@@ -209,6 +209,29 @@ class MarketplaceValidationTests(unittest.TestCase):
         entrypoint.external_attr = 0o120777 << 16
         archive.writestr(entrypoint, "outside.js")
 
+    def test_builder_marks_generated_entrypoints_as_regular_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-builder-entrypoint-") as directory:
+            plugin_dir = Path(directory) / "com.xsec.test"
+            entrypoint = plugin_dir / "com.xsec.desktop" / "frontend" / "index.js"
+            entrypoint.parent.mkdir(parents=True)
+            (plugin_dir / "plugin.json").write_text(json.dumps({
+                "name": "com.xsec.test",
+                "version": "1.0.0",
+                "extensions": {
+                    "com.xsec.desktop": {
+                        "entrypoints": {"frontend": "./com.xsec.desktop/frontend/index.js"},
+                    },
+                },
+            }), encoding="utf-8")
+            entrypoint.write_text("export {};\n", encoding="utf-8")
+            artifact = Path(directory) / "com.xsec.test.xsec-plugin"
+
+            build_market.write_zip(plugin_dir, artifact)
+            validate_archive(artifact, "com.xsec.test", "1.0.0")
+            with zipfile.ZipFile(artifact) as archive:
+                info = archive.getinfo("com.xsec.desktop/frontend/index.js")
+            self.assertEqual(info.external_attr >> 16, 0o100644)
+
     def test_signing_preflight_rejects_a_seed_for_another_public_key(self) -> None:
         previous = os.environ.get("XSEC_MARKETPLACE_SIGNING_KEY_B64")
         try:
