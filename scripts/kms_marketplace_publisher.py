@@ -222,7 +222,7 @@ def validate_sidecar(
     exact_keys(jws, {"protected", "payload", "signature"}, "KMS sidecar jws")
     protected = required_string(jws, "protected", "KMS sidecar jws")
     protected_header = json_object(canonical_base64url_decode(protected, "KMS JWS protected header"), "KMS JWS protected header")
-    supported_header_parameters = {"alg", "kid", "b64", "crit", "typ"}
+    supported_header_parameters = {"alg", "kid", "b64", "crit", "typ", "iss"}
     unsupported_header_parameters = sorted(set(protected_header).difference(supported_header_parameters))
     if unsupported_header_parameters:
         # Parameter names are public JWS metadata, but keep the diagnostic
@@ -238,6 +238,9 @@ def validate_sidecar(
     typ = protected_header.get("typ")
     if typ is not None and typ != "application/xsec-signed-document+json":
         fail("KMS JWS protected header typ is unsupported")
+    issuer = protected_header.get("iss")
+    if issuer is not None and issuer != OFFICIAL_MARKETPLACE_KMS_ISSUER_URL:
+        fail("KMS JWS protected header issuer does not match the pinned marketplace issuer")
     if jws.get("payload") != "":
         fail("KMS JWS payload must be detached and empty")
     if len(canonical_base64url_decode(required_string(jws, "signature", "KMS sidecar jws"), "KMS JWS signature")) != 64:

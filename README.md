@@ -13,7 +13,9 @@ business plugins. It follows the portable Agent Plugins marketplace contract:
 Desktop pins the public Vercel KMS issuer for this marketplace. Every official
 `marketplace.json` and release index has an adjacent `.sig.jws.json` sidecar
 whose detached JWS binds the exact document SHA-256, canonical document path,
-and GitHub workflow commit. The marketplace repository and GitHub Actions do
+and GitHub workflow commit. Vercel KMS also emits its issuer URL in the
+protected `iss` header; publication and Desktop require it to match the
+pinned marketplace issuer. The marketplace repository and GitHub Actions do
 not contain a private marketplace signing key.
 
 The `Publish signed marketplace` workflow rebuilds deterministic archives,
