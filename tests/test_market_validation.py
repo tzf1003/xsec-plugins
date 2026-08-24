@@ -126,6 +126,9 @@ class MarketplaceValidationTests(unittest.TestCase):
             manifest = '{"name":"com.xsec.test","version":"1.0.0"}'
             for label, member, message in (
                 ("reserved", "frontend/CON.js", "reserved device-name"),
+                ("reserved-superscript-one", "frontend/COM¹.js", "reserved device-name"),
+                ("reserved-superscript-two", "frontend/LPT².js", "reserved device-name"),
+                ("reserved-superscript-three", "frontend/COM³.js", "reserved device-name"),
                 ("forbidden", "frontend/foo?.js", "Windows-forbidden character"),
             ):
                 with self.subTest(label=label):
@@ -134,6 +137,23 @@ class MarketplaceValidationTests(unittest.TestCase):
                         archive.writestr("plugin.json", manifest)
                         archive.writestr(member, "entrypoint")
                     with self.assertRaisesRegex(MarketplaceValidationError, message):
+                        validate_archive(artifact, "com.xsec.test", "1.0.0")
+
+    def test_windows_normalized_file_directory_prefix_collisions_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-prefix-collision-") as directory:
+            manifest = '{"name":"com.xsec.test","version":"1.0.0"}'
+            for label, first, second in (
+                ("file-then-descendant", "frontend/Foo", "frontend/foo/bar.js"),
+                ("descendant-then-file", "frontend/foo/bar.js", "frontend/Foo"),
+                ("explicit-directory-then-file", "frontend/Foo/", "frontend/foo"),
+            ):
+                with self.subTest(label=label):
+                    artifact = Path(directory) / f"{label}.xsec-plugin"
+                    with zipfile.ZipFile(artifact, "w") as archive:
+                        archive.writestr("plugin.json", manifest)
+                        archive.writestr(first, "first")
+                        archive.writestr(second, "second")
+                    with self.assertRaisesRegex(MarketplaceValidationError, "file/directory target-filesystem collision|target-filesystem collision"):
                         validate_archive(artifact, "com.xsec.test", "1.0.0")
 
     def test_source_entrypoints_must_be_regular_files_below_the_plugin_root(self) -> None:

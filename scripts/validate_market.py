@@ -38,6 +38,11 @@ WINDOWS_RESERVED_DEVICE_NAMES = frozenset({
     *(f"com{number}" for number in range(1, 10)),
     *(f"lpt{number}" for number in range(1, 10)),
 })
+WINDOWS_DEVICE_SUPERSCRIPT_DIGITS = str.maketrans({
+    "¹": "1",
+    "²": "2",
+    "³": "3",
+})
 ENTRYPOINT_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
 
 
@@ -173,23 +178,20 @@ def target_filesystem_path(path: PurePosixPath, name: str) -> str:
         normalized_part = trimmed_part.casefold()
         if not normalized_part:
             fail(f"archive contains an empty target filesystem path component in {name!r}")
-        device_name = trimmed_part.split(".", 1)[0].casefold()
+        # Windows recognises COM¹, COM², COM³ (and the LPT equivalents) as
+        # aliases for the corresponding numbered device names.  NFC does not
+        # fold those superscript digits, so handle this small Windows-specific
+        # equivalence before checking the reserved-name list.
+        device_name = trimmed_part.split(".", 1)[0].translate(WINDOWS_DEVICE_SUPERSCRIPT_DIGITS).casefold()
         if device_name in WINDOWS_RESERVED_DEVICE_NAMES:
             fail(f"archive contains a Windows reserved device-name component {part!r} in {name!r}")
         parts.append(normalized_part)
     return "/".join(parts)
 
 
-def validate_zip_member(name: str, info: zipfile.ZipInfo, seen: set[str]) -> None:
-    if "\\" in name or name.startswith("/"):
-        fail(f"archive contains unsafe entry path {name!r}")
-    path = PurePosixPath(name)
-    if not name or path.is_absolute() or not path.parts or any(part in {"", ".", ".."} or ":" in part for part in path.parts):
-        fail(f"archive contains unsafe entry path {name!r}")
-    normalized_name = target_filesystem_path(path, name)
-    if normalized_name in seen:
-        fail(f"archive contains duplicate or target-filesystem collision for entry {name!r}")
-    seen.add(normalized_name)
+def zip_member_kind(name: str, info: zipfile.ZipInfo) -> str:
+    """Return the target type after rejecting ZIP member types we never install."""
+
     if info.flag_bits & 0x1:
         fail(f"archive entry {name!r} must not be encrypted")
     mode = info.external_attr >> 16
@@ -198,6 +200,34 @@ def validate_zip_member(name: str, info: zipfile.ZipInfo, seen: set[str]) -> Non
     kind = stat.S_IFMT(mode)
     if kind not in {0, stat.S_IFREG, stat.S_IFDIR}:
         fail(f"archive entry {name!r} must be a regular file or directory")
+    return "directory" if info.is_dir() or kind == stat.S_IFDIR else "file"
+
+
+def validate_zip_member(name: str, info: zipfile.ZipInfo, entries: dict[str, str]) -> None:
+    if "\\" in name or name.startswith("/"):
+        fail(f"archive contains unsafe entry path {name!r}")
+    path = PurePosixPath(name)
+    if not name or path.is_absolute() or not path.parts or any(part in {"", ".", ".."} or ":" in part for part in path.parts):
+        fail(f"archive contains unsafe entry path {name!r}")
+    normalized_name = target_filesystem_path(path, name)
+    member_kind = zip_member_kind(name, info)
+    if normalized_name in entries:
+        fail(f"archive contains duplicate or target-filesystem collision for entry {name!r}")
+
+    parts = normalized_name.split("/")
+    for length in range(1, len(parts)):
+        ancestor = "/".join(parts[:length])
+        if entries.get(ancestor) == "file":
+            fail(f"archive contains a file/directory target-filesystem collision for entry {name!r}")
+
+    # A prior child makes this path an implicit directory on extraction.  A
+    # file cannot replace that directory even when the two ZIP names differ
+    # only by case, Unicode normalization, or trailing Windows-insignificant
+    # characters.  An explicit directory is compatible with existing child
+    # entries and is intentionally allowed.
+    if member_kind == "file" and any(existing.startswith(normalized_name + "/") for existing in entries):
+        fail(f"archive contains a file/directory target-filesystem collision for entry {name!r}")
+    entries[normalized_name] = member_kind
 
 
 def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, object]:
@@ -208,11 +238,11 @@ def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, obje
             infos = archive.infolist()
             if not infos or len(infos) > MAX_ZIP_ENTRIES:
                 fail(f"artifact {path} has an invalid number of entries")
-            seen: set[str] = set()
+            entries: dict[str, str] = {}
             members: dict[str, zipfile.ZipInfo] = {}
             total_size = 0
             for info in infos:
-                validate_zip_member(info.filename, info, seen)
+                validate_zip_member(info.filename, info, entries)
                 members[PurePosixPath(info.filename).as_posix()] = info
                 if info.file_size > MAX_ZIP_FILE_BYTES:
                     fail(f"archive entry {info.filename!r} exceeds the uncompressed size limit")
