@@ -238,10 +238,15 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('[ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]', workflow)
         self.assertIn('[ "$REF_PROTECTED" != "true" ]', workflow)
         signing_job = workflow.split("  sign-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
-        self.assertIn("needs: [enforce-publish-ref, require_publish_token]", signing_job)
+        self.assertIn("needs: enforce-publish-ref", signing_job)
         self.assertIn("needs.enforce-publish-ref.result == 'success'", signing_job)
-        self.assertIn("needs.require_publish_token.result == 'success'", signing_job)
+        self.assertNotIn("needs.require_publish_token.result == 'success'", signing_job)
         self.assertIn("github.event.head_commit.message != 'chore: publish KMS-signed marketplace artifacts'", signing_job)
+        steps = workflow.split("  sign-and-publish:\n", 1)[1].split("    steps:\n", 1)[1]
+        self.assertLess(
+            steps.index("Require the protected marketplace publication token before checkout or KMS"),
+            steps.index("actions/checkout@v4"),
+        )
 
     def test_disposable_build_rejects_nested_plugin_link_before_copytree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-copy-link-") as directory:
