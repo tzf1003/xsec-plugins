@@ -233,16 +233,23 @@ def validate_sidecar(
         fail(f"KMS JWS protected header has unsupported parameters: {rendered}{suffix}")
     if protected_header.get("alg") != "EdDSA" or not isinstance(protected_header.get("kid"), str) or not protected_header["kid"]:
         fail("KMS JWS protected header must include EdDSA and kid")
-    if protected_header.get("b64") is not False or protected_header.get("crit") != ["b64"]:
-        fail("KMS JWS must use the detached RFC 7797 payload form")
+    detached_payload = protected_header.get("b64") is False and protected_header.get("crit") == ["b64"]
+    encoded_payload = (
+        ("b64" not in protected_header or protected_header.get("b64") is True)
+        and "crit" not in protected_header
+    )
+    if not detached_payload and not encoded_payload:
+        fail("KMS JWS payload encoding must be standard base64url or RFC 7797 detached")
     typ = protected_header.get("typ")
-    if typ is not None and typ != "application/xsec-signed-document+json":
+    if "typ" in protected_header and typ != "application/xsec-signed-document+json":
         fail("KMS JWS protected header typ is unsupported")
     issuer = protected_header.get("iss")
     if "iss" in protected_header and issuer != OFFICIAL_MARKETPLACE_KMS_ISSUER_URL:
         fail("KMS JWS protected header issuer does not match the pinned marketplace issuer")
-    if jws.get("payload") != "":
-        fail("KMS JWS payload must be detached and empty")
+    if detached_payload and jws.get("payload") != "":
+        fail("detached KMS JWS payload must be empty")
+    if encoded_payload and jws.get("payload") != base64.urlsafe_b64encode(envelope_bytes).decode("ascii").rstrip("="):
+        fail("base64url KMS JWS payload does not bind the signed envelope")
     if len(canonical_base64url_decode(required_string(jws, "signature", "KMS sidecar jws"), "KMS JWS signature")) != 64:
         fail("KMS JWS signature must contain an Ed25519 signature")
     return sidecar
