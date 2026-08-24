@@ -117,6 +117,19 @@ class MarketplaceValidationTests(unittest.TestCase):
             else:
                 os.environ["XSEC_MARKETPLACE_SIGNING_KEY_B64"] = previous
 
+    def test_manual_publish_is_rejected_outside_main_before_signing(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertIn("enforce-publish-ref:", workflow)
+        self.assertIn('EVENT_NAME: ${{ github.event_name }}', workflow)
+        self.assertIn('REF: ${{ github.ref }}', workflow)
+        self.assertIn('[ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]', workflow)
+        signing_job = workflow.split("  sign-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
+        self.assertIn(
+            "needs: enforce-publish-ref\n"
+            "    if: ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' }}",
+            signing_job,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

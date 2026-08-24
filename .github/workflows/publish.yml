@@ -13,7 +13,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  enforce-publish-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject manual dispatches outside protected main
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "Manual marketplace publishing is permitted only from refs/heads/main." >&2
+            exit 1
+          fi
   sign-and-publish:
+    needs: enforce-publish-ref
+    if: ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
