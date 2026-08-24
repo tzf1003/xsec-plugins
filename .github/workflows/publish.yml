@@ -43,6 +43,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # `git push` uses checkout's persisted credential, not GH_TOKEN.
+          # Keep that credential on the same narrowly scoped token used by
+          # the subsequent GitHub CLI calls.
+          token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
