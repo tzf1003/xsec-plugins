@@ -3,6 +3,7 @@ name: Publish signed marketplace
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,7 +13,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  enforce-publish-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject manual dispatches outside protected main
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "Manual marketplace publishing is permitted only from refs/heads/main." >&2
+            exit 1
+          fi
+          if [ "$REF_PROTECTED" != "true" ]; then
+            echo "Marketplace publication requires a protected main branch or ruleset." >&2
+            exit 1
+          fi
   sign-and-publish:
+    needs: enforce-publish-ref
+    if: ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,10 +42,16 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install cryptography
+      - name: Verify signing key matches the Desktop-pinned trust root
+        env:
+          XSEC_MARKETPLACE_SIGNING_KEY_B64: ${{ secrets.XSEC_MARKETPLACE_SIGNING_KEY_B64 }}
+        run: python scripts/validate_market.py signing-key
       - name: Build signed immutable artifacts and metadata
         env:
           XSEC_MARKETPLACE_SIGNING_KEY_B64: ${{ secrets.XSEC_MARKETPLACE_SIGNING_KEY_B64 }}
         run: python scripts/build_market.py --clean
+      - name: Verify signed metadata and published artifacts
+        run: python scripts/validate_market.py published --root .
       - name: Commit published metadata when it changed
         run: |
           git add .agents/plugins/marketplace.json .agents/plugins/marketplace.json.sig plugins

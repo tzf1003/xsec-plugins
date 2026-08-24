@@ -15,18 +15,28 @@ and every release index are signed by the CI-only
 `XSEC_MARKETPLACE_SIGNING_KEY_B64` GitHub Actions secret. The private key is
 not stored in this repository or in a Desktop installation.
 
-The `Publish signed marketplace` workflow rebuilds deterministic archives,
-updates SHA-256 digests, signs the index metadata, and commits any changed
-release output to `main`. Desktop automatically installs the default official
-plugins on its first successful online launch, then stages official updates;
-custom sources remain confirmation-driven.
+The `Publish signed marketplace` workflow first proves that its signing seed
+derives to Desktop's pinned public key. It then rebuilds deterministic archives,
+updates SHA-256 digests, signs the index metadata, validates every signature and
+package, and only then commits changed release output to `main`. Desktop
+automatically installs the default official plugins on its first successful
+online launch, then stages official updates; custom sources remain
+confirmation-driven.
 
 ## Local validation
 
 ```powershell
-python scripts\build_market.py --allow-unsigned --clean
-python -m json.tool .agents\plugins\marketplace.json > $null
+$temporary = Join-Path $env:TEMP xsec-marketplace-build
+New-Item -ItemType Directory -Path $temporary
+python scripts\build_market.py --allow-unsigned --clean --output-root $temporary
+python scripts\validate_market.py source --source-root . --built-root $temporary
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 Unsigned output is only for local validation. It is rejected by the pinned
-official Desktop source.
+official Desktop source. `python scripts\validate_market.py published` is a
+fail-closed verification for a signed release tree; it requires the public key
+pinned by Desktop and is intentionally run only after CI signing.
+
+See [the remote Desktop smoke-test contract](docs/desktop-remote-marketplace-smoke-contract.md)
+for the cross-platform release hand-off.

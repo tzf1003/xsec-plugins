@@ -14,21 +14,11 @@ import json
 import shutil
 from pathlib import Path
 
+from marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS
+
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_IDS = [
-    "com.xsec.asset-discovery",
-    "com.xsec.attack-path",
-    "com.xsec.project-workspace",
-    "com.xsec.system-terminal",
-    "com.xsec.workspace.approvals",
-    "com.xsec.workspace.browser",
-    "com.xsec.workspace.conversation-tree",
-    "com.xsec.workspace.files",
-    "com.xsec.workspace.project-outcomes",
-    "com.xsec.workspace.sub-agent",
-    "com.xsec.workspace.traffic",
-]
+PLUGIN_IDS = list(DEFAULT_OFFICIAL_PLUGIN_IDS)
 
 
 def codex_manifest(manifest: dict[str, object]) -> dict[str, object]:
