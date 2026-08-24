@@ -83,6 +83,16 @@ class MarketplaceValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(MarketplaceValidationError, "unsafe entry path"):
                 validate_archive(artifact, "com.xsec.test", "1.0.0")
 
+    def test_case_insensitive_zip_member_collision_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-case-collision-") as directory:
+            artifact = Path(directory) / "collision.xsec-plugin"
+            manifest = '{"name":"com.xsec.test","version":"1.0.0"}'
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr("plugin.json", manifest)
+                archive.writestr("Plugin.json", manifest)
+            with self.assertRaisesRegex(MarketplaceValidationError, "case-insensitive collision"):
+                validate_archive(artifact, "com.xsec.test", "1.0.0")
+
     def test_symbolic_link_zip_member_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-link-test-") as directory:
             artifact = Path(directory) / "link.xsec-plugin"

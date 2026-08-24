@@ -124,9 +124,10 @@ def resolve_below(base: Path, relative: PurePosixPath, label: str) -> Path:
 
 
 def validate_zip_member(name: str, info: zipfile.ZipInfo, seen: set[str]) -> None:
-    if name in seen:
-        fail(f"archive contains duplicate entry {name!r}")
-    seen.add(name)
+    normalized_name = name.casefold()
+    if normalized_name in seen:
+        fail(f"archive contains duplicate or case-insensitive collision for entry {name!r}")
+    seen.add(normalized_name)
     if "\\" in name or name.startswith("/"):
         fail(f"archive contains unsafe entry path {name!r}")
     path = PurePosixPath(name)
