@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+import build_market  # noqa: E402
+import kms_marketplace_publisher as publisher  # noqa: E402
+
+
+REVISION = "a" * 40
+
+
+def base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+class KmsMarketplacePublisherTests(unittest.TestCase):
+    def make_marketplace(self, root: Path) -> list[publisher.MarketplaceDocument]:
+        index = {
+            "plugins": [
+                {"name": "com.example.beta", "source": {"path": "./plugins/com.example.beta"}},
+                {"name": "com.example.alpha", "source": {"path": "./plugins/com.example.alpha"}},
+            ]
+        }
+        index_path = root / ".agents" / "plugins" / "marketplace.json"
+        index_path.parent.mkdir(parents=True)
+        index_path.write_bytes(json.dumps(index, separators=(",", ":")).encode("utf-8"))
+        for plugin_id in ("com.example.alpha", "com.example.beta"):
+            release = root / "plugins" / plugin_id / ".xsec-market" / "releases.json"
+            release.parent.mkdir(parents=True)
+            release.write_bytes(f'{{"pluginId":"{plugin_id}"}}'.encode("utf-8"))
+        return publisher.marketplace_documents(root)
+
+    def broker_response(
+        self,
+        document: publisher.MarketplaceDocument,
+        *,
+        issuer_id: str = publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_ID,
+        issuer_url: str = publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL,
+        source_revision: str = REVISION,
+        issued_at: int | None = None,
+    ) -> bytes:
+        envelope = {
+            "schema_version": 1,
+            "purpose": document.purpose,
+            "subject": document.subject,
+            "content_sha256": hashlib.sha256(document.path.read_bytes()).hexdigest(),
+            "source_revision": source_revision,
+            "issued_at": int(time.time()) if issued_at is None else issued_at,
+        }
+        protected = base64url(json.dumps({"alg": "EdDSA", "kid": "test-key", "b64": False, "crit": ["b64"]}, separators=(",", ":")).encode("utf-8"))
+        return json.dumps(
+            {
+                "ok": True,
+                "data": {
+                    "signed_document": {
+                        "schema_version": 1,
+                        "issuer_id": issuer_id,
+                        "issuer_url": issuer_url,
+                        "envelope_b64": base64url(json.dumps(envelope, separators=(",", ":")).encode("utf-8")),
+                        "jws": {"protected": protected, "payload": "", "signature": base64url(b"s" * 64)},
+                    }
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def test_publisher_writes_only_desktop_sidecar_schema_for_every_document(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            root = Path(directory)
+            documents = self.make_marketplace(root)
+            requested: list[tuple[str, str]] = []
+
+            def sign(document: publisher.MarketplaceDocument) -> bytes:
+                requested.append((document.purpose, document.subject))
+                return self.broker_response(document)
+
+            written = publisher.publish_sidecars(root, REVISION, sign)
+            self.assertEqual(len(written), 3)
+            self.assertEqual(
+                requested,
+                [
+                    ("xsec.plugin-marketplace.index", ".agents/plugins/marketplace.json"),
+                    ("xsec.plugin-marketplace.release", "plugins/com.example.alpha/.xsec-market/releases.json"),
+                    ("xsec.plugin-marketplace.release", "plugins/com.example.beta/.xsec-market/releases.json"),
+                ],
+            )
+            for sidecar_path in written:
+                sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                self.assertEqual(set(sidecar), {"schema_version", "envelope_b64", "jws"})
+                self.assertNotIn("issuer_id", sidecar)
+                self.assertNotIn("issuer_url", sidecar)
+            self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+
+    def test_unexpected_broker_issuer_prevents_every_sidecar_write(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            root = Path(directory)
+            documents = self.make_marketplace(root)
+
+            def sign(document: publisher.MarketplaceDocument) -> bytes:
+                if document.subject.endswith("com.example.beta/.xsec-market/releases.json"):
+                    return self.broker_response(document, issuer_id="00000000-0000-0000-0000-000000000000")
+                return self.broker_response(document)
+
+            with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "unexpected marketplace issuer"):
+                publisher.publish_sidecars(root, REVISION, sign)
+            self.assertFalse(any(root.rglob("*.sig.jws.json")))
+            self.assertEqual(len(documents), 3)
+
+    def test_broker_response_must_bind_the_workflow_sha_and_exact_document(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            response = self.broker_response(document, source_revision="b" * 40)
+            with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "source revision"):
+                publisher.sidecar_from_broker_response(response, document, REVISION)
+
+    def test_cloud_request_uses_fixed_broker_and_canonical_standard_base64(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            with patch.object(publisher, "request_json", return_value=b'{"ok":true,"data":{}}') as request_json:
+                publisher.request_cloud_signature(document, "oidc-token")
+            request = request_json.call_args.args[0]
+            self.assertEqual(request.full_url, publisher.PRODUCTION_BROKER_URL)
+            self.assertEqual(request.get_header("Authorization"), "Bearer oidc-token")
+            payload = json.loads(request.data.decode("utf-8"))
+            self.assertEqual(payload["purpose"], document.purpose)
+            self.assertEqual(payload["subject"], document.subject)
+            self.assertEqual(base64.b64decode(payload["content_b64"], validate=True), document.path.read_bytes())
+            self.assertEqual(base64.b64encode(document.path.read_bytes()).decode("ascii"), payload["content_b64"])
+
+    def test_oidc_request_binds_the_fixed_broker_audience(self) -> None:
+        environment = {
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "https://pipelines.actions.githubusercontent.com/request?job=123",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "runner-token",
+        }
+        with patch.object(publisher, "request_json", return_value=b'{"value":"broker-oidc"}') as request_json:
+            self.assertEqual(publisher.github_oidc_token(environment), "broker-oidc")
+        request = request_json.call_args.args[0]
+        self.assertIn(f"audience={publisher.BROKER_AUDIENCE}", request.full_url)
+        self.assertEqual(request.get_header("Authorization"), "Bearer runner-token")
+
+    def test_oidc_request_rejects_a_non_github_actions_url_before_sending_runner_token(self) -> None:
+        environment = {
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "https://actions.githubusercontent.com.attacker.invalid/request?job=123",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "runner-token",
+        }
+        with patch.object(publisher, "request_json") as request_json:
+            with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "GitHub Actions HTTPS endpoint"):
+                publisher.github_oidc_token(environment)
+        request_json.assert_not_called()
+
+    def test_raw_official_signing_key_path_is_removed_and_clean_deletes_legacy_outputs(self) -> None:
+        for path in (
+            SCRIPTS / "build_market.py",
+            SCRIPTS / "validate_market.py",
+            ROOT / ".github" / "workflows" / "publish.yml",
+            ROOT / "README.md",
+        ):
+            self.assertNotIn("XSEC_MARKETPLACE_SIGNING_KEY_B64", path.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-clean-") as directory:
+            root = Path(directory)
+            marketplace = root / ".agents" / "plugins" / "marketplace.json"
+            release = root / "plugins" / "com.example" / ".xsec-market" / "releases.json"
+            marketplace.parent.mkdir(parents=True)
+            release.parent.mkdir(parents=True)
+            marketplace.write_text("{}", encoding="utf-8")
+            release.write_text("{}", encoding="utf-8")
+            for document in (marketplace, release):
+                document.with_name(document.name + ".sig").write_text("legacy", encoding="utf-8")
+                document.with_name(document.name + ".sig.jws.json").write_text("stale", encoding="utf-8")
+            build_market.clean_generated_output(root)
+            for suffix in (".sig", ".sig.jws.json"):
+                self.assertFalse(marketplace.with_name(marketplace.name + suffix).exists())
+            self.assertFalse(release.parent.exists())
+
+    def test_publish_workflow_requires_protected_main_oidc_and_desktop_smoke_dispatch(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertIn("id-token: write", workflow)
+        self.assertIn("environment: production", workflow)
+        self.assertIn("github.ref_protected", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("github.event.head_commit.message != 'chore: publish KMS-signed marketplace artifacts'", workflow)
+        self.assertIn("python scripts/kms_marketplace_publisher.py --root .", workflow)
+        self.assertIn("python scripts/kms_marketplace_publisher.py --root . --validate-only", workflow)
+        self.assertNotIn("XSEC_MARKETPLACE_SIGNING_KEY_B64", workflow)
+        self.assertIn("xsec_official_marketplace_published", workflow)
+        self.assertIn("marketplace_revision", workflow)
+        self.assertIn("source_repository", workflow)
+        self.assertIn("source_ref", workflow)
+        self.assertIn("source_sha", workflow)
+        self.assertIn("git add -A .agents/plugins plugins", workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()

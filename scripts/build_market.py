@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build deterministic XSEC plugin artifacts and signed marketplace metadata.
+"""Build deterministic XSEC plugin artifacts and unsigned marketplace metadata.
 
 The default output is the repository itself, for the protected publishing
 workflow. Validation and pull-request jobs must instead supply ``--output-root``
@@ -10,10 +10,8 @@ release artifacts.
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
-import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -48,26 +46,6 @@ def sha256(value: bytes | Path) -> str:
     return digest.hexdigest()
 
 
-def signing_key():
-    encoded = os.environ.get("XSEC_MARKETPLACE_SIGNING_KEY_B64")
-    if not encoded:
-        return None
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    try:
-        seed = base64.b64decode(encoded, validate=True)
-    except ValueError as error:
-        raise ValueError("XSEC_MARKETPLACE_SIGNING_KEY_B64 must be canonical Base64") from error
-    if base64.b64encode(seed).decode("ascii") != encoded or len(seed) != 32:
-        raise ValueError("XSEC_MARKETPLACE_SIGNING_KEY_B64 must decode to an Ed25519 32-byte seed")
-    return Ed25519PrivateKey.from_private_bytes(seed)
-
-
-def sign(path: Path, key) -> None:
-    signature = key.sign(path.read_bytes())
-    path.with_name(path.name + ".sig").write_text(base64.b64encode(signature).decode("ascii") + "\n", encoding="ascii")
-
-
 def iter_plugin_files(plugin_dir: Path) -> list[Path]:
     """Return package files while refusing links that could escape the source tree."""
 
@@ -93,6 +71,8 @@ def write_zip(plugin_dir: Path, destination: Path) -> None:
             info = zipfile.ZipInfo(path.relative_to(plugin_dir).as_posix())
             info.date_time = (2024, 1, 1, 0, 0, 0)
             info.compress_type = zipfile.ZIP_DEFLATED
+            # Do not inherit Windows/POSIX host defaults into an artifact whose
+            # digest will be bound by a cross-platform KMS sidecar.
             info.create_system = 3
             info.external_attr = 0o100644 << 16
             archive.writestr(info, path.read_bytes())
@@ -197,11 +177,12 @@ def clean_generated_output(output_root: Path) -> None:
         except (OSError, ValueError) as error:
             raise ValueError(f"generated output path must remain below plugins/: {release_root}") from error
         shutil.rmtree(release_root)
-    marketplace_signature = output_root / MARKETPLACE_RELATIVE_PATH.with_name("marketplace.json.sig")
-    marketplace_signature.unlink(missing_ok=True)
+    marketplace_path = output_root / MARKETPLACE_RELATIVE_PATH
+    for suffix in (".sig", ".sig.jws.json"):
+        marketplace_path.with_name(marketplace_path.name + suffix).unlink(missing_ok=True)
 
 
-def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path, key, allow_unsigned: bool) -> None:
+def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path) -> None:
     manifest = json.loads((source_plugin_dir / "plugin.json").read_text(encoding="utf-8"))
     plugin_id = safe_artifact_component(manifest.get("name"), "plugin manifest name")
     version = safe_artifact_component(manifest.get("version"), "plugin manifest version")
@@ -232,18 +213,10 @@ def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path, key, allow_un
     release_path = release_root / "releases.json"
     release_path.parent.mkdir(parents=True, exist_ok=True)
     release_path.write_bytes(stable_json(release))
-    signature_path = release_path.with_name(release_path.name + ".sig")
-    if key:
-        sign(release_path, key)
-    elif allow_unsigned:
-        signature_path.unlink(missing_ok=True)
-    else:
-        raise RuntimeError("a signing key is required; pass --allow-unsigned only for local development")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--allow-unsigned", action="store_true")
     parser.add_argument("--clean", action="store_true")
     parser.add_argument(
         "--output-root",
@@ -263,10 +236,10 @@ def main() -> None:
         else:
             raise ValueError("--output-root must be outside the repository root")
         copy_source_tree(output_root)
+    require_safe_marketplace_path()
     if args.clean:
         clean_generated_output(output_root)
 
-    key = signing_key()
     entries = marketplace_entries()
     for entry in entries:
         source = entry.get("source") if isinstance(entry, dict) else None
@@ -282,12 +255,7 @@ def main() -> None:
         except ValueError as error:
             raise ValueError(f"plugin source must remain below plugins/: {relative_path}") from error
         output_plugin_dir = output_root / source_plugin_dir.relative_to(ROOT)
-        build_plugin(source_plugin_dir, output_plugin_dir, key, args.allow_unsigned)
-    output_marketplace = output_root / MARKETPLACE_RELATIVE_PATH
-    if key:
-        sign(output_marketplace, key)
-    elif args.allow_unsigned:
-        output_marketplace.with_name(output_marketplace.name + ".sig").unlink(missing_ok=True)
+        build_plugin(source_plugin_dir, output_plugin_dir)
 
 
 if __name__ == "__main__":

@@ -2,20 +2,14 @@
 """Fail-closed validation for XSEC official marketplace source and releases.
 
 ``source`` validates a disposable output made by ``build_market.py`` and is
-safe for pull requests. ``published`` additionally verifies the Ed25519
-metadata signatures that Desktop pins. ``signing-key`` is a publication
-preflight which proves that the configured CI signing seed derives to that
-pinned public key without displaying either value.
+safe for pull requests and before the protected KMS publication step.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
-import binascii
 import hashlib
 import json
-import os
 import re
 import stat
 import tempfile
@@ -24,8 +18,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
-from build_market import MARKETPLACE_RELATIVE_PATH, ROOT, is_link, sha256, signing_key, write_zip
-from marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS, OFFICIAL_MARKETPLACE_PUBLIC_KEY_B64
+from build_market import MARKETPLACE_RELATIVE_PATH, ROOT, is_link, sha256, write_zip
+from marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS
 
 
 MAX_ZIP_ENTRIES = 10_000
@@ -62,49 +56,6 @@ def read_json(path: Path, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         fail(f"{label} must contain a JSON object")
     return value
-
-
-def raw_ed25519_public_key(value: str, label: str):
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
-    if not isinstance(value, str) or not value:
-        fail(f"{label} must be a canonical Base64 raw Ed25519 public key")
-    try:
-        decoded = base64.b64decode(value, validate=True)
-    except (ValueError, binascii.Error) as error:
-        fail(f"{label} must be canonical Base64: {error}")
-    if base64.b64encode(decoded).decode("ascii") != value or len(decoded) != 32:
-        fail(f"{label} must contain exactly 32 raw Ed25519 public-key bytes")
-    return Ed25519PublicKey.from_public_bytes(decoded)
-
-
-def read_signature(signature_path: Path) -> bytes:
-    try:
-        encoded = signature_path.read_text(encoding="ascii")
-    except (OSError, UnicodeDecodeError) as error:
-        fail(f"missing or unreadable signature {signature_path}: {error}")
-    if not encoded.endswith("\n") or encoded.count("\n") != 1:
-        fail(f"signature {signature_path} must be one canonical Base64 line")
-    encoded = encoded[:-1]
-    try:
-        signature = base64.b64decode(encoded, validate=True)
-    except (ValueError, binascii.Error) as error:
-        fail(f"signature {signature_path} is not canonical Base64: {error}")
-    if base64.b64encode(signature).decode("ascii") != encoded or len(signature) != 64:
-        fail(f"signature {signature_path} must contain exactly 64 Ed25519 signature bytes")
-    return signature
-
-
-def verify_signature(document_path: Path, verifier) -> None:
-    signature_path = document_path.with_name(document_path.name + ".sig")
-    if is_link(document_path) or is_link(signature_path):
-        fail(f"signed document and signature must not be symbolic links: {document_path}")
-    try:
-        verifier.verify(read_signature(signature_path), document_path.read_bytes())
-    except MarketplaceValidationError:
-        raise
-    except Exception as error:  # cryptography intentionally hides signature detail.
-        fail(f"Ed25519 signature verification failed for {document_path}: {error.__class__.__name__}")
 
 
 def safe_relative_path(value: object, label: str) -> PurePosixPath:
@@ -419,48 +370,15 @@ def validate_source(source_root: Path, built_root: Path) -> None:
                 fail(f"artifact for {plugin_id} is not deterministic from its source tree")
 
 
-def validate_published(root: Path, public_key_b64: str) -> None:
-    verifier = raw_ed25519_public_key(public_key_b64, "official marketplace public key")
-    marketplace_path = root / MARKETPLACE_RELATIVE_PATH
-    verify_signature(marketplace_path, verifier)
-    for plugin_id, plugin_dir, _ in marketplace_entries(root):
-        release_path = plugin_dir / ".xsec-market" / "releases.json"
-        verify_signature(release_path, verifier)
-        validate_source_manifest(plugin_id, plugin_dir)
-        validate_release(plugin_id, plugin_dir)
-
-
-def validate_signing_key(public_key_b64: str) -> None:
-    key = signing_key()
-    if key is None:
-        fail("XSEC_MARKETPLACE_SIGNING_KEY_B64 is required for signing-key validation")
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
-    expected = raw_ed25519_public_key(public_key_b64, "official marketplace public key").public_bytes(Encoding.Raw, PublicFormat.Raw)
-    actual = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    if actual != expected:
-        fail("configured marketplace signing key does not match the Desktop-pinned public key")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
-    source_parser = subcommands.add_parser("source", help="validate source and a temporary unsigned build")
+    source_parser = subcommands.add_parser("source", help="validate source and a generated build")
     source_parser.add_argument("--source-root", type=Path, default=ROOT)
     source_parser.add_argument("--built-root", type=Path, required=True)
-    published_parser = subcommands.add_parser("published", help="validate signed published artifacts")
-    published_parser.add_argument("--root", type=Path, default=ROOT)
-    published_parser.add_argument("--public-key-b64", default=OFFICIAL_MARKETPLACE_PUBLIC_KEY_B64)
-    signing_parser = subcommands.add_parser("signing-key", help="check CI signing seed against Desktop trust root")
-    signing_parser.add_argument("--public-key-b64", default=OFFICIAL_MARKETPLACE_PUBLIC_KEY_B64)
     args = parser.parse_args()
     try:
-        if args.command == "source":
-            validate_source(args.source_root.resolve(), args.built_root.resolve())
-        elif args.command == "published":
-            validate_published(args.root.resolve(), args.public_key_b64)
-        else:
-            validate_signing_key(args.public_key_b64)
+        validate_source(args.source_root.resolve(), args.built_root.resolve())
     except MarketplaceValidationError as error:
         raise SystemExit(f"marketplace validation failed: {error}") from error
     print(f"marketplace {args.command} validation passed")

@@ -16,9 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m pip install cryptography
-      - name: Build a disposable unsigned marketplace
-        run: python scripts/build_market.py --allow-unsigned --clean --output-root "$RUNNER_TEMP/xsec-marketplace-build"
+      - name: Build a disposable marketplace without official sidecars
+        run: python scripts/build_market.py --clean --output-root "$RUNNER_TEMP/xsec-marketplace-build"
       - name: Validate source manifests, deterministic artifacts and package safety
         run: python scripts/validate_market.py source --source-root . --built-root "$RUNNER_TEMP/xsec-marketplace-build"
       - name: Run marketplace gate tests
