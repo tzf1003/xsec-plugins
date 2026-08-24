@@ -115,6 +115,7 @@ def safe_artifact_component(value: object, label: str) -> str:
         not isinstance(value, str)
         or not value
         or value != value.strip()
+        or value.endswith((".", " "))
         or value in {".", ".."}
         or "\x00" in value
         or any(character in value for character in ("/", "\\", ":"))
@@ -175,9 +176,20 @@ def copy_source_tree(output_root: Path) -> None:
 
 def clean_generated_output(output_root: Path) -> None:
     output_plugins = output_root / "plugins"
+    if is_link(output_plugins):
+        raise ValueError(f"generated plugin root must not be a symbolic link: {output_plugins}")
     if not output_plugins.exists():
         return
-    for release_root in output_plugins.glob("*/.xsec-market"):
+    if not output_plugins.is_dir():
+        raise ValueError(f"generated plugin root is unavailable: {output_plugins}")
+    for plugin_dir in output_plugins.iterdir():
+        if is_link(plugin_dir):
+            raise ValueError(f"generated plugin directory must not be a symbolic link: {plugin_dir}")
+        if not plugin_dir.is_dir():
+            continue
+        release_root = plugin_dir / ".xsec-market"
+        if not release_root.exists():
+            continue
         if is_link(release_root):
             raise ValueError(f"generated output path must not be a symbolic link: {release_root}")
         try:

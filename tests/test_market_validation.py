@@ -90,8 +90,24 @@ class MarketplaceValidationTests(unittest.TestCase):
             with zipfile.ZipFile(artifact, "w") as archive:
                 archive.writestr("plugin.json", manifest)
                 archive.writestr("Plugin.json", manifest)
-            with self.assertRaisesRegex(MarketplaceValidationError, "case-insensitive collision"):
+            with self.assertRaisesRegex(MarketplaceValidationError, "target-filesystem collision"):
                 validate_archive(artifact, "com.xsec.test", "1.0.0")
+
+    def test_windows_normalized_zip_member_collisions_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-windows-collision-") as directory:
+            manifest = '{"name":"com.xsec.test","version":"1.0.0"}'
+            for label, first, second in (
+                ("trailing-dot", "frontend/foo./bar.js", "frontend/foo/bar.js"),
+                ("unicode", "frontend/café.js", "frontend/cafe\u0301.js"),
+            ):
+                with self.subTest(label=label):
+                    artifact = Path(directory) / f"{label}.xsec-plugin"
+                    with zipfile.ZipFile(artifact, "w") as archive:
+                        archive.writestr("plugin.json", manifest)
+                        archive.writestr(first, "first")
+                        archive.writestr(second, "second")
+                    with self.assertRaisesRegex(MarketplaceValidationError, "target-filesystem collision"):
+                        validate_archive(artifact, "com.xsec.test", "1.0.0")
 
     def test_symbolic_link_zip_member_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-link-test-") as directory:
@@ -239,6 +255,39 @@ class MarketplaceValidationTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, "safe filename component"):
                             build_market.build_plugin(source_plugin_dir, output_plugin_dir, None, True)
                         write_zip.assert_not_called()
+
+    def test_cleanup_rejects_linked_plugin_root_before_traversal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-clean-link-") as directory:
+            output_root = Path(directory) / "output"
+            output_plugins = output_root / "plugins"
+            output_plugins.mkdir(parents=True)
+
+            with (
+                patch.object(build_market, "is_link", side_effect=lambda path: path == output_plugins),
+                patch.object(Path, "exists") as exists,
+                patch.object(Path, "iterdir") as iterdir,
+                patch.object(build_market.shutil, "rmtree") as rmtree,
+            ):
+                with self.assertRaisesRegex(ValueError, "generated plugin root must not be a symbolic link"):
+                    build_market.clean_generated_output(output_root)
+                exists.assert_not_called()
+                iterdir.assert_not_called()
+                rmtree.assert_not_called()
+
+    def test_cleanup_rejects_linked_plugin_directory_before_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-clean-child-link-") as directory:
+            output_root = Path(directory) / "output"
+            output_plugins = output_root / "plugins"
+            linked_plugin = output_plugins / "com.xsec.test"
+            linked_plugin.mkdir(parents=True)
+
+            with (
+                patch.object(build_market, "is_link", side_effect=lambda path: path == linked_plugin),
+                patch.object(build_market.shutil, "rmtree") as rmtree,
+            ):
+                with self.assertRaisesRegex(ValueError, "generated plugin directory must not be a symbolic link"):
+                    build_market.clean_generated_output(output_root)
+                rmtree.assert_not_called()
 
 
 if __name__ == "__main__":

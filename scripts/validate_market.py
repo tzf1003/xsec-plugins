@@ -18,6 +18,7 @@ import json
 import os
 import stat
 import tempfile
+import unicodedata
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -123,16 +124,28 @@ def resolve_below(base: Path, relative: PurePosixPath, label: str) -> Path:
     return resolved
 
 
+def target_filesystem_path(path: PurePosixPath, name: str) -> str:
+    """Normalize a ZIP member as a Windows-compatible installer would."""
+
+    parts: list[str] = []
+    for part in path.parts:
+        normalized_part = unicodedata.normalize("NFC", part).rstrip(" .").casefold()
+        if not normalized_part:
+            fail(f"archive contains an empty target filesystem path component in {name!r}")
+        parts.append(normalized_part)
+    return "/".join(parts)
+
+
 def validate_zip_member(name: str, info: zipfile.ZipInfo, seen: set[str]) -> None:
-    normalized_name = name.casefold()
-    if normalized_name in seen:
-        fail(f"archive contains duplicate or case-insensitive collision for entry {name!r}")
-    seen.add(normalized_name)
     if "\\" in name or name.startswith("/"):
         fail(f"archive contains unsafe entry path {name!r}")
     path = PurePosixPath(name)
     if not name or path.is_absolute() or not path.parts or any(part in {"", ".", ".."} or ":" in part for part in path.parts):
         fail(f"archive contains unsafe entry path {name!r}")
+    normalized_name = target_filesystem_path(path, name)
+    if normalized_name in seen:
+        fail(f"archive contains duplicate or target-filesystem collision for entry {name!r}")
+    seen.add(normalized_name)
     if info.flag_bits & 0x1:
         fail(f"archive entry {name!r} must not be encrypted")
     mode = info.external_attr >> 16
