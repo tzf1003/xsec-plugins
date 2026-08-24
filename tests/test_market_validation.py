@@ -122,11 +122,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn("enforce-publish-ref:", workflow)
         self.assertIn('EVENT_NAME: ${{ github.event_name }}', workflow)
         self.assertIn('REF: ${{ github.ref }}', workflow)
+        self.assertIn('REF_PROTECTED: ${{ github.ref_protected }}', workflow)
         self.assertIn('[ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]', workflow)
+        self.assertIn('[ "$REF_PROTECTED" != "true" ]', workflow)
         signing_job = workflow.split("  sign-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
         self.assertIn(
             "needs: enforce-publish-ref\n"
-            "    if: ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' }}",
+            "    if: ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected }}",
             signing_job,
         )
 

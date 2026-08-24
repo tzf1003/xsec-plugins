@@ -20,14 +20,19 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
             echo "Manual marketplace publishing is permitted only from refs/heads/main." >&2
             exit 1
           fi
+          if [ "$REF_PROTECTED" != "true" ]; then
+            echo "Marketplace publication requires a protected main branch or ruleset." >&2
+            exit 1
+          fi
   sign-and-publish:
     needs: enforce-publish-ref
-    if: ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' }}
+    if: ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
