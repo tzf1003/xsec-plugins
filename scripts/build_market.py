@@ -109,6 +109,10 @@ def marketplace_entries() -> list[dict[str, object]]:
 def copy_source_tree(output_root: Path) -> None:
     """Create a publishable source snapshot without copying generated output."""
 
+    if is_link(PLUGIN_ROOT):
+        raise ValueError(f"plugin root must not be a symbolic link: {PLUGIN_ROOT}")
+    if not PLUGIN_ROOT.is_dir():
+        raise ValueError(f"plugin root is unavailable: {PLUGIN_ROOT}")
     if output_root.exists() and any(output_root.iterdir()):
         raise ValueError("--output-root must be empty when it is not the repository root")
     output_root.mkdir(parents=True, exist_ok=True)

@@ -168,6 +168,24 @@ class MarketplaceValidationTests(unittest.TestCase):
                     build_market.copy_source_tree(destination)
                 copytree.assert_not_called()
 
+    def test_disposable_build_rejects_linked_plugin_root_before_traversal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-root-link-") as directory:
+            source_root = Path(directory) / "source"
+            plugin_root = source_root / "plugins"
+            destination = Path(directory) / "destination"
+            plugin_root.mkdir(parents=True)
+
+            with (
+                patch.object(build_market, "PLUGIN_ROOT", plugin_root),
+                patch.object(build_market, "is_link", side_effect=lambda path: path == plugin_root),
+                patch.object(Path, "iterdir") as iterdir,
+                patch.object(build_market.shutil, "copytree") as copytree,
+            ):
+                with self.assertRaisesRegex(ValueError, "plugin root must not be a symbolic link"):
+                    build_market.copy_source_tree(destination)
+                iterdir.assert_not_called()
+                copytree.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
