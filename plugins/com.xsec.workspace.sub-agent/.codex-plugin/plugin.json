@@ -1,0 +1,25 @@
+{
+  "name": "com.xsec.workspace.sub-agent",
+  "version": "1.0.0",
+  "description": "XSEC sub-agent workspace tools",
+  "author": {
+    "name": "XSEC"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tzf1003/xsec-plugins",
+  "interface": {
+    "displayName": "子 Agent",
+    "shortDescription": "XSEC sub-agent workspace tools",
+    "longDescription": "XSEC 官方插件：子 Agent。可在 XSEC 插件市场安装、禁用和更新。",
+    "developerName": "XSEC",
+    "category": "Security",
+    "capabilities": [
+      "XSEC Desktop"
+    ],
+    "websiteURL": "https://github.com/tzf1003/xsec-plugins",
+    "defaultPrompt": [
+      "打开 子 Agent"
+    ],
+    "brandColor": "#4F7CFF"
+  }
+}

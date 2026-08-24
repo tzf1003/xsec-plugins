@@ -1,0 +1,31 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "com.xsec.project-workspace", "version": "1.0.0",
+  "description": "XSEC project assets, findings, reports and execution workspace", "author": { "name": "XSEC" }, "license": "MIT",
+  "extensions": { "com.xsec.desktop": {
+    "schemaVersion": 1, "displayName": "项目工作区", "publisher": "XSEC", "icon": "folder-kanban",
+    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.0.0" },
+    "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
+    "activationEvents": ["onWorkspaceOpen", "onRoute:project.assets", "onRoute:project.findings", "onRoute:project.reports"],
+    "permissions": { "workspace.project.read": {}, "workspace.project.write": {} },
+    "contributes": {
+      "navigation": { "items": {
+        "project.overview": { "location": "project", "title": "概览", "icon": "dashboard", "route": "overview", "order": 100 },
+        "project.assets": { "location": "project", "title": "范围与资产", "icon": "assets", "route": "assets", "order": 200 },
+        "project.findings": { "location": "project", "title": "正式漏洞", "icon": "bug", "route": "findings", "order": 300 },
+        "project.reports": { "location": "project", "title": "报告", "icon": "report", "route": "reports", "order": 400 },
+        "project.files": { "location": "project", "title": "文件", "icon": "files", "route": "files", "order": 500 },
+        "project.batch": { "location": "project", "title": "批量执行", "icon": "batch", "route": "batch", "order": 600 }
+      } },
+      "routes": {
+        "project.overview": { "path": "project/:projectId/overview", "page": "project-overview" },
+        "project.files": { "path": "project/:projectId/files", "page": "project-files" },
+        "project.assets": { "path": "project/:projectId/assets", "page": "assets" },
+        "project.batch": { "path": "project/:projectId/batch", "page": "runs" },
+        "project.passive-findings": { "path": "project/:projectId/passive-findings", "page": "passive-findings" },
+        "project.findings": { "path": "project/:projectId/findings", "page": "findings" },
+        "project.reports": { "path": "project/:projectId/reports", "page": "reports" }
+      }
+    }
+  } }
+}

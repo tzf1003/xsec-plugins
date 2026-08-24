@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "com.xsec.asset-discovery",
+  "version": "1.0.0",
+  "description": "XSEC asset discovery business surface",
+  "author": { "name": "XSEC" },
+  "license": "MIT",
+  "extensions": {
+    "com.xsec.desktop": {
+      "schemaVersion": 1,
+      "displayName": "资产发现",
+      "publisher": "XSEC",
+      "icon": "compass",
+      "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.0.0" },
+      "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
+      "activationEvents": ["onRoute:asset-discovery"],
+      "permissions": { "workspace.project.read": {} },
+      "contributes": {
+        "navigation": { "items": { "asset-discovery": { "location": "primary", "title": "资产发现", "icon": "compass", "route": "asset-discovery", "order": 400 } } },
+        "routes": { "asset-discovery": { "path": "asset-discovery", "page": "asset-discovery" } }
+      }
+    }
+  }
+}

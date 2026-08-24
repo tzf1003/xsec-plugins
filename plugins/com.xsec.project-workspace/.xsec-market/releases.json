@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.project-workspace",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "channel": "stable",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.0.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.project-workspace-1.0.0-any-any.xsec-plugin",
+          "sha256": "7888d862c0101aee7031b4d194949ce12219527aebd5732be6e05317ad85f1e8"
+        }
+      ]
+    }
+  ]
+}

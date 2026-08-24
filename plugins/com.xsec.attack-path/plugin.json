@@ -1,0 +1,35 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "com.xsec.attack-path", "version": "1.0.0",
+  "description": "XSEC attack-path workspace and Agent tools", "author": { "name": "XSEC" }, "license": "MIT",
+  "extensions": { "com.xsec.desktop": {
+    "schemaVersion": 1, "displayName": "攻击路径", "publisher": "XSEC", "icon": "git-branch",
+    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.0.0" },
+    "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
+    "activationEvents": ["onWorkspaceTool:attack-path", "onAgentTool:xsec_tree_node_create"],
+    "permissions": { "workspace.session.read": {}, "workspace.project.write": {}, "agent.tools.register": {} },
+    "contributes": {
+      "workspaceTools": { "attack-path": {
+        "title": "攻击路径", "icon": "git-branch", "scope": "assignment", "launchable": true,
+        "policy": "singleton", "surface": "standard", "retain": "active", "preferredSideWidth": 560,
+        "preferredBottomHeight": 360, "defaultObserve": true, "surfaces": ["interactive-dock", "batch-observe"]
+      } },
+      "agentTools": {
+        "xsec_tree_node_create": { "title": "创建攻击路径节点", "workspaceToolId": "attack-path" },
+        "xsec_tree_node_update": { "title": "更新攻击路径节点", "workspaceToolId": "attack-path" },
+        "xsec_tree_node_get": { "title": "读取攻击路径节点", "workspaceToolId": "attack-path" },
+        "xsec_tree_list": { "title": "列出攻击路径", "workspaceToolId": "attack-path" },
+        "xsec_shared_finding_add": { "title": "写入共享漏洞", "workspaceToolId": "attack-path" },
+        "xsec_shared_findings_list": { "title": "列出共享漏洞", "workspaceToolId": "attack-path" },
+        "xsec_subagent_dispatch": { "title": "派发子 Agent", "workspaceToolId": "attack-path" },
+        "xsec_subagent_cancel": { "title": "取消子 Agent", "workspaceToolId": "attack-path" },
+        "xsec_subagent_register_session": { "title": "登记子 Agent 会话", "workspaceToolId": "attack-path" },
+        "xsec_subagent_heartbeat": { "title": "子 Agent 心跳", "workspaceToolId": "attack-path" },
+        "xsec_subagent_complete": { "title": "完成子 Agent", "workspaceToolId": "attack-path" },
+        "xsec_subagent_status": { "title": "子 Agent 状态", "workspaceToolId": "attack-path" },
+        "plugin.attack-path.tree_node_create": { "title": "创建攻击路径节点", "workspaceToolId": "attack-path" },
+        "plugin.attack-path.tree_list": { "title": "列出攻击路径", "workspaceToolId": "attack-path" }
+      }
+    }
+  } }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "com.xsec.workspace.project-outcomes",
+  "version": "1.0.0",
+  "description": "XSEC project-outcome workspace tools",
+  "author": {
+    "name": "XSEC"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tzf1003/xsec-plugins",
+  "interface": {
+    "displayName": "项目成果",
+    "shortDescription": "XSEC project-outcome workspace tools",
+    "longDescription": "XSEC 官方插件：项目成果。可在 XSEC 插件市场安装、禁用和更新。",
+    "developerName": "XSEC",
+    "category": "Security",
+    "capabilities": [
+      "XSEC Desktop"
+    ],
+    "websiteURL": "https://github.com/tzf1003/xsec-plugins",
+    "defaultPrompt": [
+      "打开 项目成果"
+    ],
+    "brandColor": "#4F7CFF"
+  }
+}

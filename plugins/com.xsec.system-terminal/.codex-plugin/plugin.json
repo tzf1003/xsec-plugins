@@ -1,0 +1,25 @@
+{
+  "name": "com.xsec.system-terminal",
+  "version": "1.0.0",
+  "description": "XSEC workspace system terminal",
+  "author": {
+    "name": "XSEC"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tzf1003/xsec-plugins",
+  "interface": {
+    "displayName": "系统终端",
+    "shortDescription": "XSEC workspace system terminal",
+    "longDescription": "XSEC 官方插件：系统终端。可在 XSEC 插件市场安装、禁用和更新。",
+    "developerName": "XSEC",
+    "category": "Security",
+    "capabilities": [
+      "XSEC Desktop"
+    ],
+    "websiteURL": "https://github.com/tzf1003/xsec-plugins",
+    "defaultPrompt": [
+      "打开 系统终端"
+    ],
+    "brandColor": "#4F7CFF"
+  }
+}

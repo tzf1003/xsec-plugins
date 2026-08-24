@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.asset-discovery",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "channel": "stable",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.0.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.asset-discovery-1.0.0-any-any.xsec-plugin",
+          "sha256": "77ec8b7a593e4a575f169ecff1f00ffb16f4b3db27e6a50e8f739398e62bbf7b"
+        }
+      ]
+    }
+  ]
+}

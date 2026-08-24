@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.conversation-tree",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "channel": "stable",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.0.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.workspace.conversation-tree-1.0.0-any-any.xsec-plugin",
+          "sha256": "6d9d178706b4c904953f4b67ebe7d51730bec5bad2614ad8a0b9f18168783c2d"
+        }
+      ]
+    }
+  ]
+}

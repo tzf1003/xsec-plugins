@@ -1,0 +1,25 @@
+{
+  "name": "com.xsec.workspace.browser",
+  "version": "1.0.0",
+  "description": "XSEC browser workspace tool",
+  "author": {
+    "name": "XSEC"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tzf1003/xsec-plugins",
+  "interface": {
+    "displayName": "浏览器会话",
+    "shortDescription": "XSEC browser workspace tool",
+    "longDescription": "XSEC 官方插件：浏览器会话。可在 XSEC 插件市场安装、禁用和更新。",
+    "developerName": "XSEC",
+    "category": "Security",
+    "capabilities": [
+      "XSEC Desktop"
+    ],
+    "websiteURL": "https://github.com/tzf1003/xsec-plugins",
+    "defaultPrompt": [
+      "打开 浏览器会话"
+    ],
+    "brandColor": "#4F7CFF"
+  }
+}

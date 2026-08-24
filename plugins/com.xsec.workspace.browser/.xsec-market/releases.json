@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.browser",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "channel": "stable",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.0.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.workspace.browser-1.0.0-any-any.xsec-plugin",
+          "sha256": "757bda2afe0d69f0cbfcbf030690e0423730b90bc42f8a81f1aa288ea6e5428e"
+        }
+      ]
+    }
+  ]
+}
