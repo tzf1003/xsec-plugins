@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from contextlib import nullcontext
+import json
 import os
 import subprocess
 import sys
@@ -185,6 +186,49 @@ class MarketplaceValidationTests(unittest.TestCase):
                     build_market.copy_source_tree(destination)
                 iterdir.assert_not_called()
                 copytree.assert_not_called()
+
+    def test_disposable_build_rejects_linked_marketplace_before_copy(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-index-link-") as directory:
+            source_root = Path(directory) / "source"
+            plugin_root = source_root / "plugins"
+            marketplace = source_root / ".agents" / "plugins" / "marketplace.json"
+            destination = Path(directory) / "destination"
+            plugin_root.mkdir(parents=True)
+            marketplace.parent.mkdir(parents=True)
+            marketplace.write_text('{"plugins": []}\n', encoding="utf-8")
+
+            for linked_path in (marketplace, marketplace.parent):
+                with self.subTest(linked_path=linked_path):
+                    with (
+                        patch.object(build_market, "PLUGIN_ROOT", plugin_root),
+                        patch.object(build_market, "MARKETPLACE", marketplace),
+                        patch.object(build_market, "is_link", side_effect=lambda path: path == linked_path),
+                        patch.object(build_market.shutil, "copyfile") as copyfile,
+                    ):
+                        with self.assertRaisesRegex(ValueError, "marketplace metadata path must not contain symbolic links"):
+                            build_market.copy_source_tree(destination)
+                        copyfile.assert_not_called()
+
+    def test_build_rejects_manifest_path_components_before_writing_artifact(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-artifact-name-") as directory:
+            root = Path(directory)
+            source_plugin_dir = root / "source-plugin"
+            source_plugin_dir.mkdir()
+            output_plugin_dir = root / "output-plugin"
+            base_manifest = {
+                "name": "com.xsec.test",
+                "version": "1.0.0",
+                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1"}}},
+            }
+            for field, invalid_value in (("name", "C:\\runner"), ("version", "../outside")):
+                with self.subTest(field=field, invalid_value=invalid_value):
+                    manifest = dict(base_manifest)
+                    manifest[field] = invalid_value
+                    (source_plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+                    with patch.object(build_market, "write_zip") as write_zip:
+                        with self.assertRaisesRegex(ValueError, "safe filename component"):
+                            build_market.build_plugin(source_plugin_dir, output_plugin_dir, None, True)
+                        write_zip.assert_not_called()
 
 
 if __name__ == "__main__":

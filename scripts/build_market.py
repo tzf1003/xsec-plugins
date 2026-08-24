@@ -98,7 +98,44 @@ def write_zip(plugin_dir: Path, destination: Path) -> None:
             archive.writestr(info, path.read_bytes())
 
 
+def require_safe_marketplace_path() -> None:
+    """Reject a linked marketplace file or an ancestor before it is read/copied."""
+
+    current = MARKETPLACE
+    for _ in MARKETPLACE_RELATIVE_PATH.parts:
+        if is_link(current):
+            raise ValueError(f"marketplace metadata path must not contain symbolic links: {current}")
+        current = current.parent
+
+
+def safe_artifact_component(value: object, label: str) -> str:
+    """Return a manifest value only when it cannot alter an artifact pathname."""
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or value in {".", ".."}
+        or "\x00" in value
+        or any(character in value for character in ("/", "\\", ":"))
+    ):
+        raise ValueError(f"{label} must be a non-empty safe filename component")
+    return value
+
+
+def path_below(directory: Path, filename: str, label: str) -> Path:
+    """Defend the output boundary even if a future filename format changes."""
+
+    candidate = directory / filename
+    try:
+        candidate.resolve(strict=False).relative_to(directory.resolve(strict=False))
+    except ValueError as error:
+        raise ValueError(f"{label} must remain below {directory}") from error
+    return candidate
+
+
 def marketplace_entries() -> list[dict[str, object]]:
+    require_safe_marketplace_path()
     value = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
     entries = value.get("plugins")
     if not isinstance(entries, list):
@@ -113,6 +150,7 @@ def copy_source_tree(output_root: Path) -> None:
         raise ValueError(f"plugin root must not be a symbolic link: {PLUGIN_ROOT}")
     if not PLUGIN_ROOT.is_dir():
         raise ValueError(f"plugin root is unavailable: {PLUGIN_ROOT}")
+    require_safe_marketplace_path()
     if output_root.exists() and any(output_root.iterdir()):
         raise ValueError("--output-root must be empty when it is not the repository root")
     output_root.mkdir(parents=True, exist_ok=True)
@@ -153,12 +191,12 @@ def clean_generated_output(output_root: Path) -> None:
 
 def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path, key, allow_unsigned: bool) -> None:
     manifest = json.loads((source_plugin_dir / "plugin.json").read_text(encoding="utf-8"))
-    plugin_id = manifest["name"]
-    version = manifest["version"]
+    plugin_id = safe_artifact_component(manifest.get("name"), "plugin manifest name")
+    version = safe_artifact_component(manifest.get("version"), "plugin manifest version")
     release_root = output_plugin_dir / ".xsec-market"
     artifact_dir = release_root / ARTIFACT_DIR_NAME
     artifact_name = f"{plugin_id}-{version}-any-any.xsec-plugin"
-    artifact = artifact_dir / artifact_name
+    artifact = path_below(artifact_dir, artifact_name, "artifact path")
     write_zip(source_plugin_dir, artifact)
     release = {
         "schemaVersion": 1,
