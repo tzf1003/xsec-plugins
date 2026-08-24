@@ -311,8 +311,12 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("XSEC_MARKETPLACE_PUBLISH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}", workflow)
         self.assertNotIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertIn("token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}", workflow)
+        self.assertIn("require_publish_token:", workflow)
+        self.assertIn("needs: [enforce-publish-ref, require_publish_token]", workflow)
+        self.assertIn("needs.require_publish_token.result == 'success'", workflow)
+        self.assertIn("permissions: {}", workflow)
         self.assertLess(
-            workflow.index("Require the protected marketplace publication token"),
+            workflow.index("Require the protected marketplace publication token before checkout or KMS"),
             workflow.index("Request KMS sidecars through the production Cloud broker"),
         )
         self.assertIn("github.event.head_commit.message != 'chore: publish KMS-signed marketplace artifacts'", workflow)
