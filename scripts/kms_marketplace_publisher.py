@@ -222,8 +222,15 @@ def validate_sidecar(
     exact_keys(jws, {"protected", "payload", "signature"}, "KMS sidecar jws")
     protected = required_string(jws, "protected", "KMS sidecar jws")
     protected_header = json_object(canonical_base64url_decode(protected, "KMS JWS protected header"), "KMS JWS protected header")
-    if not set(protected_header).issubset({"alg", "kid", "b64", "crit", "typ"}):
-        fail("KMS JWS protected header has unsupported parameters")
+    supported_header_parameters = {"alg", "kid", "b64", "crit", "typ"}
+    unsupported_header_parameters = sorted(set(protected_header).difference(supported_header_parameters))
+    if unsupported_header_parameters:
+        # Parameter names are public JWS metadata, but keep the diagnostic
+        # bounded and JSON-escaped so a malformed broker response cannot
+        # inject untrusted text into an Actions log.
+        rendered = ",".join(json.dumps(parameter, ensure_ascii=True) for parameter in unsupported_header_parameters[:16])
+        suffix = ",..." if len(unsupported_header_parameters) > 16 else ""
+        fail(f"KMS JWS protected header has unsupported parameters: {rendered}{suffix}")
     if protected_header.get("alg") != "EdDSA" or not isinstance(protected_header.get("kid"), str) or not protected_header["kid"]:
         fail("KMS JWS protected header must include EdDSA and kid")
     if protected_header.get("b64") is not False or protected_header.get("crit") != ["b64"]:
