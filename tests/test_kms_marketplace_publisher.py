@@ -322,13 +322,21 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("python scripts/kms_marketplace_publisher.py --root .", workflow)
         self.assertIn("python scripts/kms_marketplace_publisher.py --root . --validate-only", workflow)
         self.assertNotIn("XSEC_MARKETPLACE_SIGNING_KEY_B64", workflow)
-        self.assertIn('event_type:"xsec_marketplace_smoke"', workflow)
-        self.assertIn("contract_version:1", workflow)
-        self.assertIn("marketplace_url", workflow)
-        self.assertIn("marketplace_public_key_b64", workflow)
-        self.assertIn("source_revision", workflow)
-        self.assertIn("expected_default_plugin_ids", workflow)
-        self.assertIn("https://raw.githubusercontent.com/$MARKETPLACE_REPOSITORY/$MARKETPLACE_REVISION/.agents/plugins/marketplace.json", workflow)
+        # Keep this sender in lockstep with Desktop's repository_dispatch
+        # receiver. Desktop accepts only the official source repository/ref,
+        # then proves the protected source SHA is an ancestor of the generated
+        # immutable marketplace commit before it constructs its own raw URL.
+        self.assertIn('event_type:"xsec_official_marketplace_published"', workflow)
+        self.assertIn("source_repository:$source_repository", workflow)
+        self.assertIn("source_ref:$source_ref", workflow)
+        self.assertIn("source_sha:$source_sha", workflow)
+        self.assertIn("marketplace_revision:$marketplace_revision", workflow)
+        self.assertIn('--arg source_repository "$GITHUB_REPOSITORY"', workflow)
+        self.assertIn('--arg source_ref "refs/heads/main"', workflow)
+        self.assertIn('--arg source_sha "$GITHUB_SHA"', workflow)
+        self.assertNotIn('event_type:"xsec_marketplace_smoke"', workflow)
+        self.assertNotIn("marketplace_public_key_b64", workflow)
+        self.assertNotIn("expected_default_plugin_ids", workflow)
         self.assertIn("git add -A .agents/plugins plugins", workflow)
         self.assertIn('gh workflow run validate.yml --ref "$branch"', workflow)
         self.assertIn("--event workflow_dispatch", workflow)
