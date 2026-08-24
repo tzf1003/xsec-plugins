@@ -19,11 +19,13 @@ sys.path.insert(0, str(SCRIPTS))
 
 from marketplace_contract import OFFICIAL_MARKETPLACE_PUBLIC_KEY_B64  # noqa: E402
 import build_market  # noqa: E402
+import validate_market  # noqa: E402
 from validate_market import (  # noqa: E402
     MarketplaceValidationError,
     validate_archive,
     validate_published,
     validate_signing_key,
+    validate_source_manifest,
     validate_source,
 )
 
@@ -118,6 +120,94 @@ class MarketplaceValidationTests(unittest.TestCase):
                 archive.writestr(link, "plugin.json")
             with self.assertRaisesRegex(MarketplaceValidationError, "symbolic link"):
                 validate_archive(artifact, "com.xsec.test", "1.0.0")
+
+    def test_windows_reserved_and_forbidden_zip_components_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-windows-components-") as directory:
+            manifest = '{"name":"com.xsec.test","version":"1.0.0"}'
+            for label, member, message in (
+                ("reserved", "frontend/CON.js", "reserved device-name"),
+                ("forbidden", "frontend/foo?.js", "Windows-forbidden character"),
+            ):
+                with self.subTest(label=label):
+                    artifact = Path(directory) / f"{label}.xsec-plugin"
+                    with zipfile.ZipFile(artifact, "w") as archive:
+                        archive.writestr("plugin.json", manifest)
+                        archive.writestr(member, "entrypoint")
+                    with self.assertRaisesRegex(MarketplaceValidationError, message):
+                        validate_archive(artifact, "com.xsec.test", "1.0.0")
+
+    def test_source_entrypoints_must_be_regular_files_below_the_plugin_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-source-entrypoint-") as directory:
+            plugin_dir = Path(directory) / "com.xsec.test"
+            entrypoint = plugin_dir / "com.xsec.desktop" / "frontend" / "index.js"
+            entrypoint.parent.mkdir(parents=True)
+            manifest = {
+                "name": "com.xsec.test",
+                "version": "1.0.0",
+                "extensions": {
+                    "com.xsec.desktop": {
+                        "engines": {"xsec": ">=1"},
+                        "entrypoints": {"frontend": "./com.xsec.desktop/frontend/index.js"},
+                    },
+                },
+            }
+            (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.subTest("missing"):
+                with self.assertRaisesRegex(MarketplaceValidationError, "regular file"):
+                    validate_source_manifest("com.xsec.test", plugin_dir)
+
+            entrypoint.write_text("export {};\n", encoding="utf-8")
+            validate_source_manifest("com.xsec.test", plugin_dir)
+
+            with self.subTest("escape"):
+                manifest["extensions"]["com.xsec.desktop"]["entrypoints"]["frontend"] = "../escape.js"
+                (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(MarketplaceValidationError, "must not escape"):
+                    validate_source_manifest("com.xsec.test", plugin_dir)
+
+            with self.subTest("directory"):
+                manifest["extensions"]["com.xsec.desktop"]["entrypoints"]["frontend"] = "./com.xsec.desktop/frontend"
+                (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(MarketplaceValidationError, "regular file"):
+                    validate_source_manifest("com.xsec.test", plugin_dir)
+
+            with self.subTest("symbolic-link"):
+                manifest["extensions"]["com.xsec.desktop"]["entrypoints"]["frontend"] = "./com.xsec.desktop/frontend/index.js"
+                (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+                with patch.object(validate_market, "is_link", side_effect=lambda path: path == entrypoint):
+                    with self.assertRaisesRegex(MarketplaceValidationError, "symbolic links"):
+                        validate_source_manifest("com.xsec.test", plugin_dir)
+
+    def test_archive_entrypoints_must_be_packed_regular_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-archive-entrypoint-") as directory:
+            manifest = json.dumps({
+                "name": "com.xsec.test",
+                "version": "1.0.0",
+                "extensions": {
+                    "com.xsec.desktop": {
+                        "entrypoints": {"frontend": "./com.xsec.desktop/frontend/index.js"},
+                    },
+                },
+            })
+            for label, build, message in (
+                ("missing", lambda archive: None, "does not include XSEC Desktop entrypoint"),
+                ("directory", lambda archive: archive.writestr("com.xsec.desktop/frontend/index.js/", ""), "must be a regular file"),
+                ("symbolic-link", self.write_symbolic_link_entrypoint, "symbolic link"),
+            ):
+                with self.subTest(label=label):
+                    artifact = Path(directory) / f"{label}.xsec-plugin"
+                    with zipfile.ZipFile(artifact, "w") as archive:
+                        archive.writestr("plugin.json", manifest)
+                        build(archive)
+                    with self.assertRaisesRegex(MarketplaceValidationError, message):
+                        validate_archive(artifact, "com.xsec.test", "1.0.0")
+
+    @staticmethod
+    def write_symbolic_link_entrypoint(archive: zipfile.ZipFile) -> None:
+        entrypoint = zipfile.ZipInfo("com.xsec.desktop/frontend/index.js")
+        entrypoint.external_attr = 0o120777 << 16
+        archive.writestr(entrypoint, "outside.js")
 
     def test_signing_preflight_rejects_a_seed_for_another_public_key(self) -> None:
         previous = os.environ.get("XSEC_MARKETPLACE_SIGNING_KEY_B64")

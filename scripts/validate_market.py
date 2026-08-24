@@ -16,6 +16,7 @@ import binascii
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 import unicodedata
@@ -31,6 +32,13 @@ MAX_ZIP_ENTRIES = 10_000
 MAX_ZIP_FILE_BYTES = 64 * 1024 * 1024
 MAX_ZIP_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 MAX_ZIP_COMPRESSION_RATIO = 100
+WINDOWS_FORBIDDEN_COMPONENT_CHARACTERS = frozenset('<>:"/\\|?*')
+WINDOWS_RESERVED_DEVICE_NAMES = frozenset({
+    "con", "prn", "aux", "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+})
+ENTRYPOINT_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
 
 
 class MarketplaceValidationError(ValueError):
@@ -118,10 +126,37 @@ def resolve_below(base: Path, relative: PurePosixPath, label: str) -> Path:
         resolved = current.resolve(strict=True)
         resolved.relative_to(base.resolve(strict=True))
     except (OSError, ValueError) as error:
-        fail(f"{label} must resolve below its release directory: {error}")
+        fail(f"{label} must resolve to a regular file below its release directory: {error}")
     if not resolved.is_file():
         fail(f"{label} must resolve to a regular file")
     return resolved
+
+
+def desktop_entrypoints(manifest: dict[str, object], label: str) -> list[tuple[str, PurePosixPath]]:
+    """Validate the XSEC entrypoint declaration shared by source and archives."""
+
+    try:
+        desktop = manifest["extensions"]["com.xsec.desktop"]
+    except (KeyError, TypeError):
+        fail(f"{label} lacks XSEC Desktop extension metadata")
+    if not isinstance(desktop, dict):
+        fail(f"{label} has invalid XSEC Desktop extension metadata")
+    entrypoints = desktop.get("entrypoints")
+    if not isinstance(entrypoints, dict) or not entrypoints:
+        fail(f"{label} must declare at least one XSEC Desktop entrypoint")
+
+    result: list[tuple[str, PurePosixPath]] = []
+    for name, value in entrypoints.items():
+        if not isinstance(name, str) or not ENTRYPOINT_NAME.fullmatch(name):
+            fail(f"{label} has an invalid XSEC Desktop entrypoint name")
+        relative = safe_relative_path(value, f"{label} entrypoint {name}")
+        result.append((name, relative))
+    return result
+
+
+def zip_member_is_regular_file(info: zipfile.ZipInfo) -> bool:
+    mode = info.external_attr >> 16
+    return not info.is_dir() and stat.S_IFMT(mode) in {0, stat.S_IFREG}
 
 
 def target_filesystem_path(path: PurePosixPath, name: str) -> str:
@@ -129,9 +164,18 @@ def target_filesystem_path(path: PurePosixPath, name: str) -> str:
 
     parts: list[str] = []
     for part in path.parts:
-        normalized_part = unicodedata.normalize("NFC", part).rstrip(" .").casefold()
+        nfc_part = unicodedata.normalize("NFC", part)
+        if any(character in WINDOWS_FORBIDDEN_COMPONENT_CHARACTERS for character in nfc_part):
+            fail(f"archive contains a Windows-forbidden character in path component {part!r} of {name!r}")
+        if any(ord(character) <= 0x1F for character in nfc_part):
+            fail(f"archive contains a Windows control character in path component {part!r} of {name!r}")
+        trimmed_part = nfc_part.rstrip(" .")
+        normalized_part = trimmed_part.casefold()
         if not normalized_part:
             fail(f"archive contains an empty target filesystem path component in {name!r}")
+        device_name = trimmed_part.split(".", 1)[0].casefold()
+        if device_name in WINDOWS_RESERVED_DEVICE_NAMES:
+            fail(f"archive contains a Windows reserved device-name component {part!r} in {name!r}")
         parts.append(normalized_part)
     return "/".join(parts)
 
@@ -165,9 +209,11 @@ def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, obje
             if not infos or len(infos) > MAX_ZIP_ENTRIES:
                 fail(f"artifact {path} has an invalid number of entries")
             seen: set[str] = set()
+            members: dict[str, zipfile.ZipInfo] = {}
             total_size = 0
             for info in infos:
                 validate_zip_member(info.filename, info, seen)
+                members[PurePosixPath(info.filename).as_posix()] = info
                 if info.file_size > MAX_ZIP_FILE_BYTES:
                     fail(f"archive entry {info.filename!r} exceeds the uncompressed size limit")
                 total_size += info.file_size
@@ -193,6 +239,12 @@ def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, obje
         fail(f"artifact {path} plugin.json name does not match {plugin_id}")
     if manifest.get("version") != version:
         fail(f"artifact {path} plugin.json version does not match {version}")
+    for entrypoint_name, entrypoint_path in desktop_entrypoints(manifest, f"artifact {path} plugin.json"):
+        entrypoint = members.get(entrypoint_path.as_posix())
+        if entrypoint is None:
+            fail(f"artifact {path} does not include XSEC Desktop entrypoint {entrypoint_name} at {entrypoint_path.as_posix()}")
+        if not zip_member_is_regular_file(entrypoint):
+            fail(f"artifact {path} XSEC Desktop entrypoint {entrypoint_name} must be a regular file")
     return manifest
 
 
@@ -296,6 +348,8 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
         fail(f"plugin manifest {plugin_id} lacks XSEC Desktop engine metadata")
     if not isinstance(engines, dict):
         fail(f"plugin manifest {plugin_id} has invalid XSEC Desktop engine metadata")
+    for entrypoint_name, entrypoint_path in desktop_entrypoints(manifest, f"plugin manifest {plugin_id}"):
+        resolve_below(plugin_dir, entrypoint_path, f"plugin manifest {plugin_id} entrypoint {entrypoint_name}")
     return manifest
 
 
