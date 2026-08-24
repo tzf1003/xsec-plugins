@@ -71,7 +71,10 @@ jobs:
           git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
           git commit -m "chore: publish KMS-signed marketplace artifacts"
           generated_revision="$(git rev-parse HEAD)"
-          branch="xsec-marketplace/publish-${GITHUB_RUN_ID}"
+          # A re-run retains GITHUB_RUN_ID but gets a new attempt number. Keep
+          # that number in the generated branch so an earlier, divergent
+          # publication attempt cannot make this push non-fast-forward.
+          branch="xsec-marketplace/publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
           pull_url="$(gh pr create \
