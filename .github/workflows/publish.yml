@@ -151,20 +151,22 @@ jobs:
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
           MARKETPLACE_REVISION: ${{ steps.publish.outputs.marketplace_revision }}
-          MARKETPLACE_REPOSITORY: ${{ github.repository }}
-          MARKETPLACE_PUBLIC_KEY_B64: KLOHLCxQiEgPiGLwX2RJh/DlkGT/4dLr0z8y9WQrIPI=
         run: |
           if [ -z "$XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN" ] || [ -z "$MARKETPLACE_REVISION" ]; then
             echo "The protected Desktop smoke-dispatch token and marketplace revision are required." >&2
             exit 1
           fi
-          expected_default_plugin_ids="$(python -c 'import json; from scripts.marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS; print(json.dumps(DEFAULT_OFFICIAL_PLUGIN_IDS, separators=(",", ":")))')"
+          # The receiver checks these values against its compiled official
+          # GitHub origin. `GITHUB_SHA` is the protected main revision whose
+          # source was signed; `MARKETPLACE_REVISION` is the immutable merge
+          # commit containing those sidecars. The former must be an ancestor
+          # of the latter, so Desktop can reject redirected dispatch requests.
           payload="$(jq -cn \
-            --arg marketplace_url "https://raw.githubusercontent.com/$MARKETPLACE_REPOSITORY/$MARKETPLACE_REVISION/.agents/plugins/marketplace.json" \
-            --arg marketplace_public_key_b64 "$MARKETPLACE_PUBLIC_KEY_B64" \
-            --arg source_revision "$MARKETPLACE_REVISION" \
-            --argjson expected_default_plugin_ids "$expected_default_plugin_ids" \
-            '{event_type:"xsec_marketplace_smoke",client_payload:{contract_version:1,marketplace_url:$marketplace_url,marketplace_public_key_b64:$marketplace_public_key_b64,source_revision:$source_revision,expected_default_plugin_ids:$expected_default_plugin_ids}}')"
+            --arg source_repository "$GITHUB_REPOSITORY" \
+            --arg source_ref "refs/heads/main" \
+            --arg source_sha "$GITHUB_SHA" \
+            --arg marketplace_revision "$MARKETPLACE_REVISION" \
+            '{event_type:"xsec_official_marketplace_published",client_payload:{source_repository:$source_repository,source_ref:$source_ref,source_sha:$source_sha,marketplace_revision:$marketplace_revision}}')"
           curl --fail --silent --show-error --retry 3 --retry-all-errors \
             --request POST \
             --header "Accept: application/vnd.github+json" \
