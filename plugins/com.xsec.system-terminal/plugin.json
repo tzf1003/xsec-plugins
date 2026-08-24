@@ -1,0 +1,45 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "com.xsec.system-terminal",
+  "version": "1.0.0",
+  "description": "XSEC workspace system terminal",
+  "author": { "name": "XSEC" },
+  "license": "MIT",
+  "extensions": {
+    "com.xsec.desktop": {
+      "schemaVersion": 1,
+      "displayName": "系统终端",
+      "publisher": "XSEC",
+      "icon": "terminal",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.0.0"
+      },
+      "entrypoints": {
+        "frontend": "./com.xsec.desktop/frontend/index.js"
+      },
+      "activationEvents": ["onWorkspaceTool:system-terminal"],
+      "contributes": {
+        "workspaceTools": {
+          "system-terminal": {
+            "title": "系统终端",
+            "icon": "terminal",
+            "scope": "session",
+            "launchable": true,
+            "policy": "multi",
+            "surface": "terminal",
+            "retain": "while-visible",
+            "preferredSideWidth": 520,
+            "preferredBottomHeight": 300,
+            "defaultDock": "bottom",
+            "surfaces": ["interactive-dock"]
+          }
+        }
+      },
+      "permissions": {
+        "workspace.session.read": {},
+        "terminal.shell:session.cwd": {}
+      }
+    }
+  }
+}

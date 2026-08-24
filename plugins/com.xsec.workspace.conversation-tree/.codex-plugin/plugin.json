@@ -1,0 +1,25 @@
+{
+  "name": "com.xsec.workspace.conversation-tree",
+  "version": "1.0.0",
+  "description": "XSEC conversation-tree workspace tool",
+  "author": {
+    "name": "XSEC"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tzf1003/xsec-plugins",
+  "interface": {
+    "displayName": "对话树",
+    "shortDescription": "XSEC conversation-tree workspace tool",
+    "longDescription": "XSEC 官方插件：对话树。可在 XSEC 插件市场安装、禁用和更新。",
+    "developerName": "XSEC",
+    "category": "Security",
+    "capabilities": [
+      "XSEC Desktop"
+    ],
+    "websiteURL": "https://github.com/tzf1003/xsec-plugins",
+    "defaultPrompt": [
+      "打开 对话树"
+    ],
+    "brandColor": "#4F7CFF"
+  }
+}

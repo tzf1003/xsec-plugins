@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.attack-path",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "channel": "stable",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.0.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.attack-path-1.0.0-any-any.xsec-plugin",
+          "sha256": "1121e5642b57a325307fd3f04a28d1ea3676d0c1d2aee164e1263bf8ab9fa5a3"
+        }
+      ]
+    }
+  ]
+}

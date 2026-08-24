@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.traffic",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "channel": "stable",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.0.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.workspace.traffic-1.0.0-any-any.xsec-plugin",
+          "sha256": "3acd082a9569121d7ef164201c299adf5c4f254786330bd5d20bfa254b3d26c2"
+        }
+      ]
+    }
+  ]
+}

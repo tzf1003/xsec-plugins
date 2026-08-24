@@ -1,0 +1,25 @@
+{
+  "name": "com.xsec.attack-path",
+  "version": "1.0.0",
+  "description": "XSEC attack-path workspace and Agent tools",
+  "author": {
+    "name": "XSEC"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tzf1003/xsec-plugins",
+  "interface": {
+    "displayName": "攻击路径",
+    "shortDescription": "XSEC attack-path workspace and Agent tools",
+    "longDescription": "XSEC 官方插件：攻击路径。可在 XSEC 插件市场安装、禁用和更新。",
+    "developerName": "XSEC",
+    "category": "Security",
+    "capabilities": [
+      "XSEC Desktop"
+    ],
+    "websiteURL": "https://github.com/tzf1003/xsec-plugins",
+    "defaultPrompt": [
+      "打开 攻击路径"
+    ],
+    "brandColor": "#4F7CFF"
+  }
+}

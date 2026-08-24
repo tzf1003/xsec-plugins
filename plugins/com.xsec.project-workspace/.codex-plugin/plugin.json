@@ -1,0 +1,25 @@
+{
+  "name": "com.xsec.project-workspace",
+  "version": "1.0.0",
+  "description": "XSEC project assets, findings, reports and execution workspace",
+  "author": {
+    "name": "XSEC"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tzf1003/xsec-plugins",
+  "interface": {
+    "displayName": "项目工作区",
+    "shortDescription": "XSEC project assets, findings, reports and execution workspace",
+    "longDescription": "XSEC 官方插件：项目工作区。可在 XSEC 插件市场安装、禁用和更新。",
+    "developerName": "XSEC",
+    "category": "Security",
+    "capabilities": [
+      "XSEC Desktop"
+    ],
+    "websiteURL": "https://github.com/tzf1003/xsec-plugins",
+    "defaultPrompt": [
+      "打开 项目工作区"
+    ],
+    "brandColor": "#4F7CFF"
+  }
+}
