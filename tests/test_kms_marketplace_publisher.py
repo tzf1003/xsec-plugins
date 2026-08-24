@@ -301,7 +301,10 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
 
     def test_publish_workflow_requires_protected_main_oidc_and_desktop_smoke_dispatch(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        validation_workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        self.assertIn("actions: write", workflow)
         self.assertIn("id-token: write", workflow)
+        self.assertIn("pull-requests: write", workflow)
         self.assertIn("environment: production", workflow)
         self.assertIn("github.ref_protected", workflow)
         self.assertIn("workflow_dispatch:", workflow)
@@ -317,6 +320,13 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("expected_default_plugin_ids", workflow)
         self.assertIn("https://raw.githubusercontent.com/$MARKETPLACE_REPOSITORY/$MARKETPLACE_REVISION/.agents/plugins/marketplace.json", workflow)
         self.assertIn("git add -A .agents/plugins plugins", workflow)
+        self.assertIn('gh workflow run validate.yml --ref "$branch"', workflow)
+        self.assertIn("--event workflow_dispatch", workflow)
+        self.assertIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
+        self.assertIn('pull_number="$(gh pr view "$pull_url" --json number --jq .number)"', workflow)
+        self.assertIn('-f commit_title="chore: publish KMS-signed marketplace artifacts"', workflow)
+        self.assertIn('branch="xsec-marketplace/publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
+        self.assertIn("workflow_dispatch:", validation_workflow)
 
 
 if __name__ == "__main__":
