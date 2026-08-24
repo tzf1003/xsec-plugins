@@ -323,6 +323,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('gh workflow run validate.yml --ref "$branch"', workflow)
         self.assertIn("--event workflow_dispatch", workflow)
         self.assertIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
+        self.assertIn('pull_number="$(gh pr view "$pull_url" --json number --jq .number)"', workflow)
+        self.assertIn('-f commit_title="chore: publish KMS-signed marketplace artifacts"', workflow)
         self.assertIn("workflow_dispatch:", validation_workflow)
 
 
