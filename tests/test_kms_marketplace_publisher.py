@@ -60,7 +60,13 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             "source_revision": source_revision,
             "issued_at": int(time.time()) if issued_at is None else issued_at,
         }
-        protected = base64url(json.dumps({"alg": "EdDSA", "kid": "test-key", "b64": False, "crit": ["b64"]}, separators=(",", ":")).encode("utf-8"))
+        protected = base64url(json.dumps({
+            "alg": "EdDSA",
+            "kid": "test-key",
+            "b64": False,
+            "crit": ["b64"],
+            "iss": publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL,
+        }, separators=(",", ":")).encode("utf-8"))
         return json.dumps(
             {
                 "ok": True,
@@ -137,6 +143,54 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 publisher.MarketplaceKmsPublisherError,
                 r'unsupported parameters: "untrusted\\nname"',
+            ):
+                publisher.sidecar_from_broker_response(
+                    json.dumps(response, separators=(",", ":")).encode("utf-8"),
+                    document,
+                    REVISION,
+                )
+
+    def test_kms_protected_issuer_must_match_the_pinned_marketplace_issuer(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            response = json.loads(self.broker_response(document))
+            header = {
+                "alg": "EdDSA",
+                "kid": "test-key",
+                "b64": False,
+                "crit": ["b64"],
+                "iss": "https://kms.vercel.com/not-the-pinned-issuer",
+            }
+            response["data"]["signed_document"]["jws"]["protected"] = base64url(
+                json.dumps(header, separators=(",", ":")).encode("utf-8")
+            )
+            with self.assertRaisesRegex(
+                publisher.MarketplaceKmsPublisherError,
+                "protected header issuer does not match the pinned marketplace issuer",
+            ):
+                publisher.sidecar_from_broker_response(
+                    json.dumps(response, separators=(",", ":")).encode("utf-8"),
+                    document,
+                    REVISION,
+                )
+
+    def test_explicit_null_kms_protected_issuer_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            response = json.loads(self.broker_response(document))
+            header = {
+                "alg": "EdDSA",
+                "kid": "test-key",
+                "b64": False,
+                "crit": ["b64"],
+                "iss": None,
+            }
+            response["data"]["signed_document"]["jws"]["protected"] = base64url(
+                json.dumps(header, separators=(",", ":")).encode("utf-8")
+            )
+            with self.assertRaisesRegex(
+                publisher.MarketplaceKmsPublisherError,
+                "protected header issuer does not match the pinned marketplace issuer",
             ):
                 publisher.sidecar_from_broker_response(
                     json.dumps(response, separators=(",", ":")).encode("utf-8"),
