@@ -10,33 +10,38 @@ business plugins. It follows the portable Agent Plugins marketplace contract:
 
 ## Trust and releases
 
-Desktop pins an Ed25519 public key for this marketplace. `marketplace.json`
-and every release index are signed by the CI-only
-`XSEC_MARKETPLACE_SIGNING_KEY_B64` GitHub Actions secret. The private key is
-not stored in this repository or in a Desktop installation.
+Desktop pins the public Vercel KMS issuer for this marketplace. Every official
+`marketplace.json` and release index has an adjacent `.sig.jws.json` sidecar
+whose detached JWS binds the exact document SHA-256, canonical document path,
+and GitHub workflow commit. The marketplace repository and GitHub Actions do
+not contain a private marketplace signing key.
 
-The `Publish signed marketplace` workflow first proves that its signing seed
-derives to Desktop's pinned public key. It then rebuilds deterministic archives,
-updates SHA-256 digests, signs the index metadata, validates every signature and
-package, and only then commits changed release output to `main`. Desktop
-automatically installs the default official plugins on its first successful
-online launch, then stages official updates; custom sources remain
-confirmation-driven.
+The `Publish signed marketplace` workflow rebuilds deterministic archives,
+requests sidecars from the production Cloud KMS broker using a short-lived
+GitHub OIDC token, validates every broker response before it is written, and
+commits changed output to `main`. The broker accepts only the protected
+`xsec-plugins` production workflow; it calculates the document digest itself.
+After publication the workflow dispatches the immutable marketplace revision
+to the Desktop smoke gate. Desktop automatically installs the default official
+plugins on its first successful online launch, then stages official updates;
+custom sources remain confirmation-driven and continue to use their own
+user-pinned raw-signature protocol.
 
 ## Local validation
 
 ```powershell
 $temporary = Join-Path $env:TEMP xsec-marketplace-build
 New-Item -ItemType Directory -Path $temporary
-python scripts\build_market.py --allow-unsigned --clean --output-root $temporary
+python scripts\build_market.py --clean --output-root $temporary
 python scripts\validate_market.py source --source-root . --built-root $temporary
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Unsigned output is only for local validation. It is rejected by the pinned
-official Desktop source. `python scripts\validate_market.py published` is a
-fail-closed verification for a signed release tree; it requires the public key
-pinned by Desktop and is intentionally run only after CI signing.
+Local builds intentionally contain no official sidecars. Official sidecars can
+only be created in the protected production workflow, where the Cloud broker
+accepts GitHub Actions OIDC and signs through the non-exportable Vercel KMS
+key. A missing or invalid sidecar is rejected by the pinned official Desktop
+source.
 
 See [the remote Desktop smoke-test contract](docs/desktop-remote-marketplace-smoke-contract.md)
 for the cross-platform release hand-off.
