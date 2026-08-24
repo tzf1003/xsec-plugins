@@ -120,6 +120,10 @@ def copy_source_tree(output_root: Path) -> None:
             continue
         if is_link(source_dir):
             raise ValueError(f"plugin directory must not be a symbolic link: {source_dir}")
+        # `copytree` follows directory links by default. Validate every nested
+        # member before copying so a source-tree link cannot make the temporary
+        # validation tree include files outside the plugin package.
+        iter_plugin_files(source_dir)
         shutil.copytree(
             source_dir,
             output_root / "plugins" / source_dir.name,

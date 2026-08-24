@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import nullcontext
 import os
 import subprocess
 import sys
@@ -8,6 +9,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +17,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from marketplace_contract import OFFICIAL_MARKETPLACE_PUBLIC_KEY_B64  # noqa: E402
+import build_market  # noqa: E402
 from validate_market import (  # noqa: E402
     MarketplaceValidationError,
     validate_archive,
@@ -131,6 +134,39 @@ class MarketplaceValidationTests(unittest.TestCase):
             "    if: ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected }}",
             signing_job,
         )
+
+    def test_disposable_build_rejects_nested_plugin_link_before_copytree(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-copy-link-") as directory:
+            source_root = Path(directory) / "source"
+            plugin_root = source_root / "plugins"
+            plugin_dir = plugin_root / "com.xsec.test"
+            nested_link = plugin_dir / "linked"
+            outside = source_root / "outside"
+            destination = Path(directory) / "destination"
+            marketplace = source_root / ".agents" / "plugins" / "marketplace.json"
+            plugin_dir.mkdir(parents=True)
+            outside.mkdir()
+            try:
+                nested_link.symlink_to(outside, target_is_directory=True)
+                link_check = nullcontext()
+            except OSError:
+                # Some Windows developer machines cannot create symlinks. The
+                # CI test uses a real link; retain a local regression check of
+                # the same detection branch when this capability is absent.
+                nested_link.mkdir()
+                link_check = patch.object(build_market, "is_link", side_effect=lambda path: path == nested_link)
+            marketplace.parent.mkdir(parents=True)
+            marketplace.write_text('{"plugins": []}\n', encoding="utf-8")
+
+            with (
+                patch.object(build_market, "PLUGIN_ROOT", plugin_root),
+                patch.object(build_market, "MARKETPLACE", marketplace),
+                patch.object(build_market.shutil, "copytree") as copytree,
+                link_check,
+            ):
+                with self.assertRaisesRegex(ValueError, "plugin package must not contain symbolic links"):
+                    build_market.copy_source_tree(destination)
+                copytree.assert_not_called()
 
 
 if __name__ == "__main__":
