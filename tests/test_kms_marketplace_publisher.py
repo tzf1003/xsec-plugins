@@ -126,6 +126,24 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "source revision"):
                 publisher.sidecar_from_broker_response(response, document, REVISION)
 
+    def test_unknown_protected_header_parameters_are_safely_identifiable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            response = json.loads(self.broker_response(document))
+            header = {"alg": "EdDSA", "kid": "test-key", "b64": False, "crit": ["b64"], "untrusted\nname": True}
+            response["data"]["signed_document"]["jws"]["protected"] = base64url(
+                json.dumps(header, separators=(",", ":")).encode("utf-8")
+            )
+            with self.assertRaisesRegex(
+                publisher.MarketplaceKmsPublisherError,
+                r'unsupported parameters: "untrusted\\nname"',
+            ):
+                publisher.sidecar_from_broker_response(
+                    json.dumps(response, separators=(",", ":")).encode("utf-8"),
+                    document,
+                    REVISION,
+                )
+
     def test_cloud_request_uses_fixed_broker_and_canonical_standard_base64(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
             document = self.make_marketplace(Path(directory))[0]
