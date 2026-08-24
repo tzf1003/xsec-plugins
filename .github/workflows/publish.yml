@@ -90,7 +90,7 @@ jobs:
               --event workflow_dispatch \
               --limit 20 \
               --json databaseId,headSha,status,conclusion \
-              --jq '.[] | select(.headSha == "'"$generated_revision"'") | @base64' \
+              | jq -rc --arg revision "$generated_revision" '.[] | select(.headSha == $revision) | @base64' \
               | head -n 1)"
             if [ -n "$source_gate" ]; then
               source_gate_json="$(printf '%s' "$source_gate" | base64 --decode)"
