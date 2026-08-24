@@ -72,20 +72,20 @@ jobs:
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
           MARKETPLACE_REVISION: ${{ steps.publish.outputs.marketplace_revision }}
-          SOURCE_REPOSITORY: ${{ github.repository }}
-          SOURCE_REF: ${{ github.ref }}
-          SOURCE_SHA: ${{ github.sha }}
+          MARKETPLACE_REPOSITORY: ${{ github.repository }}
+          MARKETPLACE_PUBLIC_KEY_B64: KLOHLCxQiEgPiGLwX2RJh/DlkGT/4dLr0z8y9WQrIPI=
         run: |
           if [ -z "$XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN" ] || [ -z "$MARKETPLACE_REVISION" ]; then
             echo "The protected Desktop smoke-dispatch token and marketplace revision are required." >&2
             exit 1
           fi
+          expected_default_plugin_ids="$(python -c 'import json; from scripts.marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS; print(json.dumps(DEFAULT_OFFICIAL_PLUGIN_IDS, separators=(",", ":")))')"
           payload="$(jq -cn \
-            --arg marketplace_revision "$MARKETPLACE_REVISION" \
-            --arg source_repository "$SOURCE_REPOSITORY" \
-            --arg source_ref "$SOURCE_REF" \
-            --arg source_sha "$SOURCE_SHA" \
-            '{event_type:"xsec_official_marketplace_published",client_payload:{marketplace_revision:$marketplace_revision,source_repository:$source_repository,source_ref:$source_ref,source_sha:$source_sha}}')"
+            --arg marketplace_url "https://raw.githubusercontent.com/$MARKETPLACE_REPOSITORY/$MARKETPLACE_REVISION/.agents/plugins/marketplace.json" \
+            --arg marketplace_public_key_b64 "$MARKETPLACE_PUBLIC_KEY_B64" \
+            --arg source_revision "$MARKETPLACE_REVISION" \
+            --argjson expected_default_plugin_ids "$expected_default_plugin_ids" \
+            '{event_type:"xsec_marketplace_smoke",client_payload:{contract_version:1,marketplace_url:$marketplace_url,marketplace_public_key_b64:$marketplace_public_key_b64,source_revision:$source_revision,expected_default_plugin_ids:$expected_default_plugin_ids}}')"
           curl --fail --silent --show-error --retry 3 --retry-all-errors \
             --request POST \
             --header "Accept: application/vnd.github+json" \
