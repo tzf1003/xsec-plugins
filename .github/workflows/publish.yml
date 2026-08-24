@@ -33,13 +33,12 @@ jobs:
             echo "Marketplace publication requires a protected main branch or ruleset." >&2
             exit 1
           fi
-  require_publish_token:
+  sign-and-publish:
     needs: enforce-publish-ref
     if: >-
       ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected && (github.event_name == 'workflow_dispatch' || github.event.head_commit.message != 'chore: publish KMS-signed marketplace artifacts') }}
     runs-on: ubuntu-latest
     environment: production
-    permissions: {}
     steps:
       - name: Require the protected marketplace publication token before checkout or KMS
         env:
@@ -49,13 +48,6 @@ jobs:
             echo "The protected marketplace publication token is required before checkout or KMS signing." >&2
             exit 1
           fi
-  sign-and-publish:
-    needs: [enforce-publish-ref, require_publish_token]
-    if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && needs.require_publish_token.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected && (github.event_name == 'workflow_dispatch' || github.event.head_commit.message != 'chore: publish KMS-signed marketplace artifacts') }}
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
