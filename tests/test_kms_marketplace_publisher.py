@@ -60,11 +60,10 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             "source_revision": source_revision,
             "issued_at": int(time.time()) if issued_at is None else issued_at,
         }
+        envelope_bytes = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
         protected = base64url(json.dumps({
             "alg": "EdDSA",
             "kid": "test-key",
-            "b64": False,
-            "crit": ["b64"],
             "iss": publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL,
         }, separators=(",", ":")).encode("utf-8"))
         return json.dumps(
@@ -75,8 +74,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                         "schema_version": 1,
                         "issuer_id": issuer_id,
                         "issuer_url": issuer_url,
-                        "envelope_b64": base64url(json.dumps(envelope, separators=(",", ":")).encode("utf-8")),
-                        "jws": {"protected": protected, "payload": "", "signature": base64url(b"s" * 64)},
+                        "envelope_b64": base64url(envelope_bytes),
+                        "jws": {"protected": protected, "payload": base64url(envelope_bytes), "signature": base64url(b"s" * 64)},
                     }
                 },
             },
@@ -191,6 +190,49 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 publisher.MarketplaceKmsPublisherError,
                 "protected header issuer does not match the pinned marketplace issuer",
+            ):
+                publisher.sidecar_from_broker_response(
+                    json.dumps(response, separators=(",", ":")).encode("utf-8"),
+                    document,
+                    REVISION,
+                )
+
+    def test_detached_rfc_7797_kms_sidecar_remains_compatible(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            response = json.loads(self.broker_response(document))
+            header = {
+                "alg": "EdDSA",
+                "kid": "test-key",
+                "b64": False,
+                "crit": ["b64"],
+                "iss": publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL,
+            }
+            jws = response["data"]["signed_document"]["jws"]
+            jws["protected"] = base64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+            jws["payload"] = ""
+            publisher.sidecar_from_broker_response(
+                json.dumps(response, separators=(",", ":")).encode("utf-8"),
+                document,
+                REVISION,
+            )
+
+    def test_explicit_null_kms_payload_encoding_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            response = json.loads(self.broker_response(document))
+            header = {
+                "alg": "EdDSA",
+                "kid": "test-key",
+                "b64": None,
+                "iss": publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL,
+            }
+            response["data"]["signed_document"]["jws"]["protected"] = base64url(
+                json.dumps(header, separators=(",", ":")).encode("utf-8")
+            )
+            with self.assertRaisesRegex(
+                publisher.MarketplaceKmsPublisherError,
+                "payload encoding must be standard base64url or RFC 7797 detached",
             ):
                 publisher.sidecar_from_broker_response(
                     json.dumps(response, separators=(",", ":")).encode("utf-8"),
