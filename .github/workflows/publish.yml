@@ -50,6 +50,14 @@ jobs:
         run: python scripts/build_market.py --clean
       - name: Validate source manifests, deterministic artifacts and package safety
         run: python scripts/validate_market.py source --source-root . --built-root .
+      - name: Require the protected marketplace publication token
+        env:
+          XSEC_MARKETPLACE_PUBLISH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+        run: |
+          if [ -z "$XSEC_MARKETPLACE_PUBLISH_TOKEN" ]; then
+            echo "The protected marketplace publication token is required before requesting KMS signatures." >&2
+            exit 1
+          fi
       - name: Request KMS sidecars through the production Cloud broker
         run: python scripts/kms_marketplace_publisher.py --root .
       - name: Gate the KMS sidecar protocol before publishing
@@ -57,7 +65,12 @@ jobs:
       - name: Publish generated metadata through a protected pull request
         id: publish
         env:
-          GH_TOKEN: ${{ github.token }}
+          # The repository deliberately does not allow the default Actions
+          # token to create pull requests. This narrowly scoped fine-grained
+          # token is restricted to xsec-plugins and is the only credential
+          # permitted to push the generated branch, create/merge its PR, and
+          # dispatch the immutable source gate.
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
         run: |
           # Stage the index sidecar as well as the index itself. A KMS sidecar
           # binds exact bytes and must never be left untracked beside a newly
