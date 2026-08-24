@@ -239,7 +239,7 @@ def validate_sidecar(
     if typ is not None and typ != "application/xsec-signed-document+json":
         fail("KMS JWS protected header typ is unsupported")
     issuer = protected_header.get("iss")
-    if issuer is not None and issuer != OFFICIAL_MARKETPLACE_KMS_ISSUER_URL:
+    if "iss" in protected_header and issuer != OFFICIAL_MARKETPLACE_KMS_ISSUER_URL:
         fail("KMS JWS protected header issuer does not match the pinned marketplace issuer")
     if jws.get("payload") != "":
         fail("KMS JWS payload must be detached and empty")
