@@ -115,14 +115,63 @@ def desktop_entrypoints(manifest: dict[str, object], label: str) -> list[tuple[s
     return result
 
 
+REGEX_PREFIX_KEYWORDS = frozenset({
+    "await", "case", "delete", "in", "instanceof", "new", "of", "return",
+    "throw", "typeof", "void", "yield",
+})
+REGEX_PREFIX_PUNCTUATION = frozenset({
+    "(", "[", "{", ",", ":", ";", "=", "!", "?", "&", "|", "+", "-", "*", "%", "~", "^", "<", ">",
+})
+
+
+def can_start_javascript_regex(tokens: list[tuple[str, str]]) -> bool:
+    """Conservatively identify contexts where `/` starts a regex literal."""
+
+    if not tokens:
+        return True
+    kind, value = tokens[-1]
+    return (
+        (kind == "identifier" and value in REGEX_PREFIX_KEYWORDS)
+        or (kind == "punctuation" and value in REGEX_PREFIX_PUNCTUATION)
+    )
+
+
+def consume_javascript_regex(source: str, index: int) -> int | None:
+    """Return the first position following a regex literal, without executing it."""
+
+    cursor = index + 1
+    escaped = False
+    in_character_class = False
+    while cursor < len(source):
+        character = source[cursor]
+        if character in {"\n", "\r"}:
+            return None
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == "[":
+            in_character_class = True
+        elif character == "]":
+            in_character_class = False
+        elif character == "/" and not in_character_class:
+            cursor += 1
+            while cursor < len(source) and (source[cursor].isalpha() or source[cursor] in {"$", "_"}):
+                cursor += 1
+            return cursor
+        cursor += 1
+    return None
+
+
 def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]:
     """Tokenize the small JavaScript subset used by static frontend checks.
 
     Marketplace validation must never import or execute a plugin archive.  The
-    tokenizer deliberately recognizes comments and string/template literals so
-    that an `activate` or RPC snippet merely written in a comment or string
-    cannot satisfy the release contract.  It is not a JavaScript evaluator;
-    unsupported constructs may fail closed rather than weakening the gate.
+    tokenizer deliberately recognizes comments, string/template literals and
+    regular-expression literals so an `activate` or RPC snippet merely written
+    as data cannot satisfy the release contract.  It is not a JavaScript
+    evaluator; unsupported constructs may fail closed rather than weakening
+    the gate.
     """
 
     tokens: list[tuple[str, str]] = []
@@ -143,6 +192,12 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
                 fail(f"{label} contains an unterminated JavaScript block comment")
             index = end + 2
             continue
+        if character == "/" and can_start_javascript_regex(tokens):
+            end = consume_javascript_regex(source, index)
+            if end is not None:
+                tokens.append(("regex", source[index:end]))
+                index = end
+                continue
         if character in {"'", '"', "`"}:
             quote = character
             start = index + 1
