@@ -1027,6 +1027,9 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
         fail(f"{label} lacks XSEC Desktop extension metadata")
     if not isinstance(desktop, dict):
         fail(f"{label} has invalid XSEC Desktop extension metadata")
+    permissions = desktop.get("permissions")
+    if not isinstance(permissions, dict) or APPROVALS_FRONTEND_CAPABILITY not in permissions:
+        fail(f"{label} must declare the approvals session read permission")
     frontend_api = desktop.get("frontendApi")
     if not isinstance(frontend_api, dict) or frontend_api.get("version") != 2 or frontend_api.get("module") != "single-esm":
         fail(f"{label} must declare the approvals frontend API v2 single-esm contract")

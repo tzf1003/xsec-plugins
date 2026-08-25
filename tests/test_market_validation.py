@@ -100,6 +100,12 @@ class MarketplaceValidationTests(unittest.TestCase):
                 "frontend API v2",
             ),
             (
+                "missing-session-read-permission",
+                lambda value: value["extensions"]["com.xsec.desktop"]["permissions"].pop("workspace.session.read"),
+                source,
+                "session read permission",
+            ),
+            (
                 "placeholder-module",
                 lambda value: None,
                 "export function renderPlaceholder() {}\n",
