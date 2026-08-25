@@ -3,18 +3,18 @@
   "pluginId": "com.xsec.workspace.sub-agent",
   "releases": [
     {
-      "version": "1.0.0",
+      "version": "1.2.0",
       "channel": "stable",
       "engines": {
         "xsec": ">=0.1.0",
-        "pluginApi": "^1.0.0"
+        "pluginApi": "^1.2.0"
       },
       "artifacts": [
         {
           "os": "any",
           "arch": "any",
-          "url": "artifacts/com.xsec.workspace.sub-agent-1.0.0-any-any.xsec-plugin",
-          "sha256": "3b483bc2aeb6719be4fcc6572db864e2803825420e5b944cb002db6bc607f4d0"
+          "url": "artifacts/com.xsec.workspace.sub-agent-1.2.0-any-any.xsec-plugin",
+          "sha256": "42562cca8c79e73954800ce42519630c92369168fcb9ef533a74d49912537357"
         }
       ]
     }

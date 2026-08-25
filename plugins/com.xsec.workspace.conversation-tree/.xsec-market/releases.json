@@ -3,18 +3,18 @@
   "pluginId": "com.xsec.workspace.conversation-tree",
   "releases": [
     {
-      "version": "1.0.0",
+      "version": "1.2.0",
       "channel": "stable",
       "engines": {
         "xsec": ">=0.1.0",
-        "pluginApi": "^1.0.0"
+        "pluginApi": "^1.2.0"
       },
       "artifacts": [
         {
           "os": "any",
           "arch": "any",
-          "url": "artifacts/com.xsec.workspace.conversation-tree-1.0.0-any-any.xsec-plugin",
-          "sha256": "ce9e672fce179c6917bab8b84efc20a33d721caf11207dea7775e9275a8d626c"
+          "url": "artifacts/com.xsec.workspace.conversation-tree-1.2.0-any-any.xsec-plugin",
+          "sha256": "8fe58a26672ec85cecef86aa1013a936cee422422931d0e967cc170d5e555fdd"
         }
       ]
     }

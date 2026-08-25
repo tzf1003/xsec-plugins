@@ -3,18 +3,18 @@
   "pluginId": "com.xsec.system-terminal",
   "releases": [
     {
-      "version": "1.0.0",
+      "version": "1.2.0",
       "channel": "stable",
       "engines": {
         "xsec": ">=0.1.0",
-        "pluginApi": "^1.0.0"
+        "pluginApi": "^1.2.0"
       },
       "artifacts": [
         {
           "os": "any",
           "arch": "any",
-          "url": "artifacts/com.xsec.system-terminal-1.0.0-any-any.xsec-plugin",
-          "sha256": "d3980bb14ca85c51e793db6f16a2c906a37e845f212edd532657cdb6cee3125f"
+          "url": "artifacts/com.xsec.system-terminal-1.2.0-any-any.xsec-plugin",
+          "sha256": "2281cb0f41442f05e0df300203c8665e283bacc80ad097ea551e0a17161f516d"
         }
       ]
     }
