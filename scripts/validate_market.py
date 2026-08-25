@@ -244,6 +244,20 @@ def matching_parenthesis(tokens: list[tuple[str, str]], opening_index: int) -> i
     return None
 
 
+def matching_opening_parenthesis(tokens: list[tuple[str, str]], closing_index: int) -> int | None:
+    """Find the opening parenthesis paired with a tokenized closing one."""
+
+    depth = 0
+    for index in range(closing_index, -1, -1):
+        if tokens[index] == ("punctuation", ")"):
+            depth += 1
+        elif tokens[index] == ("punctuation", "("):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
 def activate_body_tokens(tokens: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
     """Return the exact exported ``activate(host)`` function body tokens."""
 
@@ -518,6 +532,32 @@ def block_binds_host(tokens: list[tuple[str, str]], block: tuple[str, int, int, 
     return declarations_bind_host(tokens, opening_brace + 1, closing_brace)
 
 
+def lifecycle_block_binds_host(tokens: list[tuple[str, str]], block: tuple[int, int]) -> bool:
+    """Return whether a returned lifecycle method shadows activation's host."""
+
+    opening_brace, closing_brace = block
+    parameter_closing = opening_brace - 1
+    parameter_opening = matching_opening_parenthesis(tokens, parameter_closing)
+    if parameter_opening is not None and ("identifier", "host") in tokens[parameter_opening + 1:parameter_closing]:
+        return True
+    return declarations_bind_host(tokens, opening_brace + 1, closing_brace)
+
+
+def is_after_activation_return(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Return whether a top-level return makes an activation-level token dead."""
+
+    brace_depth = 0
+    for cursor in range(index):
+        token = tokens[cursor]
+        if token == ("punctuation", "{"):
+            brace_depth += 1
+        elif token == ("punctuation", "}") and brace_depth:
+            brace_depth -= 1
+        elif token == ("identifier", "return") and brace_depth == 0:
+            return True
+    return False
+
+
 def reachable_named_functions(
     tokens: list[tuple[str, str]],
     blocks: list[tuple[str, int, int, int]],
@@ -598,8 +638,19 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
             or block_binds_host(tokens, named_blocks[owner])
         ):
             continue
-        if owner is None and declarations_bind_host(tokens, 0, len(tokens)):
-            continue
+        if owner is None:
+            lifecycle_owner = next(
+                (block for block in lifecycle_blocks if block[0] < index < block[1]),
+                None,
+            )
+            if lifecycle_owner is not None:
+                if lifecycle_block_binds_host(tokens, lifecycle_owner):
+                    continue
+            elif (
+                declarations_bind_host(tokens, 0, len(tokens))
+                or is_after_activation_return(tokens, index)
+            ):
+                continue
         kind, method = sequence[4]
         if kind == "string" and method in APPROVALS_FRONTEND_METHODS:
             calls.add(method)
