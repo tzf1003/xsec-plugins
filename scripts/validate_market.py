@@ -804,6 +804,30 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
     return calls
 
 
+def has_only_approvals_host_usage(tokens: list[tuple[str, str]]) -> bool:
+    """Keep the official approvals frontend's broker surface deliberately tiny."""
+
+    for index, token in enumerate(tokens):
+        if token != ("identifier", "host"):
+            continue
+        suffix = tokens[index + 1:index + 5]
+        if suffix[:2] == [
+            ("punctuation", "."),
+            ("identifier", "context"),
+        ]:
+            continue
+        if len(suffix) >= 4 and suffix[:3] == [
+            ("punctuation", "."),
+            ("identifier", "request"),
+            ("punctuation", "("),
+        ]:
+            method_kind, method = suffix[3]
+            if method_kind == "string" and method in APPROVALS_FRONTEND_METHODS:
+                continue
+        return False
+    return True
+
+
 def validate_javascript_esm_syntax(source: str, label: str) -> None:
     """Parse a frontend as ESM without importing or executing archive code."""
 
@@ -866,6 +890,8 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     body = activate_body_tokens(tokens)
     if body is None:
         fail(f"{label} must export an executable activate(host) function")
+    if not has_only_approvals_host_usage(body):
+        fail(f"{label} must use only the approvals host broker contract")
     if declared_approvals_rpc_calls(body) != APPROVALS_FRONTEND_METHODS:
         fail(f"{label} must implement the declared approvals RPC requests")
 
