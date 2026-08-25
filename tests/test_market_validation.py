@@ -241,7 +241,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn("needs: enforce-publish-ref", signing_job)
         self.assertIn("needs.enforce-publish-ref.result == 'success'", signing_job)
         self.assertNotIn("needs.require_publish_token.result == 'success'", signing_job)
-        self.assertIn("github.event.head_commit.message != 'chore: publish KMS-signed marketplace artifacts'", signing_job)
+        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: publish KMS-signed marketplace artifacts')", signing_job)
         steps = workflow.split("  sign-and-publish:\n", 1)[1].split("    steps:\n", 1)[1]
         self.assertLess(
             steps.index("Require the protected marketplace publication token before checkout or KMS"),
