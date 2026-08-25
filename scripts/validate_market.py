@@ -205,7 +205,12 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
                 elif current == "\\":
                     escaped = True
                 elif current == quote:
-                    tokens.append(("string", source[start:index]))
+                    literal = source[start:index]
+                    if quote == "`" and "${" in literal and any(
+                        marker in literal for marker in {"host", "\\u", "eval", "Function"}
+                    ):
+                        fail(f"{label} contains an unsupported executable template interpolation")
+                    tokens.append(("string", literal))
                     index += 1
                     break
                 index += 1
@@ -951,6 +956,8 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
         descriptor = methods.get(method)
         if not isinstance(descriptor, dict) or descriptor.get("capability") != APPROVALS_FRONTEND_CAPABILITY or descriptor.get("binding") != APPROVALS_FRONTEND_BINDING:
             fail(f"{label} must bind approvals RPC methods to the session read capability")
+    if re.search(r"\\u(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\})", source):
+        fail(f"{label} must not contain Unicode escape sequences")
     validate_javascript_esm_syntax(source, label)
     tokens = javascript_contract_tokens(source, label)
     body = activate_body_tokens(tokens)

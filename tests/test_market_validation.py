@@ -272,6 +272,18 @@ export function renderPlaceholder() {}
                 "host broker contract",
             ),
             (
+                "rpc-after-template-host-write",
+                lambda value: None,
+                "export function activate(host) { `${host = { request() {} }}`; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "unsupported executable template interpolation",
+            ),
+            (
+                "rpc-after-escaped-host-write",
+                lambda value: None,
+                "export function activate(host) { h\\u006fst = { request() {} }; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "must not contain Unicode escape sequences",
+            ),
+            (
                 "rpc-after-hoisted-helper-host-write",
                 lambda value: None,
                 "export function activate(host) { poison(); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); function poison() { host = { request() {} }; } return {}; }\n",
