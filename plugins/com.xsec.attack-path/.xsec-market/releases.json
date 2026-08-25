@@ -3,18 +3,18 @@
   "pluginId": "com.xsec.attack-path",
   "releases": [
     {
-      "version": "1.0.0",
+      "version": "1.2.0",
       "channel": "stable",
       "engines": {
         "xsec": ">=0.1.0",
-        "pluginApi": "^1.0.0"
+        "pluginApi": "^1.2.0"
       },
       "artifacts": [
         {
           "os": "any",
           "arch": "any",
-          "url": "artifacts/com.xsec.attack-path-1.0.0-any-any.xsec-plugin",
-          "sha256": "ac3609eb1d7a7d86e2dbd73115ac4f350892fddcb21fa4fb8c80640e771098f9"
+          "url": "artifacts/com.xsec.attack-path-1.2.0-any-any.xsec-plugin",
+          "sha256": "f605e6c38e7c18d11d3d8e875f2f2503dc44d6ab95ee88765ac720f9e275d402"
         }
       ]
     }

@@ -3,18 +3,18 @@
   "pluginId": "com.xsec.project-workspace",
   "releases": [
     {
-      "version": "1.0.0",
+      "version": "1.2.0",
       "channel": "stable",
       "engines": {
         "xsec": ">=0.1.0",
-        "pluginApi": "^1.0.0"
+        "pluginApi": "^1.2.0"
       },
       "artifacts": [
         {
           "os": "any",
           "arch": "any",
-          "url": "artifacts/com.xsec.project-workspace-1.0.0-any-any.xsec-plugin",
-          "sha256": "f19142baf5dd2cfa25d80581d31db15c224cbb299f082568366bf5c2e21e2372"
+          "url": "artifacts/com.xsec.project-workspace-1.2.0-any-any.xsec-plugin",
+          "sha256": "80a6ea559ae5cd165b80fe808fa806dbc2d6310537e354a9fd8d7d5a0c6d332e"
         }
       ]
     }

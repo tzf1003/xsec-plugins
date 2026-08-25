@@ -3,18 +3,18 @@
   "pluginId": "com.xsec.asset-discovery",
   "releases": [
     {
-      "version": "1.0.0",
+      "version": "1.2.0",
       "channel": "stable",
       "engines": {
         "xsec": ">=0.1.0",
-        "pluginApi": "^1.0.0"
+        "pluginApi": "^1.2.0"
       },
       "artifacts": [
         {
           "os": "any",
           "arch": "any",
-          "url": "artifacts/com.xsec.asset-discovery-1.0.0-any-any.xsec-plugin",
-          "sha256": "a67bdf83e9aaa8d608ad08714d190ebf25b3c121848fbfb92544c953cd6bb169"
+          "url": "artifacts/com.xsec.asset-discovery-1.2.0-any-any.xsec-plugin",
+          "sha256": "4e2c5a7b4b13bc50040947644f5b2e790b9380fd8ac2e4c3689ab88007b237f4"
         }
       ]
     }
