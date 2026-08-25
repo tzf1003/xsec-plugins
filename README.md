@@ -18,6 +18,12 @@ protected `iss` header; publication and Desktop require it to match the
 pinned marketplace issuer. The marketplace repository and GitHub Actions do
 not contain a private marketplace signing key.
 
+Credential ownership, minimum permissions, rotation, and revocation (including
+the protected publisher and Desktop-dispatch credentials) are governed by the
+[XSEC key, certificate, and credential registry](https://github.com/tzf1003/xsec-cloud/blob/main/docs/security/signing-key-registry.md).
+That registry is the authoritative non-sensitive record; do not duplicate
+credential values or create a competing inventory here.
+
 The `Publish signed marketplace` workflow rebuilds deterministic archives,
 requests sidecars from the production Cloud KMS broker using a short-lived
 GitHub OIDC token, validates every broker response before it is written, and
