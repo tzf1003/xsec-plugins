@@ -10,8 +10,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
 import stat
+import subprocess
 import tempfile
 import unicodedata
 import zipfile
@@ -38,6 +41,34 @@ WINDOWS_DEVICE_SUPERSCRIPT_DIGITS = str.maketrans({
     "³": "3",
 })
 ENTRYPOINT_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
+APPROVALS_PLUGIN_ID = "com.xsec.workspace.approvals"
+APPROVALS_FRONTEND_METHODS = frozenset({
+    "xsec.approvals.list",
+    "xsec.approvals.statistics",
+})
+APPROVALS_FRONTEND_CAPABILITY = "workspace.session.read"
+APPROVALS_FRONTEND_BINDING = "session"
+APPROVALS_FRONTEND_PLUGIN_API_RANGE = "^1.1.0"
+APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT = "onWorkspaceTool:approvals"
+APPROVALS_WORKSPACE_TOOL_CONTRIBUTION = {
+    "title": "审批记录",
+    "icon": "clipboard-check",
+    "scope": "session",
+    "launchable": True,
+    "policy": "singleton",
+    "surface": "standard",
+    "retain": "active",
+    "preferredBottomHeight": 340,
+    "surfaces": ["interactive-dock", "batch-observe"],
+}
+JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
+APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
+# The approvals frontend is the first official package whose archive contract
+# needs a browser-side broker implementation.  Its complete reviewed source is
+# pinned intentionally: accepting arbitrary JavaScript while trying to prove
+# every execution path with a home-grown parser is unsound.  Updating this
+# package requires explicitly reviewing and changing this pin in the same PR.
+APPROVALS_FRONTEND_SOURCE_SHA256 = "bff7a5e232bbe6ae75651edc267795be4bfec3588e167693f733c5e0da1db8f0"
 
 
 class MarketplaceValidationError(ValueError):
@@ -108,6 +139,944 @@ def desktop_entrypoints(manifest: dict[str, object], label: str) -> list[tuple[s
         relative = safe_relative_path(value, f"{label} entrypoint {name}")
         result.append((name, relative))
     return result
+
+
+def consume_javascript_regex(source: str, index: int) -> int | None:
+    """Return the first position following a regex literal, without executing it."""
+
+    cursor = index + 1
+    escaped = False
+    in_character_class = False
+    while cursor < len(source):
+        character = source[cursor]
+        if character in {"\n", "\r"}:
+            return None
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == "[":
+            in_character_class = True
+        elif character == "]":
+            in_character_class = False
+        elif character == "/" and not in_character_class:
+            cursor += 1
+            while cursor < len(source) and (source[cursor].isalpha() or source[cursor] in {"$", "_"}):
+                cursor += 1
+            return cursor
+        cursor += 1
+    return None
+
+
+def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]:
+    """Tokenize the small JavaScript subset used by static frontend checks.
+
+    Marketplace validation must never import or execute a plugin archive.  The
+    tokenizer deliberately recognizes comments, string/template literals and
+    slash-delimited literal candidates so an `activate` or RPC snippet merely
+    written as data cannot satisfy the release contract.  Because the checker
+    intentionally does not parse or execute plugins, slash pairs are consumed
+    conservatively even where JavaScript could interpret them as division;
+    that can reject an unusual valid program, but never accepts a placeholder.
+    """
+
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    length = len(source)
+    while index < length:
+        character = source[index]
+        if character in {"\n", "\r"}:
+            tokens.append(("newline", "\n"))
+            index += 2 if character == "\r" and index + 1 < length and source[index + 1] == "\n" else 1
+            continue
+        if character.isspace():
+            index += 1
+            continue
+        if source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            if newline == -1:
+                index = length
+            else:
+                tokens.append(("newline", "\n"))
+                index = newline + 1
+            continue
+        if source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            if end == -1:
+                fail(f"{label} contains an unterminated JavaScript block comment")
+            index = end + 2
+            continue
+        if character == "/":
+            end = consume_javascript_regex(source, index)
+            if end is not None:
+                tokens.append(("regex", source[index:end]))
+                index = end
+                continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            start = index + 1
+            index += 1
+            escaped = False
+            while index < length:
+                current = source[index]
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == quote:
+                    literal = source[start:index]
+                    if quote == "`" and "${" in literal and any(
+                        marker in literal for marker in {"host", "\\u", "eval", "Function"}
+                    ):
+                        fail(f"{label} contains an unsupported executable template interpolation")
+                    tokens.append(("string", literal))
+                    index += 1
+                    break
+                index += 1
+            else:
+                fail(f"{label} contains an unterminated JavaScript string")
+            continue
+        if character.isalpha() or character in {"_", "$"}:
+            start = index
+            index += 1
+            while index < length and (source[index].isalnum() or source[index] in {"_", "$"}):
+                index += 1
+            tokens.append(("identifier", source[start:index]))
+            continue
+        tokens.append(("punctuation", character))
+        index += 1
+    return tokens
+
+
+def matching_brace(tokens: list[tuple[str, str]], opening_index: int) -> int | None:
+    """Find the closing brace for a tokenized JavaScript block."""
+
+    depth = 0
+    for index in range(opening_index, len(tokens)):
+        if tokens[index] == ("punctuation", "{"):
+            depth += 1
+        elif tokens[index] == ("punctuation", "}"):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def matching_parenthesis(tokens: list[tuple[str, str]], opening_index: int) -> int | None:
+    """Find the closing parenthesis for a tokenized JavaScript group."""
+
+    depth = 0
+    for index in range(opening_index, len(tokens)):
+        if tokens[index] == ("punctuation", "("):
+            depth += 1
+        elif tokens[index] == ("punctuation", ")"):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def matching_opening_parenthesis(tokens: list[tuple[str, str]], closing_index: int) -> int | None:
+    """Find the opening parenthesis paired with a tokenized closing one."""
+
+    depth = 0
+    for index in range(closing_index, -1, -1):
+        if tokens[index] == ("punctuation", ")"):
+            depth += 1
+        elif tokens[index] == ("punctuation", "("):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def activate_body_tokens(tokens: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
+    """Return the exact exported ``activate(host)`` function body tokens."""
+
+    for index, token in enumerate(tokens):
+        if token != ("identifier", "export"):
+            continue
+        cursor = index + 1
+        if cursor < len(tokens) and tokens[cursor] == ("identifier", "async"):
+            cursor += 1
+        if tokens[cursor:cursor + 6] != [
+            ("identifier", "function"),
+            ("identifier", "activate"),
+            ("punctuation", "("),
+            ("identifier", "host"),
+            ("punctuation", ")"),
+            ("punctuation", "{"),
+        ]:
+            continue
+        closing = matching_brace(tokens, cursor + 5)
+        if closing is not None:
+            return tokens[cursor + 6:closing]
+    return None
+
+
+def enclosing_named_function(index: int, blocks: list[tuple[str, int, int, int]]) -> int | None:
+    """Return the innermost named function body containing a token index."""
+
+    candidates = [
+        block_index
+        for block_index, (_, _, opening_brace, closing_brace) in enumerate(blocks)
+        if opening_brace < index < closing_brace
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda block_index: blocks[block_index][3] - blocks[block_index][2])
+
+
+def activation_lifecycle_method_blocks(
+    tokens: list[tuple[str, str]],
+    named_blocks: list[tuple[str, int, int, int]],
+    unsupported_blocks: list[tuple[int, int]],
+) -> set[tuple[int, int]]:
+    """Return mount/update/dispose methods on an activation's returned object."""
+
+    blocks: set[tuple[int, int]] = set()
+    for index in range(len(tokens) - 1):
+        if tokens[index:index + 2] != [
+            ("identifier", "return"),
+            ("punctuation", "{"),
+        ] or (
+            enclosing_named_function(index, named_blocks) is not None
+            or is_in_block(index, unsupported_blocks)
+        ):
+            continue
+        object_closing = matching_brace(tokens, index + 1)
+        if object_closing is None:
+            continue
+        brace_depth = 1
+        parenthesis_depth = 0
+        bracket_depth = 0
+        for method_index in range(index + 2, object_closing):
+            kind, name = tokens[method_index]
+            if (
+                brace_depth == 1
+                and parenthesis_depth == 0
+                and bracket_depth == 0
+                and kind == "identifier"
+                and name in APPROVALS_FRONTEND_LIFECYCLE_METHODS
+                and method_index + 1 < object_closing
+                and tokens[method_index + 1] == ("punctuation", "(")
+            ):
+                parameter_closing = matching_parenthesis(tokens, method_index + 1)
+                if (
+                    parameter_closing is not None
+                    and parameter_closing + 1 < object_closing
+                    and tokens[parameter_closing + 1] == ("punctuation", "{")
+                ):
+                    method_closing = matching_brace(tokens, parameter_closing + 1)
+                    if method_closing is not None and method_closing < object_closing:
+                        blocks.add((parameter_closing + 1, method_closing))
+            if tokens[method_index] == ("punctuation", "{"):
+                brace_depth += 1
+            elif tokens[method_index] == ("punctuation", "}"):
+                brace_depth -= 1
+            elif tokens[method_index] == ("punctuation", "("):
+                parenthesis_depth += 1
+            elif tokens[method_index] == ("punctuation", ")") and parenthesis_depth:
+                parenthesis_depth -= 1
+            elif tokens[method_index] == ("punctuation", "["):
+                bracket_depth += 1
+            elif tokens[method_index] == ("punctuation", "]") and bracket_depth:
+                bracket_depth -= 1
+    return blocks
+
+
+def is_in_block(index: int, blocks: list[tuple[int, int]]) -> bool:
+    return any(opening_brace < index < closing_brace for opening_brace, closing_brace in blocks)
+
+
+def conditional_branch_end(tokens: list[tuple[str, str]], body_start: int) -> int:
+    """Return the exclusive end of a compact ``if``/``else`` statement body."""
+
+    while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
+        body_start += 1
+    if body_start >= len(tokens):
+        return len(tokens)
+    if tokens[body_start] == ("punctuation", "{"):
+        closing_brace = matching_brace(tokens, body_start)
+        return len(tokens) if closing_brace is None else closing_brace + 1
+    brace_depth = 0
+    parenthesis_depth = 0
+    bracket_depth = 0
+    for cursor in range(body_start, len(tokens)):
+        current = tokens[cursor]
+        if current == ("punctuation", "{"):
+            brace_depth += 1
+        elif current == ("punctuation", "}") and brace_depth:
+            brace_depth -= 1
+        elif current == ("punctuation", "("):
+            parenthesis_depth += 1
+        elif current == ("punctuation", ")") and parenthesis_depth:
+            parenthesis_depth -= 1
+        elif current == ("punctuation", "["):
+            bracket_depth += 1
+        elif current == ("punctuation", "]") and bracket_depth:
+            bracket_depth -= 1
+        elif (
+            current == ("punctuation", ";")
+            and brace_depth == 0
+            and parenthesis_depth == 0
+            and bracket_depth == 0
+        ):
+            return cursor
+    return len(tokens)
+
+
+def is_in_statically_unreachable_if_branch(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Reject literal-Boolean ``if`` branches that cannot execute."""
+
+    for cursor in range(len(tokens) - 4):
+        if tokens[cursor:cursor + 2] != [
+            ("identifier", "if"),
+            ("punctuation", "("),
+        ]:
+            continue
+        condition = tokens[cursor + 2]
+        if condition not in {("identifier", "false"), ("identifier", "true")} or tokens[cursor + 3] != ("punctuation", ")"):
+            continue
+        body_start = cursor + 4
+        while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
+            body_start += 1
+        body_end = conditional_branch_end(tokens, body_start)
+        if condition == ("identifier", "false") and body_start <= index < body_end:
+            return True
+        else_cursor = body_end
+        if else_cursor < len(tokens) and tokens[else_cursor] == ("punctuation", ";"):
+            else_cursor += 1
+        while else_cursor < len(tokens) and tokens[else_cursor] == ("newline", "\n"):
+            else_cursor += 1
+        if (
+            condition == ("identifier", "true")
+            and else_cursor < len(tokens)
+            and tokens[else_cursor] == ("identifier", "else")
+        ):
+            alternate_start = else_cursor + 1
+            while alternate_start < len(tokens) and tokens[alternate_start] == ("newline", "\n"):
+                alternate_start += 1
+            alternate_end = conditional_branch_end(tokens, alternate_start)
+            if alternate_start <= index < alternate_end:
+                return True
+    return False
+
+
+def is_in_statically_unreachable_loop_body(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Reject evidence in loop bodies whose literal condition prevents entry."""
+
+    for cursor in range(len(tokens) - 4):
+        if tokens[cursor] == ("identifier", "while") and tokens[cursor + 1] == ("punctuation", "("):
+            closing = matching_parenthesis(tokens, cursor + 1)
+            if (
+                closing is not None
+                and tokens[cursor + 2:closing] == [("identifier", "false")]
+            ):
+                body_start = closing + 1
+                while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
+                    body_start += 1
+                body_end = conditional_branch_end(tokens, body_start)
+                if body_start <= index < body_end:
+                    return True
+        if tokens[cursor] == ("identifier", "for") and tokens[cursor + 1] == ("punctuation", "("):
+            closing = matching_parenthesis(tokens, cursor + 1)
+            if (
+                closing is not None
+                and tokens[cursor + 2:cursor + 5] == [
+                    ("punctuation", ";"),
+                    ("identifier", "false"),
+                    ("punctuation", ";"),
+                ]
+            ):
+                body_start = closing + 1
+                while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
+                    body_start += 1
+                body_end = conditional_branch_end(tokens, body_start)
+                update_start = cursor + 5
+                if update_start <= index < closing or body_start <= index < body_end:
+                    return True
+    return False
+
+
+def is_in_function_like_parameters(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Exclude unproved defaults from function, method, and arrow parameters."""
+
+    for cursor, token in enumerate(tokens):
+        if token == ("identifier", "function"):
+            parameter_start = cursor + 1
+            if parameter_start < len(tokens) and tokens[parameter_start] == ("punctuation", "*"):
+                parameter_start += 1
+            if parameter_start < len(tokens) and tokens[parameter_start][0] == "identifier":
+                parameter_start += 1
+            if parameter_start < len(tokens) and tokens[parameter_start] == ("punctuation", "("):
+                parameter_end = matching_parenthesis(tokens, parameter_start)
+                if parameter_end is not None and parameter_start < index < parameter_end:
+                    return True
+        # Parenthesized arrows: ``(value = expression) =>``.  We only need to
+        # reject their parameter initializers, never execute or resolve them.
+        if token == ("punctuation", "=") and cursor + 1 < len(tokens) and tokens[cursor + 1] == ("punctuation", ">"):
+            parameter_end = cursor - 1
+            if parameter_end >= 0 and tokens[parameter_end] == ("punctuation", ")"):
+                parameter_start = matching_opening_parenthesis(tokens, parameter_end)
+                if parameter_start is not None and parameter_start < index < parameter_end:
+                    return True
+        # Method-shaped declarations: ``method(value = expression) {}``.  Do
+        # not mistake a control-flow condition for a method parameter list.
+        if token == ("punctuation", "(") and cursor and tokens[cursor - 1][0] == "identifier":
+            name = tokens[cursor - 1][1]
+            if name in {"if", "for", "while", "switch", "catch", "with"}:
+                continue
+            parameter_end = matching_parenthesis(tokens, cursor)
+            if (
+                parameter_end is not None
+                and parameter_end + 1 < len(tokens)
+                and tokens[parameter_end + 1] == ("punctuation", "{")
+                and cursor < index < parameter_end
+            ):
+                return True
+    return False
+
+
+def is_in_statically_unreachable_expression(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Reject evidence guarded by literal short-circuit or ternary branches.
+
+    This deliberately recognizes only compact literal forms that can make a
+    syntactically present broker request unconditionally unreachable.  The
+    official frontend has no such expressions, so uncertainty remains
+    fail-closed without implementing JavaScript's whole expression grammar.
+    """
+
+    # A semicolon ends the preceding expression.  Newlines do not: JavaScript
+    # permits ``false &&\\n host.request(...)`` to continue the expression.
+    statement_start = index
+    while statement_start > 0:
+        previous = tokens[statement_start - 1]
+        if previous == ("punctuation", ";"):
+            break
+        statement_start -= 1
+    for cursor in range(statement_start, index - 2):
+        if tokens[cursor:cursor + 3] == [
+            ("identifier", "false"),
+            ("punctuation", "&"),
+            ("punctuation", "&"),
+        ]:
+            return True
+        if tokens[cursor:cursor + 3] == [
+            ("identifier", "true"),
+            ("punctuation", "|"),
+            ("punctuation", "|"),
+        ]:
+            return True
+
+    # For ``false ? consequent : alternate`` evidence in the consequent is
+    # unreachable; for ``true ? consequent : alternate`` the alternate is.
+    # Pick the nearest literal Boolean condition before the request and track
+    # whether a matching top-level colon has started its alternate branch.
+    # Nested ternaries are skipped conservatively.
+    for question in range(index - 1, statement_start, -1):
+        if tokens[question] != ("punctuation", "?") or question == 0:
+            continue
+        condition = tokens[question - 1]
+        if condition not in {("identifier", "false"), ("identifier", "true")}:
+            continue
+        ternary_depth = 0
+        delimiter_depth = 0
+        alternate_started = False
+        for cursor in range(question + 1, index):
+            token = tokens[cursor]
+            if token in {
+                ("punctuation", "("),
+                ("punctuation", "["),
+                ("punctuation", "{"),
+            }:
+                delimiter_depth += 1
+            elif token in {
+                ("punctuation", ")"),
+                ("punctuation", "]"),
+                ("punctuation", "}"),
+            } and delimiter_depth:
+                delimiter_depth -= 1
+            elif delimiter_depth == 0 and token == ("punctuation", "?"):
+                ternary_depth += 1
+            elif delimiter_depth == 0 and token == ("punctuation", ":"):
+                if ternary_depth:
+                    ternary_depth -= 1
+                else:
+                    alternate_started = True
+                    break
+        if condition == ("identifier", "false") and not alternate_started:
+            return True
+        if condition == ("identifier", "true") and alternate_started:
+            return True
+    return False
+
+
+def lexical_declaration_shadows_helper(tokens: list[tuple[str, str]], name: str) -> bool:
+    """Fail closed when a lexical binding could shadow a helper call.
+
+    A full JavaScript scope resolver is intentionally outside this static,
+    non-executing verifier.  A ``const``, ``let``, or ``var`` declaration sharing a
+    helper name is enough ambiguity to reject every matching call edge.  This
+    also handles a declaration later in the block, whose temporal-dead-zone
+    semantics make an earlier call fail instead of reaching the function.
+    This is stricter than JavaScript's exact block-scope rules but the official
+    source has no such collisions.
+    """
+
+    for cursor in range(len(tokens) - 1):
+        if tokens[cursor] not in {
+            ("identifier", "const"),
+            ("identifier", "let"),
+            ("identifier", "var"),
+        }:
+            continue
+        if tokens[cursor + 1:cursor + 2] == [("identifier", name)]:
+            return True
+    return False
+
+
+def declarations_bind_host(tokens: list[tuple[str, str]], start: int, end: int) -> bool:
+    """Conservatively reject local declarations that shadow the broker name."""
+
+    for index in range(start, end):
+        token = tokens[index]
+        if token in {
+            ("identifier", "function"),
+            ("identifier", "class"),
+        } and index + 1 < end and tokens[index + 1] == ("identifier", "host"):
+            return True
+        if token not in {
+            ("identifier", "const"),
+            ("identifier", "let"),
+            ("identifier", "var"),
+        }:
+            continue
+        cursor = index + 1
+        delimiter_depth = 0
+        while cursor < end:
+            current = tokens[cursor]
+            if current in {("punctuation", "{"), ("punctuation", "["), ("punctuation", "(")}:
+                delimiter_depth += 1
+            elif current in {("punctuation", "}"), ("punctuation", "]"), ("punctuation", ")")} and delimiter_depth:
+                delimiter_depth -= 1
+            elif delimiter_depth == 0 and current in {("punctuation", "="), ("punctuation", ";")}:
+                break
+            if current == ("identifier", "host"):
+                return True
+            cursor += 1
+    return False
+
+
+def block_binds_host(tokens: list[tuple[str, str]], block: tuple[str, int, int, int]) -> bool:
+    """Return whether an eligible helper shadows activation's ``host``."""
+
+    _, declaration_start, opening_brace, closing_brace = block
+    cursor = declaration_start + (tokens[declaration_start] == ("identifier", "async"))
+    parameter_opening = cursor + 2
+    parameter_closing = matching_parenthesis(tokens, parameter_opening)
+    if parameter_closing is not None and ("identifier", "host") in tokens[parameter_opening + 1:parameter_closing]:
+        return True
+    return declarations_bind_host(tokens, opening_brace + 1, closing_brace)
+
+
+def lifecycle_block_binds_host(tokens: list[tuple[str, str]], block: tuple[int, int]) -> bool:
+    """Return whether a returned lifecycle method shadows activation's host."""
+
+    opening_brace, closing_brace = block
+    parameter_closing = opening_brace - 1
+    parameter_opening = matching_opening_parenthesis(tokens, parameter_closing)
+    if parameter_opening is not None and ("identifier", "host") in tokens[parameter_opening + 1:parameter_closing]:
+        return True
+    return declarations_bind_host(tokens, opening_brace + 1, closing_brace)
+
+
+def is_after_unconditional_return(
+    tokens: list[tuple[str, str]],
+    index: int,
+    scope_start: int,
+    scope_end: int,
+) -> bool:
+    """Return whether a completed direct-scope return precedes ``index``."""
+
+    brace_depth = 0
+    parenthesis_depth = 0
+    bracket_depth = 0
+    for cursor in range(scope_start, min(index, scope_end)):
+        token = tokens[cursor]
+        if token == ("punctuation", "{"):
+            brace_depth += 1
+        elif token == ("punctuation", "}") and brace_depth:
+            brace_depth -= 1
+        elif token == ("punctuation", "("):
+            parenthesis_depth += 1
+        elif token == ("punctuation", ")") and parenthesis_depth:
+            parenthesis_depth -= 1
+        elif token == ("punctuation", "["):
+            bracket_depth += 1
+        elif token == ("punctuation", "]") and bracket_depth:
+            bracket_depth -= 1
+        elif (
+            token in {
+                ("identifier", "return"),
+                ("identifier", "throw"),
+            }
+            and brace_depth == 0
+            and parenthesis_depth == 0
+            and bracket_depth == 0
+        ):
+            expression_braces = 0
+            expression_parentheses = 0
+            expression_brackets = 0
+            expression_started = False
+            for end in range(cursor + 1, min(index, scope_end)):
+                current = tokens[end]
+                if current == ("newline", "\n"):
+                    if not expression_started or (
+                        expression_braces == 0
+                        and expression_parentheses == 0
+                        and expression_brackets == 0
+                    ):
+                        return True
+                    continue
+                expression_started = True
+                if current == ("punctuation", "{"):
+                    expression_braces += 1
+                elif current == ("punctuation", "}") and expression_braces:
+                    expression_braces -= 1
+                elif current == ("punctuation", "("):
+                    expression_parentheses += 1
+                elif current == ("punctuation", ")") and expression_parentheses:
+                    expression_parentheses -= 1
+                elif current == ("punctuation", "["):
+                    expression_brackets += 1
+                elif current == ("punctuation", "]") and expression_brackets:
+                    expression_brackets -= 1
+                elif (
+                    current == ("punctuation", ";")
+                    and expression_braces == 0
+                    and expression_parentheses == 0
+                    and expression_brackets == 0
+                ):
+                    return True
+    return False
+
+
+def host_is_reassigned_before(
+    tokens: list[tuple[str, str]],
+    index: int,
+    scope_start: int,
+) -> bool:
+    """Conservatively detect a prior write to the bare broker binding."""
+
+    for cursor in range(scope_start, index):
+        if tokens[cursor] != ("identifier", "host"):
+            continue
+        if cursor and tokens[cursor - 1] == ("punctuation", "."):
+            continue
+        following = tokens[cursor + 1:cursor + 3]
+        if following[:1] == [("punctuation", "=")]:
+            return True
+        if tuple(following[:2]) in {
+            (("punctuation", "+"), ("punctuation", "=")),
+            (("punctuation", "-"), ("punctuation", "=")),
+            (("punctuation", "*"), ("punctuation", "=")),
+            (("punctuation", "/"), ("punctuation", "=")),
+            (("punctuation", "%"), ("punctuation", "=")),
+            (("punctuation", "&"), ("punctuation", "=")),
+            (("punctuation", "|"), ("punctuation", "=")),
+            (("punctuation", "^"), ("punctuation", "=")),
+            (("punctuation", "+"), ("punctuation", "+")),
+            (("punctuation", "-"), ("punctuation", "-")),
+        }:
+            return True
+        if tuple(tokens[cursor + 1:cursor + 4]) in {
+            (("punctuation", "&"), ("punctuation", "&"), ("punctuation", "=")),
+            (("punctuation", "|"), ("punctuation", "|"), ("punctuation", "=")),
+            (("punctuation", "?"), ("punctuation", "?"), ("punctuation", "=")),
+            (("punctuation", "*"), ("punctuation", "*"), ("punctuation", "=")),
+            (("punctuation", "<"), ("punctuation", "<"), ("punctuation", "=")),
+            (("punctuation", ">"), ("punctuation", ">"), ("punctuation", "=")),
+        }:
+            return True
+        if tuple(tokens[cursor + 1:cursor + 5]) == (
+            ("punctuation", ">"),
+            ("punctuation", ">"),
+            ("punctuation", ">"),
+            ("punctuation", "="),
+        ):
+            return True
+        if tuple(tokens[cursor - 2:cursor]) in {
+            (("punctuation", "+"), ("punctuation", "+")),
+            (("punctuation", "-"), ("punctuation", "-")),
+        }:
+            return True
+    return False
+
+
+def reachable_named_functions(
+    tokens: list[tuple[str, str]],
+    blocks: list[tuple[str, int, int, int]],
+    unsupported_blocks: list[tuple[int, int]],
+    lifecycle_blocks: set[tuple[int, int]],
+) -> set[int]:
+    """Build a conservative call graph rooted at activation lifecycle code."""
+
+    by_name: dict[str, list[int]] = {}
+    for block_index, (name, _, _, _) in enumerate(blocks):
+        by_name.setdefault(name, []).append(block_index)
+    if any(len(block_indexes) != 1 for block_indexes in by_name.values()):
+        return set()
+    reachable: set[int] = set()
+    pending: list[int] = []
+    edges: dict[int, set[int]] = {block_index: set() for block_index in range(len(blocks))}
+
+    for index in range(len(tokens) - 1):
+        kind, value = tokens[index]
+        if kind != "identifier" or value not in by_name or tokens[index + 1] != ("punctuation", "("):
+            continue
+        # Only a bare ``helper(...)`` call can establish an edge.  A member
+        # call such as ``other.helper(...)`` might target a distinct method
+        # with the same spelling and must not make a nested helper reachable.
+        if index and tokens[index - 1] == ("punctuation", "."):
+            continue
+        closing_parenthesis = matching_parenthesis(tokens, index + 1)
+        # ``{ helper() {} }`` is an object-method declaration, not an
+        # invocation of the same-named ordinary helper.
+        if (
+            closing_parenthesis is not None
+            and closing_parenthesis + 1 < len(tokens)
+            and tokens[closing_parenthesis + 1] == ("punctuation", "{")
+        ):
+            continue
+        # The declaration's own ``name(...)`` is not a call edge.
+        if any(declaration_start <= index <= opening_brace for _, declaration_start, opening_brace, _ in blocks):
+            continue
+        # A call captured by an unsupported closure cannot establish a
+        # reachability proof for a named helper.
+        if is_in_block(index, unsupported_blocks):
+            continue
+        if is_in_statically_unreachable_if_branch(tokens, index) or is_in_statically_unreachable_expression(tokens, index):
+            continue
+        if lexical_declaration_shadows_helper(tokens, value):
+            continue
+        caller = enclosing_named_function(index, blocks)
+        lifecycle_owner = next(
+            (block for block in lifecycle_blocks if block[0] < index < block[1]),
+            None,
+        )
+        if caller is None and lifecycle_owner is None and (
+            is_after_unconditional_return(tokens, index, 0, len(tokens))
+            or host_is_reassigned_before(tokens, index, 0)
+        ):
+            continue
+        if lifecycle_owner is not None and (
+            is_after_unconditional_return(tokens, index, lifecycle_owner[0] + 1, lifecycle_owner[1])
+            or host_is_reassigned_before(tokens, index, lifecycle_owner[0] + 1)
+            or host_is_reassigned_before(tokens, lifecycle_owner[0], 0)
+        ):
+            continue
+        for callee in by_name[value]:
+            if caller is None:
+                reachable.add(callee)
+                pending.append(callee)
+            else:
+                edges[caller].add(callee)
+
+    while pending:
+        caller = pending.pop()
+        for callee in edges[caller]:
+            if callee not in reachable:
+                reachable.add(callee)
+                pending.append(callee)
+    return reachable
+
+
+def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
+    named_blocks = named_javascript_function_blocks(tokens)
+    provisional_unsupported_blocks = unsupported_javascript_function_blocks(tokens, set())
+    lifecycle_blocks = activation_lifecycle_method_blocks(tokens, named_blocks, provisional_unsupported_blocks)
+    unsupported_blocks = unsupported_javascript_function_blocks(tokens, lifecycle_blocks)
+    reachable_blocks = reachable_named_functions(tokens, named_blocks, unsupported_blocks, lifecycle_blocks)
+    calls: set[str] = set()
+    for index in range(len(tokens) - 4):
+        sequence = tokens[index:index + 5]
+        if sequence[:4] != [
+            ("identifier", "host"),
+            ("punctuation", "."),
+            ("identifier", "request"),
+            ("punctuation", "("),
+        ]:
+            continue
+        if is_in_function_like_parameters(tokens, index):
+            continue
+        if is_in_block(index, unsupported_blocks):
+            continue
+        if (
+            is_in_statically_unreachable_if_branch(tokens, index)
+            or is_in_statically_unreachable_loop_body(tokens, index)
+            or is_in_statically_unreachable_expression(tokens, index)
+        ):
+            continue
+        owner = enclosing_named_function(index, named_blocks)
+        if owner is not None and (
+            owner not in reachable_blocks
+            or block_binds_host(tokens, named_blocks[owner])
+            or is_after_unconditional_return(tokens, index, named_blocks[owner][2] + 1, named_blocks[owner][3])
+            or host_is_reassigned_before(tokens, index, named_blocks[owner][2] + 1)
+        ):
+            continue
+        if owner is None:
+            lifecycle_owner = next(
+                (block for block in lifecycle_blocks if block[0] < index < block[1]),
+                None,
+            )
+            if lifecycle_owner is not None:
+                if (
+                    lifecycle_block_binds_host(tokens, lifecycle_owner)
+                    or is_after_unconditional_return(tokens, index, lifecycle_owner[0] + 1, lifecycle_owner[1])
+                    or host_is_reassigned_before(tokens, index, lifecycle_owner[0] + 1)
+                    or host_is_reassigned_before(tokens, lifecycle_owner[0], 0)
+                ):
+                    continue
+            elif (
+                declarations_bind_host(tokens, 0, len(tokens))
+                or is_after_unconditional_return(tokens, index, 0, len(tokens))
+                or host_is_reassigned_before(tokens, index, 0)
+            ):
+                continue
+        kind, method = sequence[4]
+        if kind == "string" and method in APPROVALS_FRONTEND_METHODS:
+            calls.add(method)
+    return calls
+
+
+def has_only_approvals_host_usage(tokens: list[tuple[str, str]]) -> bool:
+    """Keep the official approvals frontend's broker surface deliberately tiny."""
+
+    for index, token in enumerate(tokens):
+        # Dynamic evaluators make lexical `host` provenance unverifiable
+        # without executing untrusted code.  The official frontend neither
+        # needs nor permits them, so reject bare direct calls outright.
+        if (
+            token in {("identifier", "eval"), ("identifier", "Function")}
+            and index + 1 < len(tokens)
+            and tokens[index + 1] == ("punctuation", "(")
+            and (index == 0 or tokens[index - 1] != ("punctuation", "."))
+        ):
+            return False
+        if token != ("identifier", "host"):
+            continue
+        suffix = tokens[index + 1:index + 5]
+        if suffix[:2] == [
+            ("punctuation", "."),
+            ("identifier", "context"),
+        ] and index + 3 < len(tokens) and tokens[index + 3] in {
+            ("punctuation", ";"),
+            ("punctuation", ")"),
+            ("punctuation", ","),
+            ("punctuation", "}"),
+            ("punctuation", "]"),
+            ("newline", "\n"),
+        }:
+            continue
+        if len(suffix) >= 4 and suffix[:3] == [
+            ("punctuation", "."),
+            ("identifier", "request"),
+            ("punctuation", "("),
+        ]:
+            method_kind, method = suffix[3]
+            if method_kind == "string" and method in APPROVALS_FRONTEND_METHODS:
+                continue
+        return False
+    return True
+
+
+def validate_javascript_esm_syntax(source: str, label: str) -> None:
+    """Parse a frontend as ESM without importing or executing archive code."""
+
+    node = shutil.which("node")
+    if node is None:
+        fail(f"{label} requires Node.js to validate ESM syntax")
+    environment = os.environ.copy()
+    # Do not let a caller-provided preload influence this parse-only process.
+    environment.pop("NODE_OPTIONS", None)
+    environment.pop("NODE_PATH", None)
+    try:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-esm-check-") as directory:
+            candidate = Path(directory) / "frontend.mjs"
+            candidate.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [node, "--check", str(candidate)],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                timeout=JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail(f"{label} ESM syntax validation could not run: {error}")
+    if result.returncode != 0:
+        fail(f"{label} must contain valid executable ESM syntax")
+
+
+def validate_approvals_frontend(manifest: dict[str, object], source: str, label: str) -> None:
+    """Verify the first non-placeholder official frontend release contract.
+
+    This is deliberately a static, fail-closed check: marketplace validation
+    must not execute an archive's untrusted JavaScript.  The manifest metadata
+    and basic ESM shape are validated independently; the official approvals
+    implementation itself is an exact reviewed-source allowlist, rather than
+    an attempted proof of arbitrary JavaScript reachability.  The Desktop host
+    remains responsible for manifest-derived permission checks at execution.
+    """
+
+    if manifest.get("name") != APPROVALS_PLUGIN_ID:
+        return
+    try:
+        desktop = manifest["extensions"]["com.xsec.desktop"]
+    except (KeyError, TypeError):
+        fail(f"{label} lacks XSEC Desktop extension metadata")
+    if not isinstance(desktop, dict):
+        fail(f"{label} has invalid XSEC Desktop extension metadata")
+    permissions = desktop.get("permissions")
+    if not isinstance(permissions, dict) or APPROVALS_FRONTEND_CAPABILITY not in permissions:
+        fail(f"{label} must declare the approvals session read permission")
+    engines = desktop.get("engines")
+    if not isinstance(engines, dict) or engines.get("pluginApi") != APPROVALS_FRONTEND_PLUGIN_API_RANGE:
+        fail(f"{label} must require plugin API 1.1 or later for the approvals frontend")
+    if desktop.get("activationEvents") != [APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT]:
+        fail(f"{label} must declare the approvals workspace-tool activation event")
+    contributes = desktop.get("contributes")
+    workspace_tools = contributes.get("workspaceTools") if isinstance(contributes, dict) else None
+    if (
+        not isinstance(workspace_tools, dict)
+        or workspace_tools.get("approvals") != APPROVALS_WORKSPACE_TOOL_CONTRIBUTION
+    ):
+        fail(f"{label} must declare the canonical approvals workspace-tool contribution")
+    frontend_api = desktop.get("frontendApi")
+    if not isinstance(frontend_api, dict) or frontend_api.get("version") != 2 or frontend_api.get("module") != "single-esm":
+        fail(f"{label} must declare the approvals frontend API v2 single-esm contract")
+    methods = frontend_api.get("methods")
+    if not isinstance(methods, dict) or set(methods) != APPROVALS_FRONTEND_METHODS:
+        fail(f"{label} must declare the approvals read RPC methods")
+    for method in APPROVALS_FRONTEND_METHODS:
+        descriptor = methods.get(method)
+        if not isinstance(descriptor, dict) or descriptor.get("capability") != APPROVALS_FRONTEND_CAPABILITY or descriptor.get("binding") != APPROVALS_FRONTEND_BINDING:
+            fail(f"{label} must bind approvals RPC methods to the session read capability")
+    if re.search(r"\\u(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\})", source):
+        fail(f"{label} must not contain Unicode escape sequences")
+    validate_javascript_esm_syntax(source, label)
+    tokens = javascript_contract_tokens(source, label)
+    body = activate_body_tokens(tokens)
+    if body is None:
+        fail(f"{label} must export an executable activate(host) function")
+    if not has_only_approvals_host_usage(body):
+        fail(f"{label} must use only the approvals host broker contract")
+    normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    if hashlib.sha256(normalized_source.encode("utf-8")).hexdigest() != APPROVALS_FRONTEND_SOURCE_SHA256:
+        fail(f"{label} must match the approved official approvals frontend structure")
 
 
 def zip_member_is_regular_file(info: zipfile.ZipInfo) -> bool:
@@ -220,12 +1189,23 @@ def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, obje
         fail(f"artifact {path} plugin.json name does not match {plugin_id}")
     if manifest.get("version") != version:
         fail(f"artifact {path} plugin.json version does not match {version}")
-    for entrypoint_name, entrypoint_path in desktop_entrypoints(manifest, f"artifact {path} plugin.json"):
+    entrypoints = desktop_entrypoints(manifest, f"artifact {path} plugin.json")
+    for entrypoint_name, entrypoint_path in entrypoints:
         entrypoint = members.get(entrypoint_path.as_posix())
         if entrypoint is None:
             fail(f"artifact {path} does not include XSEC Desktop entrypoint {entrypoint_name} at {entrypoint_path.as_posix()}")
         if not zip_member_is_regular_file(entrypoint):
             fail(f"artifact {path} XSEC Desktop entrypoint {entrypoint_name} must be a regular file")
+    if plugin_id == APPROVALS_PLUGIN_ID:
+        frontend_path = dict(entrypoints).get("frontend")
+        if frontend_path is None:
+            fail(f"artifact {path} approvals plugin must declare a frontend entrypoint")
+        try:
+            with zipfile.ZipFile(path) as archive:
+                frontend_source = archive.read(frontend_path.as_posix()).decode("utf-8")
+        except (OSError, RuntimeError, UnicodeDecodeError, zipfile.BadZipFile) as error:
+            fail(f"artifact {path} approvals frontend cannot be read as UTF-8: {error}")
+        validate_approvals_frontend(manifest, frontend_source, f"artifact {path} approvals frontend")
     return manifest
 
 
@@ -329,8 +1309,23 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
         fail(f"plugin manifest {plugin_id} lacks XSEC Desktop engine metadata")
     if not isinstance(engines, dict):
         fail(f"plugin manifest {plugin_id} has invalid XSEC Desktop engine metadata")
-    for entrypoint_name, entrypoint_path in desktop_entrypoints(manifest, f"plugin manifest {plugin_id}"):
-        resolve_below(plugin_dir, entrypoint_path, f"plugin manifest {plugin_id} entrypoint {entrypoint_name}")
+    entrypoints = desktop_entrypoints(manifest, f"plugin manifest {plugin_id}")
+    resolved_entrypoints: dict[str, Path] = {}
+    for entrypoint_name, entrypoint_path in entrypoints:
+        resolved_entrypoints[entrypoint_name] = resolve_below(
+            plugin_dir,
+            entrypoint_path,
+            f"plugin manifest {plugin_id} entrypoint {entrypoint_name}",
+        )
+    if plugin_id == APPROVALS_PLUGIN_ID:
+        frontend = resolved_entrypoints.get("frontend")
+        if frontend is None:
+            fail(f"plugin manifest {plugin_id} must declare a frontend entrypoint")
+        try:
+            frontend_source = frontend.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            fail(f"plugin manifest {plugin_id} approvals frontend cannot be read as UTF-8: {error}")
+        validate_approvals_frontend(manifest, frontend_source, f"plugin manifest {plugin_id} approvals frontend")
     return manifest
 
 

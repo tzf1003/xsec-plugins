@@ -54,6 +54,440 @@ class MarketplaceValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(MarketplaceValidationError, "SHA-256"):
                 validate_source(ROOT, output)
 
+    def test_approvals_frontend_v2_contract_survives_the_generated_archive(self) -> None:
+        plugin_id = "com.xsec.workspace.approvals"
+        plugin_dir = ROOT / "plugins" / plugin_id
+        manifest = validate_source_manifest(plugin_id, plugin_dir)
+        desktop = manifest["extensions"]["com.xsec.desktop"]
+        self.assertEqual(desktop["frontendApi"]["version"], 2)
+        frontend = plugin_dir / "com.xsec.desktop" / "frontend" / "index.js"
+        self.assertRegex(frontend.read_text(encoding="utf-8"), r"export\s+function\s+activate\s*\(\s*host\s*\)")
+
+        with tempfile.TemporaryDirectory(prefix="xsec-market-approvals-frontend-") as directory:
+            output = Path(directory) / "marketplace"
+            self.build_marketplace(output)
+            artifact = next(output.glob(f"plugins/{plugin_id}/.xsec-market/artifacts/*.xsec-plugin"))
+            archived_manifest = validate_archive(artifact, plugin_id, "1.1.0")
+            self.assertEqual(archived_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["version"], 2)
+
+    def test_approvals_frontend_rejects_any_noncanonical_reviewed_structure(self) -> None:
+        plugin_id = "com.xsec.workspace.approvals"
+        plugin_dir = ROOT / "plugins" / plugin_id
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        entrypoint = "com.xsec.desktop/frontend/index.js"
+        source = (plugin_dir / entrypoint).read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory(prefix="xsec-market-approvals-structure-") as directory:
+            artifact = Path(directory) / "noncanonical.xsec-plugin"
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr("plugin.json", json.dumps(manifest))
+                archive.writestr(entrypoint, source + "\n")
+            with self.assertRaisesRegex(MarketplaceValidationError, "approved official approvals frontend structure"):
+                validate_archive(artifact, plugin_id, "1.1.0")
+
+    def test_approvals_frontend_contract_rejects_placeholder_archive(self) -> None:
+        plugin_id = "com.xsec.workspace.approvals"
+        plugin_dir = ROOT / "plugins" / plugin_id
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        entrypoint = "com.xsec.desktop/frontend/index.js"
+        source = (plugin_dir / entrypoint).read_text(encoding="utf-8")
+
+        for label, change_manifest, archive_source, message in (
+            (
+                "old-api",
+                lambda value: value["extensions"]["com.xsec.desktop"]["frontendApi"].update({"version": 1}),
+                source,
+                "frontend API v2",
+            ),
+            (
+                "missing-session-read-permission",
+                lambda value: value["extensions"]["com.xsec.desktop"]["permissions"].pop("workspace.session.read"),
+                source,
+                "session read permission",
+            ),
+            (
+                "unsupported-plugin-api-engine",
+                lambda value: value["extensions"]["com.xsec.desktop"]["engines"].update({"pluginApi": "^1.0.0"}),
+                source,
+                "plugin API 1.1 or later",
+            ),
+            (
+                "missing-approvals-workspace-tool",
+                lambda value: value["extensions"]["com.xsec.desktop"]["contributes"]["workspaceTools"].pop("approvals"),
+                source,
+                "canonical approvals workspace-tool contribution",
+            ),
+            (
+                "renamed-approvals-workspace-tool",
+                lambda value: value["extensions"]["com.xsec.desktop"]["contributes"]["workspaceTools"].update({"approval-log": value["extensions"]["com.xsec.desktop"]["contributes"]["workspaceTools"].pop("approvals")}),
+                source,
+                "canonical approvals workspace-tool contribution",
+            ),
+            (
+                "missing-approvals-workspace-tool-activation",
+                lambda value: value["extensions"]["com.xsec.desktop"].update({"activationEvents": []}),
+                source,
+                "workspace-tool activation event",
+            ),
+            (
+                "renamed-approvals-workspace-tool-activation",
+                lambda value: value["extensions"]["com.xsec.desktop"].update({"activationEvents": ["onWorkspaceTool:approval-log"]}),
+                source,
+                "workspace-tool activation event",
+            ),
+            (
+                "placeholder-module",
+                lambda value: None,
+                "export function renderPlaceholder() {}\n",
+                "export an executable activate",
+            ),
+            (
+                "commented-out-contract",
+                lambda value: None,
+                """/*
+export function activate(host) {
+  return host.request(\"xsec.approvals.list\", {});
+  return host.request(\"xsec.approvals.statistics\", {});
+}
+*/
+export function renderPlaceholder() {}
+""",
+                "export an executable activate",
+            ),
+            (
+                "regex-literal-contract",
+                lambda value: None,
+                "/export function activate(host) host.request(\"xsec.approvals.list\") host.request(\"xsec.approvals.statistics\")/;\n",
+                "export an executable activate",
+            ),
+            (
+                "conditional-regex-literal-contract",
+                lambda value: None,
+                "if (true) /export function activate(host) host.request(\"xsec.approvals.list\") host.request(\"xsec.approvals.statistics\")/;\n",
+                "export an executable activate",
+            ),
+            (
+                "quoted-export",
+                lambda value: None,
+                "\"export\"\nfunction activate(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }\n",
+                "export an executable activate",
+            ),
+            (
+                "quoted-host-receiver",
+                lambda value: None,
+                "export function activate(host) { \"host\".request(\"xsec.approvals.list\", {}); \"host\".request(\"xsec.approvals.statistics\", {}); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-outside-activate",
+                lambda value: None,
+                "export function activate(host) { return {}; }\nfunction unused() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-unreachable-activation-helper",
+                lambda value: None,
+                "export function activate(host) { function neverCalled() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-unreachable-arrow-helper",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = () => { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-unreachable-expression-arrow-helper",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = () => Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})]); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-unreachable-anonymous-helper",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = function () { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-helper-shadowed-by-member-call",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } const other = { load() {} }; other.load(); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-unreachable-object-method",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = { load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-nested-returned-object-method",
+                lambda value: None,
+                "export function activate(host) { return { mount() {}, extra: { update() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } } }; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-arrow-closure-returning-lifecycle",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = () => { return { mount() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-generator-closure-returning-lifecycle",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = function* () { return { mount() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-lifecycle-with-shadowed-host-parameter",
+                lambda value: None,
+                "export function activate(host) { return { mount(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-after-activation-return",
+                lambda value: None,
+                "export function activate(host) { return {}; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-asi-return-object",
+                lambda value: None,
+                "export function activate(host) { return {}\nhost.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-asi-bare-return",
+                lambda value: None,
+                "export function activate(host) { return\nhost.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-throw",
+                lambda value: None,
+                "export function activate(host) { throw new Error(\"stop\"); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-helper-called-after-activation-return",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } return {}; load(); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-lifecycle-return",
+                lambda value: None,
+                "export function activate(host) { return { mount() { return; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-host-reassignment",
+                lambda value: None,
+                "export function activate(host) { host = { request() {} }; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-in-helper-after-activation-host-reassignment",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } host &&= { request() {} }; load(); return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-in-helper-after-lifecycle-host-update",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } return { mount() { ++host; load(); } }; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-in-lifecycle-after-activation-host-reassignment",
+                lambda value: None,
+                "export function activate(host) { host ??= { request() {} }; return { mount() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-in-helper-with-shadowed-host-parameter",
+                lambda value: None,
+                "export function activate(host) { function load(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } load({ request() {} }); return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-in-activation-with-shadowed-host-local",
+                lambda value: None,
+                "export function activate(host) { var host = { request() {} }; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-after-destructuring-host-write",
+                lambda value: None,
+                "export function activate(host) { ({ host } = { host: { request() {} } }); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-after-template-host-write",
+                lambda value: None,
+                "export function activate(host) { `${host = { request() {} }}`; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "unsupported executable template interpolation",
+            ),
+            (
+                "rpc-after-escaped-host-write",
+                lambda value: None,
+                "export function activate(host) { h\\u006fst = { request() {} }; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "must not contain Unicode escape sequences",
+            ),
+            (
+                "rpc-after-hoisted-helper-host-write",
+                lambda value: None,
+                "export function activate(host) { poison(); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); function poison() { host = { request() {} }; } return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-in-statically-false-branch",
+                lambda value: None,
+                "export function activate(host) { if (false) Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})]); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-newline-statically-false-branch",
+                lambda value: None,
+                "export function activate(host) { if (false)\n host.request(\"xsec.approvals.list\", {}); if (true)\n undefined;\n else\n host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-newline-continued-statically-false-branch",
+                lambda value: None,
+                "export function activate(host) { if (false) void\n host.request(\"xsec.approvals.list\", {}); if (false) void\n host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-statically-true-else-branch",
+                lambda value: None,
+                "export function activate(host) { if (true) {} else { host.request(\"xsec.approvals.list\", {}); } if (true) undefined; else host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-statically-false-loop",
+                lambda value: None,
+                "export function activate(host) { while (false)\n host.request(\"xsec.approvals.list\", {}); for (; false;) { host.request(\"xsec.approvals.statistics\", {}); } return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-statically-false-for-update",
+                lambda value: None,
+                "export function activate(host) { for (; false; host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})) {} return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-false-short-circuit",
+                lambda value: None,
+                "export function activate(host) { false && host.request(\"xsec.approvals.list\", {}); false && host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-false-ternary-consequent",
+                lambda value: None,
+                "export function activate(host) { false ? host.request(\"xsec.approvals.list\", {}) : undefined; false ? host.request(\"xsec.approvals.statistics\", {}) : undefined; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-true-short-circuit",
+                lambda value: None,
+                "export function activate(host) { true || host.request(\"xsec.approvals.list\", {}); true || host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-true-ternary-alternate",
+                lambda value: None,
+                "export function activate(host) { true ? undefined : host.request(\"xsec.approvals.list\", {}); true ? undefined : host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-direct-eval",
+                lambda value: None,
+                "export function activate(host) { eval(\"host = { request() {} }\"); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-after-function-constructor",
+                lambda value: None,
+                "export function activate(host) { Function(\"return undefined\")(); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-in-shadowed-duplicate-helper",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } function load() {} load(); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-helper-shadowed-by-lexical-declaration",
+                lambda value: None,
+                "export function activate(host) { function list() { host.request(\"xsec.approvals.list\", {}); } function statistics() { host.request(\"xsec.approvals.statistics\", {}); } { const list = () => {}; list(); } { statistics(); let statistics = () => {}; } return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-helper-shadowed-by-var-declaration",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } var load = () => {}; load(); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-uncalled-helper-default-parameters",
+                lambda value: None,
+                "export function activate(host) { function dead(value = Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})])) {} return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-uncalled-arrow-default-parameters",
+                lambda value: None,
+                "export function activate(host) { const dead = (value = Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})])) => {}; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-uncalled-method-default-parameters",
+                lambda value: None,
+                "export function activate(host) { const dead = { load(value = Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})])) {} }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "missing-function-body",
+                lambda value: None,
+                "export function activate(host)\nhost.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {});\n",
+                "valid executable ESM syntax",
+            ),
+            (
+                "wrong-method-capability",
+                lambda value: value["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]["xsec.approvals.list"].update({"capability": "workspace.session.write"}),
+                source,
+                "session read capability",
+            ),
+            (
+                "wrong-method-binding",
+                lambda value: value["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]["xsec.approvals.statistics"].update({"binding": "workspace"}),
+                source,
+                "session read capability",
+            ),
+            (
+                "unexpected-method",
+                lambda value: value["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].update({"xsec.approvals.extra": {"capability": "workspace.session.read", "binding": "session"}}),
+                source,
+                "approvals read RPC methods",
+            ),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory(prefix=f"xsec-market-approvals-{label}-") as directory:
+                candidate = json.loads(json.dumps(manifest))
+                change_manifest(candidate)
+                artifact = Path(directory) / f"{label}.xsec-plugin"
+                with zipfile.ZipFile(artifact, "w") as archive:
+                    archive.writestr("plugin.json", json.dumps(candidate))
+                    archive.writestr(entrypoint, archive_source)
+                with self.assertRaises(MarketplaceValidationError) as raised:
+                    validate_archive(artifact, plugin_id, "1.1.0")
+                self.assertTrue(
+                    message in str(raised.exception)
+                    or "approved official approvals frontend structure" in str(raised.exception),
+                    str(raised.exception),
+                )
+
     def test_unsafe_zip_member_is_rejected_before_manifest_read(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-zip-test-") as directory:
             artifact = Path(directory) / "unsafe.xsec-plugin"

@@ -31,6 +31,10 @@ user-pinned raw-signature protocol.
 
 ## Local validation
 
+Node.js 24 is required as well as Python 3.13. Marketplace validation invokes
+`node --check` only against a temporary `.mjs` copy to parse the approvals
+frontend; it does not import or execute plugin code.
+
 ```powershell
 $temporary = Join-Path $env:TEMP xsec-marketplace-build
 New-Item -ItemType Directory -Path $temporary
