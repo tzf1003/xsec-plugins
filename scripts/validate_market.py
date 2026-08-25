@@ -301,6 +301,8 @@ def named_javascript_function_blocks(tokens: list[tuple[str, str]]) -> list[tupl
 
     blocks: list[tuple[str, int, int, int]] = []
     for index in range(len(tokens)):
+        if index and tokens[index - 1] == ("identifier", "async") and tokens[index] == ("identifier", "function"):
+            continue
         cursor = index
         if tokens[cursor] == ("identifier", "async"):
             cursor += 1
@@ -503,6 +505,57 @@ def is_in_block(index: int, blocks: list[tuple[int, int]]) -> bool:
     return any(opening_brace < index < closing_brace for opening_brace, closing_brace in blocks)
 
 
+def is_in_statically_false_branch(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Reject evidence in a literal ``if (false)`` branch without execution."""
+
+    for cursor in range(len(tokens) - 4):
+        if tokens[cursor:cursor + 3] != [
+            ("identifier", "if"),
+            ("punctuation", "("),
+            ("identifier", "false"),
+        ]:
+            continue
+        if tokens[cursor + 3] != ("punctuation", ")"):
+            continue
+        body_start = cursor + 4
+        if body_start >= len(tokens):
+            continue
+        if tokens[body_start] == ("punctuation", "{"):
+            body_end = matching_brace(tokens, body_start)
+            if body_end is not None and body_start < index < body_end:
+                return True
+            continue
+        brace_depth = 0
+        parenthesis_depth = 0
+        bracket_depth = 0
+        body_end = len(tokens)
+        for end in range(body_start, len(tokens)):
+            current = tokens[end]
+            if current == ("punctuation", "{"):
+                brace_depth += 1
+            elif current == ("punctuation", "}") and brace_depth:
+                brace_depth -= 1
+            elif current == ("punctuation", "("):
+                parenthesis_depth += 1
+            elif current == ("punctuation", ")") and parenthesis_depth:
+                parenthesis_depth -= 1
+            elif current == ("punctuation", "["):
+                bracket_depth += 1
+            elif current == ("punctuation", "]") and bracket_depth:
+                bracket_depth -= 1
+            elif (
+                current in {("punctuation", ";"), ("newline", "\n")}
+                and brace_depth == 0
+                and parenthesis_depth == 0
+                and bracket_depth == 0
+            ):
+                body_end = end
+                break
+        if body_start <= index < body_end:
+            return True
+    return False
+
+
 def declarations_bind_host(tokens: list[tuple[str, str]], start: int, end: int) -> bool:
     """Conservatively reject local declarations that shadow the broker name."""
 
@@ -692,6 +745,8 @@ def reachable_named_functions(
     by_name: dict[str, list[int]] = {}
     for block_index, (name, _, _, _) in enumerate(blocks):
         by_name.setdefault(name, []).append(block_index)
+    if any(len(block_indexes) != 1 for block_indexes in by_name.values()):
+        return set()
     reachable: set[int] = set()
     pending: list[int] = []
     edges: dict[int, set[int]] = {block_index: set() for block_index in range(len(blocks))}
@@ -720,6 +775,8 @@ def reachable_named_functions(
         # A call captured by an unsupported closure cannot establish a
         # reachability proof for a named helper.
         if is_in_block(index, unsupported_blocks):
+            continue
+        if is_in_statically_false_branch(tokens, index):
             continue
         caller = enclosing_named_function(index, blocks)
         lifecycle_owner = next(
@@ -771,6 +828,8 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
             continue
         if is_in_block(index, unsupported_blocks):
             continue
+        if is_in_statically_false_branch(tokens, index):
+            continue
         owner = enclosing_named_function(index, named_blocks)
         if owner is not None and (
             owner not in reachable_blocks
@@ -814,7 +873,14 @@ def has_only_approvals_host_usage(tokens: list[tuple[str, str]]) -> bool:
         if suffix[:2] == [
             ("punctuation", "."),
             ("identifier", "context"),
-        ]:
+        ] and index + 3 < len(tokens) and tokens[index + 3] in {
+            ("punctuation", ";"),
+            ("punctuation", ")"),
+            ("punctuation", ","),
+            ("punctuation", "}"),
+            ("punctuation", "]"),
+            ("newline", "\n"),
+        }:
             continue
         if len(suffix) >= 4 and suffix[:3] == [
             ("punctuation", "."),

@@ -272,6 +272,24 @@ export function renderPlaceholder() {}
                 "host broker contract",
             ),
             (
+                "rpc-after-hoisted-helper-host-write",
+                lambda value: None,
+                "export function activate(host) { poison(); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); function poison() { host = { request() {} }; } return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-in-statically-false-branch",
+                lambda value: None,
+                "export function activate(host) { if (false) Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})]); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-shadowed-duplicate-helper",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } function load() {} load(); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "missing-function-body",
                 lambda value: None,
                 "export function activate(host)\nhost.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {});\n",
