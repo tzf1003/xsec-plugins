@@ -415,6 +415,7 @@ def enclosing_named_function(index: int, blocks: list[tuple[str, int, int, int]]
 def activation_lifecycle_method_blocks(
     tokens: list[tuple[str, str]],
     named_blocks: list[tuple[str, int, int, int]],
+    unsupported_blocks: list[tuple[int, int]],
 ) -> set[tuple[int, int]]:
     """Return mount/update/dispose methods on an activation's returned object."""
 
@@ -423,7 +424,10 @@ def activation_lifecycle_method_blocks(
         if tokens[index:index + 2] != [
             ("identifier", "return"),
             ("punctuation", "{"),
-        ] or enclosing_named_function(index, named_blocks) is not None:
+        ] or (
+            enclosing_named_function(index, named_blocks) is not None
+            or is_in_block(index, unsupported_blocks)
+        ):
             continue
         object_closing = matching_brace(tokens, index + 1)
         if object_closing is None:
@@ -572,7 +576,8 @@ def reachable_named_functions(
 
 def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
     named_blocks = named_javascript_function_blocks(tokens)
-    lifecycle_blocks = activation_lifecycle_method_blocks(tokens, named_blocks)
+    provisional_unsupported_blocks = unsupported_javascript_function_blocks(tokens, set())
+    lifecycle_blocks = activation_lifecycle_method_blocks(tokens, named_blocks, provisional_unsupported_blocks)
     unsupported_blocks = unsupported_javascript_function_blocks(tokens, lifecycle_blocks)
     reachable_blocks = reachable_named_functions(tokens, named_blocks, unsupported_blocks)
     calls: set[str] = set()
