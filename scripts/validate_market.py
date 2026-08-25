@@ -166,12 +166,20 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
     length = len(source)
     while index < length:
         character = source[index]
+        if character in {"\n", "\r"}:
+            tokens.append(("newline", "\n"))
+            index += 2 if character == "\r" and index + 1 < length and source[index + 1] == "\n" else 1
+            continue
         if character.isspace():
             index += 1
             continue
         if source.startswith("//", index):
             newline = source.find("\n", index + 2)
-            index = length if newline == -1 else newline + 1
+            if newline == -1:
+                index = length
+            else:
+                tokens.append(("newline", "\n"))
+                index = newline + 1
             continue
         if source.startswith("/*", index):
             end = source.find("*/", index + 2)
@@ -576,7 +584,10 @@ def is_after_unconditional_return(
         elif token == ("punctuation", "]") and bracket_depth:
             bracket_depth -= 1
         elif (
-            token == ("identifier", "return")
+            token in {
+                ("identifier", "return"),
+                ("identifier", "throw"),
+            }
             and brace_depth == 0
             and parenthesis_depth == 0
             and bracket_depth == 0
@@ -584,8 +595,18 @@ def is_after_unconditional_return(
             expression_braces = 0
             expression_parentheses = 0
             expression_brackets = 0
+            expression_started = False
             for end in range(cursor + 1, min(index, scope_end)):
                 current = tokens[end]
+                if current == ("newline", "\n"):
+                    if not expression_started or (
+                        expression_braces == 0
+                        and expression_parentheses == 0
+                        and expression_brackets == 0
+                    ):
+                        return True
+                    continue
+                expression_started = True
                 if current == ("punctuation", "{"):
                     expression_braces += 1
                 elif current == ("punctuation", "}") and expression_braces:
