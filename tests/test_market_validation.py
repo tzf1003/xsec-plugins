@@ -236,6 +236,18 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-helper-after-activation-host-reassignment",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } host &&= { request() {} }; load(); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-helper-after-lifecycle-host-update",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } return { mount() { ++host; load(); } }; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "rpc-in-helper-with-shadowed-host-parameter",
                 lambda value: None,
                 "export function activate(host) { function load(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } load({ request() {} }); return {}; }\n",

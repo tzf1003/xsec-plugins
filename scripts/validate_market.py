@@ -657,6 +657,27 @@ def host_is_reassigned_before(
             (("punctuation", "-"), ("punctuation", "-")),
         }:
             return True
+        if tuple(tokens[cursor + 1:cursor + 4]) in {
+            (("punctuation", "&"), ("punctuation", "&"), ("punctuation", "=")),
+            (("punctuation", "|"), ("punctuation", "|"), ("punctuation", "=")),
+            (("punctuation", "?"), ("punctuation", "?"), ("punctuation", "=")),
+            (("punctuation", "*"), ("punctuation", "*"), ("punctuation", "=")),
+            (("punctuation", "<"), ("punctuation", "<"), ("punctuation", "=")),
+            (("punctuation", ">"), ("punctuation", ">"), ("punctuation", "=")),
+        }:
+            return True
+        if tuple(tokens[cursor + 1:cursor + 5]) == (
+            ("punctuation", ">"),
+            ("punctuation", ">"),
+            ("punctuation", ">"),
+            ("punctuation", "="),
+        ):
+            return True
+        if tuple(tokens[cursor - 2:cursor]) in {
+            (("punctuation", "+"), ("punctuation", "+")),
+            (("punctuation", "-"), ("punctuation", "-")),
+        }:
+            return True
     return False
 
 
@@ -705,9 +726,15 @@ def reachable_named_functions(
             (block for block in lifecycle_blocks if block[0] < index < block[1]),
             None,
         )
-        if caller is None and lifecycle_owner is None and is_after_unconditional_return(tokens, index, 0, len(tokens)):
+        if caller is None and lifecycle_owner is None and (
+            is_after_unconditional_return(tokens, index, 0, len(tokens))
+            or host_is_reassigned_before(tokens, index, 0)
+        ):
             continue
-        if lifecycle_owner is not None and is_after_unconditional_return(tokens, index, lifecycle_owner[0] + 1, lifecycle_owner[1]):
+        if lifecycle_owner is not None and (
+            is_after_unconditional_return(tokens, index, lifecycle_owner[0] + 1, lifecycle_owner[1])
+            or host_is_reassigned_before(tokens, index, lifecycle_owner[0] + 1)
+        ):
             continue
         for callee in by_name[value]:
             if caller is None:
