@@ -50,6 +50,12 @@ APPROVALS_FRONTEND_CAPABILITY = "workspace.session.read"
 APPROVALS_FRONTEND_BINDING = "session"
 JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
 APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
+# The approvals frontend is the first official package whose archive contract
+# needs a browser-side broker implementation.  Its complete reviewed source is
+# pinned intentionally: accepting arbitrary JavaScript while trying to prove
+# every execution path with a home-grown parser is unsound.  Updating this
+# package requires explicitly reviewing and changing this pin in the same PR.
+APPROVALS_FRONTEND_SOURCE_SHA256 = "bff7a5e232bbe6ae75651edc267795be4bfec3588e167693f733c5e0da1db8f0"
 
 
 class MarketplaceValidationError(ValueError):
@@ -293,146 +299,6 @@ def activate_body_tokens(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]
         if closing is not None:
             return tokens[cursor + 6:closing]
     return None
-
-
-def named_javascript_function_blocks(tokens: list[tuple[str, str]]) -> list[tuple[str, int, int, int]]:
-    """Find ordinary named function blocks in an activation implementation.
-
-    The frontend contract does not try to implement a JavaScript evaluator. It
-    only needs a small call graph to distinguish an activation helper that is
-    invoked from an inert nested helper that is never reached. Unsupported
-    function forms holding broker calls are rejected below.
-    """
-
-    blocks: list[tuple[str, int, int, int]] = []
-    for index in range(len(tokens)):
-        if index and tokens[index - 1] == ("identifier", "async") and tokens[index] == ("identifier", "function"):
-            continue
-        cursor = index
-        if tokens[cursor] == ("identifier", "async"):
-            cursor += 1
-        if cursor + 2 >= len(tokens):
-            continue
-        if tokens[cursor] != ("identifier", "function"):
-            continue
-        name_kind, name = tokens[cursor + 1]
-        if name_kind != "identifier" or tokens[cursor + 2] != ("punctuation", "("):
-            continue
-        closing_parenthesis = matching_parenthesis(tokens, cursor + 2)
-        if closing_parenthesis is None or closing_parenthesis + 1 >= len(tokens) or tokens[closing_parenthesis + 1] != ("punctuation", "{"):
-            continue
-        opening_brace = closing_parenthesis + 1
-        closing_brace = matching_brace(tokens, opening_brace)
-        if closing_brace is not None:
-            blocks.append((name, index, opening_brace, closing_brace))
-    return blocks
-
-
-def unsupported_javascript_function_blocks(
-    tokens: list[tuple[str, str]],
-    lifecycle_blocks: set[tuple[int, int]],
-) -> list[tuple[int, int]]:
-    """Return lexical function-like blocks the small call graph cannot prove."""
-
-    blocks: list[tuple[int, int]] = []
-    for index in range(len(tokens) - 1):
-        # Anonymous and generator function expressions have a brace-delimited
-        # body, but no modeled activation call-graph node.  A named generator
-        # is also deliberately unsupported: the verifier cannot establish
-        # that an iterator was advanced.  None can supply broker evidence.
-        cursor = index
-        if tokens[cursor] == ("identifier", "async"):
-            cursor += 1
-        if cursor < len(tokens) and tokens[cursor] == ("identifier", "function"):
-            parameter_cursor = cursor + 1
-            generator = parameter_cursor < len(tokens) and tokens[parameter_cursor] == ("punctuation", "*")
-            if generator:
-                parameter_cursor += 1
-            named = parameter_cursor < len(tokens) and tokens[parameter_cursor][0] == "identifier"
-            if named:
-                parameter_cursor += 1
-            if parameter_cursor >= len(tokens) or tokens[parameter_cursor] != ("punctuation", "("):
-                continue
-            closing_parenthesis = matching_parenthesis(tokens, parameter_cursor)
-            if (
-                closing_parenthesis is not None
-                and closing_parenthesis + 1 < len(tokens)
-                and tokens[closing_parenthesis + 1] == ("punctuation", "{")
-                and (generator or not named)
-            ):
-                closing_brace = matching_brace(tokens, closing_parenthesis + 1)
-                if closing_brace is not None and (closing_parenthesis + 1, closing_brace) not in lifecycle_blocks:
-                    blocks.append((closing_parenthesis + 1, closing_brace))
-
-        # A method-shaped body (``name(...) {``) has no simple lexical node
-        # in this verifier's call graph.  Exclude it rather than treating its
-        # RPCs as activation-level evidence.  Named ``function name`` blocks
-        # are modeled separately and remain eligible.
-        if (
-            tokens[index][0] == "identifier"
-            and tokens[index] != ("identifier", "function")
-            and tokens[index + 1] == ("punctuation", "(")
-            and (not index or tokens[index - 1] != ("identifier", "function"))
-        ):
-            closing_parenthesis = matching_parenthesis(tokens, index + 1)
-            if (
-                closing_parenthesis is not None
-                and closing_parenthesis + 1 < len(tokens)
-                and tokens[closing_parenthesis + 1] == ("punctuation", "{")
-            ):
-                closing_brace = matching_brace(tokens, closing_parenthesis + 1)
-                if closing_brace is not None and (closing_parenthesis + 1, closing_brace) not in lifecycle_blocks:
-                    blocks.append((closing_parenthesis + 1, closing_brace))
-
-        # Arrow functions may hold a broker request, but their invocation is
-        # not represented by this intentionally narrow verifier.
-        if tokens[index:index + 3] == [
-            ("punctuation", "="),
-            ("punctuation", ">"),
-            ("punctuation", "{"),
-        ]:
-            closing = matching_brace(tokens, index + 2)
-            if closing is not None:
-                blocks.append((index + 2, closing))
-        # Expression-bodied arrows do not have a brace-delimited body.  Keep
-        # their body out of the proof as well; the next top-level statement
-        # separator (or surrounding object/class block) ends the expression.
-        if tokens[index:index + 2] == [
-            ("punctuation", "="),
-            ("punctuation", ">"),
-        ] and (index + 2 >= len(tokens) or tokens[index + 2] != ("punctuation", "{")):
-            parenthesis_depth = 0
-            bracket_depth = 0
-            cursor = index + 2
-            while cursor < len(tokens):
-                token = tokens[cursor]
-                if token == ("punctuation", "("):
-                    parenthesis_depth += 1
-                elif token == ("punctuation", ")") and parenthesis_depth:
-                    parenthesis_depth -= 1
-                elif token == ("punctuation", "["):
-                    bracket_depth += 1
-                elif token == ("punctuation", "]") and bracket_depth:
-                    bracket_depth -= 1
-                elif parenthesis_depth == 0 and bracket_depth == 0 and token in {
-                    ("punctuation", ";"),
-                    ("punctuation", ","),
-                    ("punctuation", "}"),
-                }:
-                    break
-                cursor += 1
-            blocks.append((index + 1, cursor))
-        # Likewise a class body cannot be an activation call-graph node.
-        if tokens[index] == ("identifier", "class"):
-            for cursor in range(index + 1, len(tokens)):
-                if tokens[cursor] == ("punctuation", "{"):
-                    closing = matching_brace(tokens, cursor)
-                    if closing is not None:
-                        blocks.append((cursor, closing))
-                    break
-                if tokens[cursor] == ("punctuation", ";"):
-                    break
-    return blocks
 
 
 def enclosing_named_function(index: int, blocks: list[tuple[str, int, int, int]]) -> int | None:
@@ -1146,10 +1012,11 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     """Verify the first non-placeholder official frontend release contract.
 
     This is deliberately a static, fail-closed check: marketplace validation
-    must not execute an archive's untrusted JavaScript.  It proves that the
-    approvals package declares the v2 broker contract and exports its expected
-    activation function, while the Desktop host remains responsible for
-    manifest-derived permission checks at execution time.
+    must not execute an archive's untrusted JavaScript.  The manifest metadata
+    and basic ESM shape are validated independently; the official approvals
+    implementation itself is an exact reviewed-source allowlist, rather than
+    an attempted proof of arbitrary JavaScript reachability.  The Desktop host
+    remains responsible for manifest-derived permission checks at execution.
     """
 
     if manifest.get("name") != APPROVALS_PLUGIN_ID:
@@ -1179,8 +1046,9 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
         fail(f"{label} must export an executable activate(host) function")
     if not has_only_approvals_host_usage(body):
         fail(f"{label} must use only the approvals host broker contract")
-    if declared_approvals_rpc_calls(body) != APPROVALS_FRONTEND_METHODS:
-        fail(f"{label} must implement the declared approvals RPC requests")
+    normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    if hashlib.sha256(normalized_source.encode("utf-8")).hexdigest() != APPROVALS_FRONTEND_SOURCE_SHA256:
+        fail(f"{label} must match the approved official approvals frontend structure")
 
 
 def zip_member_is_regular_file(info: zipfile.ZipInfo) -> bool:

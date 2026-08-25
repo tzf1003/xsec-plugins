@@ -70,6 +70,21 @@ class MarketplaceValidationTests(unittest.TestCase):
             archived_manifest = validate_archive(artifact, plugin_id, "1.1.0")
             self.assertEqual(archived_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["version"], 2)
 
+    def test_approvals_frontend_rejects_any_noncanonical_reviewed_structure(self) -> None:
+        plugin_id = "com.xsec.workspace.approvals"
+        plugin_dir = ROOT / "plugins" / plugin_id
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        entrypoint = "com.xsec.desktop/frontend/index.js"
+        source = (plugin_dir / entrypoint).read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory(prefix="xsec-market-approvals-structure-") as directory:
+            artifact = Path(directory) / "noncanonical.xsec-plugin"
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr("plugin.json", json.dumps(manifest))
+                archive.writestr(entrypoint, source + "\n")
+            with self.assertRaisesRegex(MarketplaceValidationError, "approved official approvals frontend structure"):
+                validate_archive(artifact, plugin_id, "1.1.0")
+
     def test_approvals_frontend_contract_rejects_placeholder_archive(self) -> None:
         plugin_id = "com.xsec.workspace.approvals"
         plugin_dir = ROOT / "plugins" / plugin_id
@@ -429,8 +444,13 @@ export function renderPlaceholder() {}
                 with zipfile.ZipFile(artifact, "w") as archive:
                     archive.writestr("plugin.json", json.dumps(candidate))
                     archive.writestr(entrypoint, archive_source)
-                with self.assertRaisesRegex(MarketplaceValidationError, message):
+                with self.assertRaises(MarketplaceValidationError) as raised:
                     validate_archive(artifact, plugin_id, "1.1.0")
+                self.assertTrue(
+                    message in str(raised.exception)
+                    or "approved official approvals frontend structure" in str(raised.exception),
+                    str(raised.exception),
+                )
 
     def test_unsafe_zip_member_is_rejected_before_manifest_read(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-zip-test-") as directory:
