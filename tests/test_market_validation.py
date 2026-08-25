@@ -296,9 +296,21 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-newline-statically-false-branch",
+                lambda value: None,
+                "export function activate(host) { if (false)\n host.request(\"xsec.approvals.list\", {}); if (true)\n undefined;\n else\n host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "rpc-in-statically-true-else-branch",
                 lambda value: None,
                 "export function activate(host) { if (true) {} else { host.request(\"xsec.approvals.list\", {}); } if (true) undefined; else host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-statically-false-loop",
+                lambda value: None,
+                "export function activate(host) { while (false)\n host.request(\"xsec.approvals.list\", {}); for (; false;) { host.request(\"xsec.approvals.statistics\", {}); } return {}; }\n",
                 "declared approvals RPC requests",
             ),
             (
@@ -353,6 +365,12 @@ export function renderPlaceholder() {}
                 "rpc-in-helper-shadowed-by-var-declaration",
                 lambda value: None,
                 "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } var load = () => {}; load(); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-uncalled-helper-default-parameters",
+                lambda value: None,
+                "export function activate(host) { function dead(value = Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})])) {} return {}; }\n",
                 "declared approvals RPC requests",
             ),
             (

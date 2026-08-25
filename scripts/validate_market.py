@@ -513,6 +513,8 @@ def is_in_block(index: int, blocks: list[tuple[int, int]]) -> bool:
 def conditional_branch_end(tokens: list[tuple[str, str]], body_start: int) -> int:
     """Return the exclusive end of a compact ``if``/``else`` statement body."""
 
+    while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
+        body_start += 1
     if body_start >= len(tokens):
         return len(tokens)
     if tokens[body_start] == ("punctuation", "{"):
@@ -558,6 +560,8 @@ def is_in_statically_unreachable_if_branch(tokens: list[tuple[str, str]], index:
         if condition not in {("identifier", "false"), ("identifier", "true")} or tokens[cursor + 3] != ("punctuation", ")"):
             continue
         body_start = cursor + 4
+        while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
+            body_start += 1
         body_end = conditional_branch_end(tokens, body_start)
         if condition == ("identifier", "false") and body_start <= index < body_end:
             return True
@@ -572,9 +576,65 @@ def is_in_statically_unreachable_if_branch(tokens: list[tuple[str, str]], index:
             and tokens[else_cursor] == ("identifier", "else")
         ):
             alternate_start = else_cursor + 1
+            while alternate_start < len(tokens) and tokens[alternate_start] == ("newline", "\n"):
+                alternate_start += 1
             alternate_end = conditional_branch_end(tokens, alternate_start)
             if alternate_start <= index < alternate_end:
                 return True
+    return False
+
+
+def is_in_statically_unreachable_loop_body(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Reject evidence in loop bodies whose literal condition prevents entry."""
+
+    for cursor in range(len(tokens) - 4):
+        if tokens[cursor] == ("identifier", "while") and tokens[cursor + 1] == ("punctuation", "("):
+            closing = matching_parenthesis(tokens, cursor + 1)
+            if (
+                closing is not None
+                and tokens[cursor + 2:closing] == [("identifier", "false")]
+            ):
+                body_start = closing + 1
+                while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
+                    body_start += 1
+                body_end = conditional_branch_end(tokens, body_start)
+                if body_start <= index < body_end:
+                    return True
+        if tokens[cursor] == ("identifier", "for") and tokens[cursor + 1] == ("punctuation", "("):
+            closing = matching_parenthesis(tokens, cursor + 1)
+            if (
+                closing is not None
+                and tokens[cursor + 2:cursor + 5] == [
+                    ("punctuation", ";"),
+                    ("identifier", "false"),
+                    ("punctuation", ";"),
+                ]
+            ):
+                body_start = closing + 1
+                while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
+                    body_start += 1
+                body_end = conditional_branch_end(tokens, body_start)
+                if body_start <= index < body_end:
+                    return True
+    return False
+
+
+def is_in_javascript_function_parameters(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Exclude unproved default-parameter initializers from broker evidence."""
+
+    for cursor, token in enumerate(tokens):
+        if token != ("identifier", "function"):
+            continue
+        parameter_start = cursor + 1
+        if parameter_start < len(tokens) and tokens[parameter_start] == ("punctuation", "*"):
+            parameter_start += 1
+        if parameter_start < len(tokens) and tokens[parameter_start][0] == "identifier":
+            parameter_start += 1
+        if parameter_start >= len(tokens) or tokens[parameter_start] != ("punctuation", "("):
+            continue
+        parameter_end = matching_parenthesis(tokens, parameter_start)
+        if parameter_end is not None and parameter_start < index < parameter_end:
+            return True
     return False
 
 
@@ -948,9 +1008,15 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
             ("punctuation", "("),
         ]:
             continue
+        if is_in_javascript_function_parameters(tokens, index):
+            continue
         if is_in_block(index, unsupported_blocks):
             continue
-        if is_in_statically_unreachable_if_branch(tokens, index) or is_in_statically_unreachable_expression(tokens, index):
+        if (
+            is_in_statically_unreachable_if_branch(tokens, index)
+            or is_in_statically_unreachable_loop_body(tokens, index)
+            or is_in_statically_unreachable_expression(tokens, index)
+        ):
             continue
         owner = enclosing_named_function(index, named_blocks)
         if owner is not None and (
