@@ -296,6 +296,30 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-after-false-short-circuit",
+                lambda value: None,
+                "export function activate(host) { false && host.request(\"xsec.approvals.list\", {}); false && host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-false-ternary-consequent",
+                lambda value: None,
+                "export function activate(host) { false ? host.request(\"xsec.approvals.list\", {}) : undefined; false ? host.request(\"xsec.approvals.statistics\", {}) : undefined; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-direct-eval",
+                lambda value: None,
+                "export function activate(host) { eval(\"host = { request() {} }\"); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "host broker contract",
+            ),
+            (
+                "rpc-after-function-constructor",
+                lambda value: None,
+                "export function activate(host) { Function(\"return undefined\")(); host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "host broker contract",
+            ),
+            (
                 "rpc-in-shadowed-duplicate-helper",
                 lambda value: None,
                 "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } function load() {} load(); return {}; }\n",

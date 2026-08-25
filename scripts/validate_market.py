@@ -561,6 +561,72 @@ def is_in_statically_false_branch(tokens: list[tuple[str, str]], index: int) -> 
     return False
 
 
+def is_in_statically_false_expression(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Reject evidence guarded by a literal-false short circuit or ternary.
+
+    This deliberately recognizes only the two compact forms that can make a
+    syntactically present broker request unconditionally unreachable.  The
+    official frontend has no such expressions, so uncertainty remains
+    fail-closed without trying to implement JavaScript's whole expression
+    grammar.
+    """
+
+    # A semicolon ends the preceding expression.  Newlines do not: JavaScript
+    # permits ``false &&\\n host.request(...)`` to continue the expression.
+    statement_start = index
+    while statement_start > 0:
+        previous = tokens[statement_start - 1]
+        if previous == ("punctuation", ";"):
+            break
+        statement_start -= 1
+    for cursor in range(statement_start, index - 2):
+        if tokens[cursor:cursor + 3] == [
+            ("identifier", "false"),
+            ("punctuation", "&"),
+            ("punctuation", "&"),
+        ]:
+            return True
+
+    # For a literal ``false ? consequent : alternate``, evidence in the
+    # consequent cannot run.  Pick the nearest literal-false ``?`` before the
+    # request, then ensure no matching top-level ``:`` has started its
+    # alternate branch.  Nested ternaries are skipped conservatively.
+    for question in range(index - 1, statement_start, -1):
+        if tokens[question - 1:question + 1] != [
+            ("identifier", "false"),
+            ("punctuation", "?"),
+        ]:
+            continue
+        ternary_depth = 0
+        delimiter_depth = 0
+        alternate_started = False
+        for cursor in range(question + 1, index):
+            token = tokens[cursor]
+            if token in {
+                ("punctuation", "("),
+                ("punctuation", "["),
+                ("punctuation", "{"),
+            }:
+                delimiter_depth += 1
+            elif token in {
+                ("punctuation", ")"),
+                ("punctuation", "]"),
+                ("punctuation", "}"),
+            } and delimiter_depth:
+                delimiter_depth -= 1
+            elif delimiter_depth == 0 and token == ("punctuation", "?"):
+                ternary_depth += 1
+            elif delimiter_depth == 0 and token == ("punctuation", ":"):
+                if ternary_depth:
+                    ternary_depth -= 1
+                else:
+                    alternate_started = True
+                    break
+        if not alternate_started:
+            return True
+    return False
+
+
 def declarations_bind_host(tokens: list[tuple[str, str]], start: int, end: int) -> bool:
     """Conservatively reject local declarations that shadow the broker name."""
 
@@ -781,7 +847,7 @@ def reachable_named_functions(
         # reachability proof for a named helper.
         if is_in_block(index, unsupported_blocks):
             continue
-        if is_in_statically_false_branch(tokens, index):
+        if is_in_statically_false_branch(tokens, index) or is_in_statically_false_expression(tokens, index):
             continue
         caller = enclosing_named_function(index, blocks)
         lifecycle_owner = next(
@@ -833,7 +899,7 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
             continue
         if is_in_block(index, unsupported_blocks):
             continue
-        if is_in_statically_false_branch(tokens, index):
+        if is_in_statically_false_branch(tokens, index) or is_in_statically_false_expression(tokens, index):
             continue
         owner = enclosing_named_function(index, named_blocks)
         if owner is not None and (
@@ -872,6 +938,16 @@ def has_only_approvals_host_usage(tokens: list[tuple[str, str]]) -> bool:
     """Keep the official approvals frontend's broker surface deliberately tiny."""
 
     for index, token in enumerate(tokens):
+        # Dynamic evaluators make lexical `host` provenance unverifiable
+        # without executing untrusted code.  The official frontend neither
+        # needs nor permits them, so reject bare direct calls outright.
+        if (
+            token in {("identifier", "eval"), ("identifier", "Function")}
+            and index + 1 < len(tokens)
+            and tokens[index + 1] == ("punctuation", "(")
+            and (index == 0 or tokens[index - 1] != ("punctuation", "."))
+        ):
+            return False
         if token != ("identifier", "host"):
             continue
         suffix = tokens[index + 1:index + 5]
