@@ -248,6 +248,12 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-lifecycle-after-activation-host-reassignment",
+                lambda value: None,
+                "export function activate(host) { host ??= { request() {} }; return { mount() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "rpc-in-helper-with-shadowed-host-parameter",
                 lambda value: None,
                 "export function activate(host) { function load(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } load({ request() {} }); return {}; }\n",

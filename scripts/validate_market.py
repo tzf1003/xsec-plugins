@@ -734,6 +734,7 @@ def reachable_named_functions(
         if lifecycle_owner is not None and (
             is_after_unconditional_return(tokens, index, lifecycle_owner[0] + 1, lifecycle_owner[1])
             or host_is_reassigned_before(tokens, index, lifecycle_owner[0] + 1)
+            or host_is_reassigned_before(tokens, lifecycle_owner[0], 0)
         ):
             continue
         for callee in by_name[value]:
@@ -788,6 +789,7 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
                     lifecycle_block_binds_host(tokens, lifecycle_owner)
                     or is_after_unconditional_return(tokens, index, lifecycle_owner[0] + 1, lifecycle_owner[1])
                     or host_is_reassigned_before(tokens, index, lifecycle_owner[0] + 1)
+                    or host_is_reassigned_before(tokens, lifecycle_owner[0], 0)
                 ):
                     continue
             elif (
