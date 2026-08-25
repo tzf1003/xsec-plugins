@@ -296,6 +296,12 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-statically-true-else-branch",
+                lambda value: None,
+                "export function activate(host) { if (true) {} else { host.request(\"xsec.approvals.list\", {}); } if (true) undefined; else host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "rpc-after-false-short-circuit",
                 lambda value: None,
                 "export function activate(host) { false && host.request(\"xsec.approvals.list\", {}); false && host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
@@ -341,6 +347,12 @@ export function renderPlaceholder() {}
                 "rpc-in-helper-shadowed-by-lexical-declaration",
                 lambda value: None,
                 "export function activate(host) { function list() { host.request(\"xsec.approvals.list\", {}); } function statistics() { host.request(\"xsec.approvals.statistics\", {}); } { const list = () => {}; list(); } { statistics(); let statistics = () => {}; } return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-helper-shadowed-by-var-declaration",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } var load = () => {}; load(); return {}; }\n",
                 "declared approvals RPC requests",
             ),
             (

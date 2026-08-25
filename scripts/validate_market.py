@@ -510,54 +510,71 @@ def is_in_block(index: int, blocks: list[tuple[int, int]]) -> bool:
     return any(opening_brace < index < closing_brace for opening_brace, closing_brace in blocks)
 
 
-def is_in_statically_false_branch(tokens: list[tuple[str, str]], index: int) -> bool:
-    """Reject evidence in a literal ``if (false)`` branch without execution."""
+def conditional_branch_end(tokens: list[tuple[str, str]], body_start: int) -> int:
+    """Return the exclusive end of a compact ``if``/``else`` statement body."""
+
+    if body_start >= len(tokens):
+        return len(tokens)
+    if tokens[body_start] == ("punctuation", "{"):
+        closing_brace = matching_brace(tokens, body_start)
+        return len(tokens) if closing_brace is None else closing_brace + 1
+    brace_depth = 0
+    parenthesis_depth = 0
+    bracket_depth = 0
+    for cursor in range(body_start, len(tokens)):
+        current = tokens[cursor]
+        if current == ("punctuation", "{"):
+            brace_depth += 1
+        elif current == ("punctuation", "}") and brace_depth:
+            brace_depth -= 1
+        elif current == ("punctuation", "("):
+            parenthesis_depth += 1
+        elif current == ("punctuation", ")") and parenthesis_depth:
+            parenthesis_depth -= 1
+        elif current == ("punctuation", "["):
+            bracket_depth += 1
+        elif current == ("punctuation", "]") and bracket_depth:
+            bracket_depth -= 1
+        elif (
+            current in {("punctuation", ";"), ("newline", "\n")}
+            and brace_depth == 0
+            and parenthesis_depth == 0
+            and bracket_depth == 0
+        ):
+            return cursor
+    return len(tokens)
+
+
+def is_in_statically_unreachable_if_branch(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Reject literal-Boolean ``if`` branches that cannot execute."""
 
     for cursor in range(len(tokens) - 4):
-        if tokens[cursor:cursor + 3] != [
+        if tokens[cursor:cursor + 2] != [
             ("identifier", "if"),
             ("punctuation", "("),
-            ("identifier", "false"),
         ]:
             continue
-        if tokens[cursor + 3] != ("punctuation", ")"):
+        condition = tokens[cursor + 2]
+        if condition not in {("identifier", "false"), ("identifier", "true")} or tokens[cursor + 3] != ("punctuation", ")"):
             continue
         body_start = cursor + 4
-        if body_start >= len(tokens):
-            continue
-        if tokens[body_start] == ("punctuation", "{"):
-            body_end = matching_brace(tokens, body_start)
-            if body_end is not None and body_start < index < body_end:
-                return True
-            continue
-        brace_depth = 0
-        parenthesis_depth = 0
-        bracket_depth = 0
-        body_end = len(tokens)
-        for end in range(body_start, len(tokens)):
-            current = tokens[end]
-            if current == ("punctuation", "{"):
-                brace_depth += 1
-            elif current == ("punctuation", "}") and brace_depth:
-                brace_depth -= 1
-            elif current == ("punctuation", "("):
-                parenthesis_depth += 1
-            elif current == ("punctuation", ")") and parenthesis_depth:
-                parenthesis_depth -= 1
-            elif current == ("punctuation", "["):
-                bracket_depth += 1
-            elif current == ("punctuation", "]") and bracket_depth:
-                bracket_depth -= 1
-            elif (
-                current in {("punctuation", ";"), ("newline", "\n")}
-                and brace_depth == 0
-                and parenthesis_depth == 0
-                and bracket_depth == 0
-            ):
-                body_end = end
-                break
-        if body_start <= index < body_end:
+        body_end = conditional_branch_end(tokens, body_start)
+        if condition == ("identifier", "false") and body_start <= index < body_end:
             return True
+        else_cursor = body_end
+        if else_cursor < len(tokens) and tokens[else_cursor] == ("punctuation", ";"):
+            else_cursor += 1
+        while else_cursor < len(tokens) and tokens[else_cursor] == ("newline", "\n"):
+            else_cursor += 1
+        if (
+            condition == ("identifier", "true")
+            and else_cursor < len(tokens)
+            and tokens[else_cursor] == ("identifier", "else")
+        ):
+            alternate_start = else_cursor + 1
+            alternate_end = conditional_branch_end(tokens, alternate_start)
+            if alternate_start <= index < alternate_end:
+                return True
     return False
 
 
@@ -639,7 +656,7 @@ def lexical_declaration_shadows_helper(tokens: list[tuple[str, str]], name: str)
     """Fail closed when a lexical binding could shadow a helper call.
 
     A full JavaScript scope resolver is intentionally outside this static,
-    non-executing verifier.  A ``const`` or ``let`` declaration sharing a
+    non-executing verifier.  A ``const``, ``let``, or ``var`` declaration sharing a
     helper name is enough ambiguity to reject every matching call edge.  This
     also handles a declaration later in the block, whose temporal-dead-zone
     semantics make an earlier call fail instead of reaching the function.
@@ -648,7 +665,11 @@ def lexical_declaration_shadows_helper(tokens: list[tuple[str, str]], name: str)
     """
 
     for cursor in range(len(tokens) - 1):
-        if tokens[cursor] not in {("identifier", "const"), ("identifier", "let")}:
+        if tokens[cursor] not in {
+            ("identifier", "const"),
+            ("identifier", "let"),
+            ("identifier", "var"),
+        }:
             continue
         if tokens[cursor + 1:cursor + 2] == [("identifier", name)]:
             return True
@@ -875,7 +896,7 @@ def reachable_named_functions(
         # reachability proof for a named helper.
         if is_in_block(index, unsupported_blocks):
             continue
-        if is_in_statically_false_branch(tokens, index) or is_in_statically_unreachable_expression(tokens, index):
+        if is_in_statically_unreachable_if_branch(tokens, index) or is_in_statically_unreachable_expression(tokens, index):
             continue
         if lexical_declaration_shadows_helper(tokens, value):
             continue
@@ -929,7 +950,7 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
             continue
         if is_in_block(index, unsupported_blocks):
             continue
-        if is_in_statically_false_branch(tokens, index) or is_in_statically_unreachable_expression(tokens, index):
+        if is_in_statically_unreachable_if_branch(tokens, index) or is_in_statically_unreachable_expression(tokens, index):
             continue
         owner = enclosing_named_function(index, named_blocks)
         if owner is not None and (
