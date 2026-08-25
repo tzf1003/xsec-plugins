@@ -318,7 +318,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             workflow.index("Require the protected marketplace publication token before checkout or KMS"),
             workflow.index("actions/checkout@v4"),
         )
-        self.assertIn("github.event.head_commit.message != 'chore: publish KMS-signed marketplace artifacts'", workflow)
+        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: publish KMS-signed marketplace artifacts')", workflow)
         self.assertIn("python scripts/kms_marketplace_publisher.py --root .", workflow)
         self.assertIn("python scripts/kms_marketplace_publisher.py --root . --validate-only", workflow)
         self.assertNotIn("XSEC_MARKETPLACE_SIGNING_KEY_B64", workflow)

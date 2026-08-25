@@ -35,8 +35,11 @@ jobs:
           fi
   sign-and-publish:
     needs: enforce-publish-ref
+    # GitHub's merge API puts the generated title in both the subject and
+    # body of the resulting main commit. Match the stable subject prefix so
+    # that a generated publication cannot recursively publish itself.
     if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected && (github.event_name == 'workflow_dispatch' || github.event.head_commit.message != 'chore: publish KMS-signed marketplace artifacts') }}
+      ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected && (github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore: publish KMS-signed marketplace artifacts')) }}
     runs-on: ubuntu-latest
     environment: production
     steps:
