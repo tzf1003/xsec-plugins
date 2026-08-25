@@ -49,6 +49,7 @@ APPROVALS_FRONTEND_METHODS = frozenset({
 APPROVALS_FRONTEND_CAPABILITY = "workspace.session.read"
 APPROVALS_FRONTEND_BINDING = "session"
 JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
+APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
 
 
 class MarketplaceValidationError(ValueError):
@@ -298,7 +299,10 @@ def named_javascript_function_blocks(tokens: list[tuple[str, str]]) -> list[tupl
     return blocks
 
 
-def unsupported_javascript_function_blocks(tokens: list[tuple[str, str]]) -> list[tuple[int, int]]:
+def unsupported_javascript_function_blocks(
+    tokens: list[tuple[str, str]],
+    lifecycle_blocks: set[tuple[int, int]],
+) -> list[tuple[int, int]]:
     """Return lexical function-like blocks the small call graph cannot prove."""
 
     blocks: list[tuple[int, int]] = []
@@ -321,7 +325,27 @@ def unsupported_javascript_function_blocks(tokens: list[tuple[str, str]]) -> lis
                 and tokens[closing_parenthesis + 1] == ("punctuation", "{")
             ):
                 closing_brace = matching_brace(tokens, closing_parenthesis + 1)
-                if closing_brace is not None:
+                if closing_brace is not None and (closing_parenthesis + 1, closing_brace) not in lifecycle_blocks:
+                    blocks.append((closing_parenthesis + 1, closing_brace))
+
+        # A method-shaped body (``name(...) {``) has no simple lexical node
+        # in this verifier's call graph.  Exclude it rather than treating its
+        # RPCs as activation-level evidence.  Named ``function name`` blocks
+        # are modeled separately and remain eligible.
+        if (
+            tokens[index][0] == "identifier"
+            and tokens[index] != ("identifier", "function")
+            and tokens[index + 1] == ("punctuation", "(")
+            and (not index or tokens[index - 1] != ("identifier", "function"))
+        ):
+            closing_parenthesis = matching_parenthesis(tokens, index + 1)
+            if (
+                closing_parenthesis is not None
+                and closing_parenthesis + 1 < len(tokens)
+                and tokens[closing_parenthesis + 1] == ("punctuation", "{")
+            ):
+                closing_brace = matching_brace(tokens, closing_parenthesis + 1)
+                if closing_brace is not None and (closing_parenthesis + 1, closing_brace) not in lifecycle_blocks:
                     blocks.append((closing_parenthesis + 1, closing_brace))
 
         # Arrow functions may hold a broker request, but their invocation is
@@ -388,8 +412,106 @@ def enclosing_named_function(index: int, blocks: list[tuple[str, int, int, int]]
     return min(candidates, key=lambda block_index: blocks[block_index][3] - blocks[block_index][2])
 
 
+def activation_lifecycle_method_blocks(
+    tokens: list[tuple[str, str]],
+    named_blocks: list[tuple[str, int, int, int]],
+) -> set[tuple[int, int]]:
+    """Return mount/update/dispose methods on an activation's returned object."""
+
+    blocks: set[tuple[int, int]] = set()
+    for index in range(len(tokens) - 1):
+        if tokens[index:index + 2] != [
+            ("identifier", "return"),
+            ("punctuation", "{"),
+        ] or enclosing_named_function(index, named_blocks) is not None:
+            continue
+        object_closing = matching_brace(tokens, index + 1)
+        if object_closing is None:
+            continue
+        brace_depth = 1
+        parenthesis_depth = 0
+        bracket_depth = 0
+        for method_index in range(index + 2, object_closing):
+            kind, name = tokens[method_index]
+            if (
+                brace_depth == 1
+                and parenthesis_depth == 0
+                and bracket_depth == 0
+                and kind == "identifier"
+                and name in APPROVALS_FRONTEND_LIFECYCLE_METHODS
+                and method_index + 1 < object_closing
+                and tokens[method_index + 1] == ("punctuation", "(")
+            ):
+                parameter_closing = matching_parenthesis(tokens, method_index + 1)
+                if (
+                    parameter_closing is not None
+                    and parameter_closing + 1 < object_closing
+                    and tokens[parameter_closing + 1] == ("punctuation", "{")
+                ):
+                    method_closing = matching_brace(tokens, parameter_closing + 1)
+                    if method_closing is not None and method_closing < object_closing:
+                        blocks.add((parameter_closing + 1, method_closing))
+            if tokens[method_index] == ("punctuation", "{"):
+                brace_depth += 1
+            elif tokens[method_index] == ("punctuation", "}"):
+                brace_depth -= 1
+            elif tokens[method_index] == ("punctuation", "("):
+                parenthesis_depth += 1
+            elif tokens[method_index] == ("punctuation", ")") and parenthesis_depth:
+                parenthesis_depth -= 1
+            elif tokens[method_index] == ("punctuation", "["):
+                bracket_depth += 1
+            elif tokens[method_index] == ("punctuation", "]") and bracket_depth:
+                bracket_depth -= 1
+    return blocks
+
+
 def is_in_block(index: int, blocks: list[tuple[int, int]]) -> bool:
     return any(opening_brace < index < closing_brace for opening_brace, closing_brace in blocks)
+
+
+def declarations_bind_host(tokens: list[tuple[str, str]], start: int, end: int) -> bool:
+    """Conservatively reject local declarations that shadow the broker name."""
+
+    for index in range(start, end):
+        token = tokens[index]
+        if token in {
+            ("identifier", "function"),
+            ("identifier", "class"),
+        } and index + 1 < end and tokens[index + 1] == ("identifier", "host"):
+            return True
+        if token not in {
+            ("identifier", "const"),
+            ("identifier", "let"),
+            ("identifier", "var"),
+        }:
+            continue
+        cursor = index + 1
+        delimiter_depth = 0
+        while cursor < end:
+            current = tokens[cursor]
+            if current in {("punctuation", "{"), ("punctuation", "["), ("punctuation", "(")}:
+                delimiter_depth += 1
+            elif current in {("punctuation", "}"), ("punctuation", "]"), ("punctuation", ")")} and delimiter_depth:
+                delimiter_depth -= 1
+            elif delimiter_depth == 0 and current in {("punctuation", "="), ("punctuation", ";")}:
+                break
+            if current == ("identifier", "host"):
+                return True
+            cursor += 1
+    return False
+
+
+def block_binds_host(tokens: list[tuple[str, str]], block: tuple[str, int, int, int]) -> bool:
+    """Return whether an eligible helper shadows activation's ``host``."""
+
+    _, declaration_start, opening_brace, closing_brace = block
+    cursor = declaration_start + (tokens[declaration_start] == ("identifier", "async"))
+    parameter_opening = cursor + 2
+    parameter_closing = matching_parenthesis(tokens, parameter_opening)
+    if parameter_closing is not None and ("identifier", "host") in tokens[parameter_opening + 1:parameter_closing]:
+        return True
+    return declarations_bind_host(tokens, opening_brace + 1, closing_brace)
 
 
 def reachable_named_functions(
@@ -450,7 +572,8 @@ def reachable_named_functions(
 
 def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
     named_blocks = named_javascript_function_blocks(tokens)
-    unsupported_blocks = unsupported_javascript_function_blocks(tokens)
+    lifecycle_blocks = activation_lifecycle_method_blocks(tokens, named_blocks)
+    unsupported_blocks = unsupported_javascript_function_blocks(tokens, lifecycle_blocks)
     reachable_blocks = reachable_named_functions(tokens, named_blocks, unsupported_blocks)
     calls: set[str] = set()
     for index in range(len(tokens) - 4):
@@ -465,7 +588,12 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
         if is_in_block(index, unsupported_blocks):
             continue
         owner = enclosing_named_function(index, named_blocks)
-        if owner is not None and owner not in reachable_blocks:
+        if owner is not None and (
+            owner not in reachable_blocks
+            or block_binds_host(tokens, named_blocks[owner])
+        ):
+            continue
+        if owner is None and declarations_bind_host(tokens, 0, len(tokens)):
             continue
         kind, method = sequence[4]
         if kind == "string" and method in APPROVALS_FRONTEND_METHODS:

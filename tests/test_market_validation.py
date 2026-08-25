@@ -164,6 +164,30 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-unreachable-object-method",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = { load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-nested-returned-object-method",
+                lambda value: None,
+                "export function activate(host) { return { mount() {}, extra: { update() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } } }; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-helper-with-shadowed-host-parameter",
+                lambda value: None,
+                "export function activate(host) { function load(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } load({ request() {} }); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-activation-with-shadowed-host-local",
+                lambda value: None,
+                "export function activate(host) { var host = { request() {} }; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "missing-function-body",
                 lambda value: None,
                 "export function activate(host)\nhost.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {});\n",
