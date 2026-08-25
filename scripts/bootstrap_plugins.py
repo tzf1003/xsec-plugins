@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Bootstrap the official marketplace from the Desktop-owned manifest contract.
+"""Synchronize official manifest metadata without generating placeholder UI.
 
-This intentionally copies only manifest metadata. Runtime UI is delivered by
-Desktop's compatible official-plugin bridge while the package API is migrated;
-the marker file makes that transitional ownership explicit instead of silently
-shipping an empty frontend bundle.
+The marketplace owns every executable frontend. This helper intentionally does
+not create one: a missing frontend is a release failure, not a reason to fall
+back to a Desktop-bundled renderer or a misleading success screen.
 """
 
 from __future__ import annotations
@@ -65,22 +64,11 @@ def main() -> None:
             json.dumps(codex_manifest(manifest), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        (destination / "OFFICIAL_PLUGIN_BRIDGE.md").write_text(
-            "# Official plugin bridge\n\n"
-            "This package owns the signed plugin manifest, permissions and release lifecycle. "
-            "XSEC Desktop currently binds its compatible built-in renderer only after this package "
-            "is installed and enabled. The bridge is intentionally explicit so package state, rather "
-            "than the application installer, is the source of truth.\n",
-            encoding="utf-8",
-        )
         frontend = destination / "com.xsec.desktop" / "frontend" / "index.js"
-        frontend.parent.mkdir(parents=True, exist_ok=True)
-        frontend.write_text(
-            "// The Desktop official-plugin bridge owns the compatible renderer.\n"
-            "// This entrypoint keeps the signed package independently valid.\n"
-            "document.body.textContent = 'XSEC official plugin is active in Desktop.';\n",
-            encoding="utf-8",
-        )
+        if not frontend.is_file():
+            raise FileNotFoundError(
+                f"official plugin frontend must be maintained in xsec-plugins: {frontend}"
+            )
         entries.append({
             "name": plugin_id,
             "source": {"source": "local", "path": f"./plugins/{plugin_id}"},
