@@ -182,6 +182,12 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-generator-closure-returning-lifecycle",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = function* () { return { mount() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "rpc-in-lifecycle-with-shadowed-host-parameter",
                 lambda value: None,
                 "export function activate(host) { return { mount(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }\n",

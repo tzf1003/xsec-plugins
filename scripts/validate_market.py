@@ -321,22 +321,29 @@ def unsupported_javascript_function_blocks(
 
     blocks: list[tuple[int, int]] = []
     for index in range(len(tokens) - 1):
-        # Anonymous function expressions have a brace-delimited body, but no
-        # statically identifiable call-graph node.  They therefore cannot
-        # supply evidence that the broker request is reachable.
+        # Anonymous and generator function expressions have a brace-delimited
+        # body, but no modeled activation call-graph node.  A named generator
+        # is also deliberately unsupported: the verifier cannot establish
+        # that an iterator was advanced.  None can supply broker evidence.
         cursor = index
         if tokens[cursor] == ("identifier", "async"):
             cursor += 1
-        if (
-            cursor + 2 < len(tokens)
-            and tokens[cursor] == ("identifier", "function")
-            and tokens[cursor + 1] == ("punctuation", "(")
-        ):
-            closing_parenthesis = matching_parenthesis(tokens, cursor + 1)
+        if cursor < len(tokens) and tokens[cursor] == ("identifier", "function"):
+            parameter_cursor = cursor + 1
+            generator = parameter_cursor < len(tokens) and tokens[parameter_cursor] == ("punctuation", "*")
+            if generator:
+                parameter_cursor += 1
+            named = parameter_cursor < len(tokens) and tokens[parameter_cursor][0] == "identifier"
+            if named:
+                parameter_cursor += 1
+            if parameter_cursor >= len(tokens) or tokens[parameter_cursor] != ("punctuation", "("):
+                continue
+            closing_parenthesis = matching_parenthesis(tokens, parameter_cursor)
             if (
                 closing_parenthesis is not None
                 and closing_parenthesis + 1 < len(tokens)
                 and tokens[closing_parenthesis + 1] == ("punctuation", "{")
+                and (generator or not named)
             ):
                 closing_brace = matching_brace(tokens, closing_parenthesis + 1)
                 if closing_brace is not None and (closing_parenthesis + 1, closing_brace) not in lifecycle_blocks:
