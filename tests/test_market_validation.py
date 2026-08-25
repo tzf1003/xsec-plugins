@@ -152,6 +152,18 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-unreachable-anonymous-helper",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = function () { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-helper-shadowed-by-member-call",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } const other = { load() {} }; other.load(); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "missing-function-body",
                 lambda value: None,
                 "export function activate(host)\nhost.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {});\n",

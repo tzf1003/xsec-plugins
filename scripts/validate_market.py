@@ -302,7 +302,28 @@ def unsupported_javascript_function_blocks(tokens: list[tuple[str, str]]) -> lis
     """Return lexical function-like blocks the small call graph cannot prove."""
 
     blocks: list[tuple[int, int]] = []
-    for index in range(len(tokens) - 2):
+    for index in range(len(tokens) - 1):
+        # Anonymous function expressions have a brace-delimited body, but no
+        # statically identifiable call-graph node.  They therefore cannot
+        # supply evidence that the broker request is reachable.
+        cursor = index
+        if tokens[cursor] == ("identifier", "async"):
+            cursor += 1
+        if (
+            cursor + 2 < len(tokens)
+            and tokens[cursor] == ("identifier", "function")
+            and tokens[cursor + 1] == ("punctuation", "(")
+        ):
+            closing_parenthesis = matching_parenthesis(tokens, cursor + 1)
+            if (
+                closing_parenthesis is not None
+                and closing_parenthesis + 1 < len(tokens)
+                and tokens[closing_parenthesis + 1] == ("punctuation", "{")
+            ):
+                closing_brace = matching_brace(tokens, closing_parenthesis + 1)
+                if closing_brace is not None:
+                    blocks.append((closing_parenthesis + 1, closing_brace))
+
         # Arrow functions may hold a broker request, but their invocation is
         # not represented by this intentionally narrow verifier.
         if tokens[index:index + 3] == [
@@ -388,6 +409,20 @@ def reachable_named_functions(
     for index in range(len(tokens) - 1):
         kind, value = tokens[index]
         if kind != "identifier" or value not in by_name or tokens[index + 1] != ("punctuation", "("):
+            continue
+        # Only a bare ``helper(...)`` call can establish an edge.  A member
+        # call such as ``other.helper(...)`` might target a distinct method
+        # with the same spelling and must not make a nested helper reachable.
+        if index and tokens[index - 1] == ("punctuation", "."):
+            continue
+        closing_parenthesis = matching_parenthesis(tokens, index + 1)
+        # ``{ helper() {} }`` is an object-method declaration, not an
+        # invocation of the same-named ordinary helper.
+        if (
+            closing_parenthesis is not None
+            and closing_parenthesis + 1 < len(tokens)
+            and tokens[closing_parenthesis + 1] == ("punctuation", "{")
+        ):
             continue
         # The declaration's own ``name(...)`` is not a call edge.
         if any(declaration_start <= index <= opening_brace for _, declaration_start, opening_brace, _ in blocks):
