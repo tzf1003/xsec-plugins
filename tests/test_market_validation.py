@@ -134,6 +134,24 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-unreachable-activation-helper",
+                lambda value: None,
+                "export function activate(host) { function neverCalled() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-unreachable-arrow-helper",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = () => { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-unreachable-expression-arrow-helper",
+                lambda value: None,
+                "export function activate(host) { const neverCalled = () => Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})]); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "missing-function-body",
                 lambda value: None,
                 "export function activate(host)\nhost.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {});\n",

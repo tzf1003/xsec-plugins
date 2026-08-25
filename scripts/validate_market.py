@@ -229,6 +229,20 @@ def matching_brace(tokens: list[tuple[str, str]], opening_index: int) -> int | N
     return None
 
 
+def matching_parenthesis(tokens: list[tuple[str, str]], opening_index: int) -> int | None:
+    """Find the closing parenthesis for a tokenized JavaScript group."""
+
+    depth = 0
+    for index in range(opening_index, len(tokens)):
+        if tokens[index] == ("punctuation", "("):
+            depth += 1
+        elif tokens[index] == ("punctuation", ")"):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
 def activate_body_tokens(tokens: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
     """Return the exact exported ``activate(host)`` function body tokens."""
 
@@ -253,7 +267,156 @@ def activate_body_tokens(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]
     return None
 
 
+def named_javascript_function_blocks(tokens: list[tuple[str, str]]) -> list[tuple[str, int, int, int]]:
+    """Find ordinary named function blocks in an activation implementation.
+
+    The frontend contract does not try to implement a JavaScript evaluator. It
+    only needs a small call graph to distinguish an activation helper that is
+    invoked from an inert nested helper that is never reached. Unsupported
+    function forms holding broker calls are rejected below.
+    """
+
+    blocks: list[tuple[str, int, int, int]] = []
+    for index in range(len(tokens)):
+        cursor = index
+        if tokens[cursor] == ("identifier", "async"):
+            cursor += 1
+        if cursor + 2 >= len(tokens):
+            continue
+        if tokens[cursor] != ("identifier", "function"):
+            continue
+        name_kind, name = tokens[cursor + 1]
+        if name_kind != "identifier" or tokens[cursor + 2] != ("punctuation", "("):
+            continue
+        closing_parenthesis = matching_parenthesis(tokens, cursor + 2)
+        if closing_parenthesis is None or closing_parenthesis + 1 >= len(tokens) or tokens[closing_parenthesis + 1] != ("punctuation", "{"):
+            continue
+        opening_brace = closing_parenthesis + 1
+        closing_brace = matching_brace(tokens, opening_brace)
+        if closing_brace is not None:
+            blocks.append((name, index, opening_brace, closing_brace))
+    return blocks
+
+
+def unsupported_javascript_function_blocks(tokens: list[tuple[str, str]]) -> list[tuple[int, int]]:
+    """Return lexical function-like blocks the small call graph cannot prove."""
+
+    blocks: list[tuple[int, int]] = []
+    for index in range(len(tokens) - 2):
+        # Arrow functions may hold a broker request, but their invocation is
+        # not represented by this intentionally narrow verifier.
+        if tokens[index:index + 3] == [
+            ("punctuation", "="),
+            ("punctuation", ">"),
+            ("punctuation", "{"),
+        ]:
+            closing = matching_brace(tokens, index + 2)
+            if closing is not None:
+                blocks.append((index + 2, closing))
+        # Expression-bodied arrows do not have a brace-delimited body.  Keep
+        # their body out of the proof as well; the next top-level statement
+        # separator (or surrounding object/class block) ends the expression.
+        if tokens[index:index + 2] == [
+            ("punctuation", "="),
+            ("punctuation", ">"),
+        ] and (index + 2 >= len(tokens) or tokens[index + 2] != ("punctuation", "{")):
+            parenthesis_depth = 0
+            bracket_depth = 0
+            cursor = index + 2
+            while cursor < len(tokens):
+                token = tokens[cursor]
+                if token == ("punctuation", "("):
+                    parenthesis_depth += 1
+                elif token == ("punctuation", ")") and parenthesis_depth:
+                    parenthesis_depth -= 1
+                elif token == ("punctuation", "["):
+                    bracket_depth += 1
+                elif token == ("punctuation", "]") and bracket_depth:
+                    bracket_depth -= 1
+                elif parenthesis_depth == 0 and bracket_depth == 0 and token in {
+                    ("punctuation", ";"),
+                    ("punctuation", ","),
+                    ("punctuation", "}"),
+                }:
+                    break
+                cursor += 1
+            blocks.append((index + 1, cursor))
+        # Likewise a class body cannot be an activation call-graph node.
+        if tokens[index] == ("identifier", "class"):
+            for cursor in range(index + 1, len(tokens)):
+                if tokens[cursor] == ("punctuation", "{"):
+                    closing = matching_brace(tokens, cursor)
+                    if closing is not None:
+                        blocks.append((cursor, closing))
+                    break
+                if tokens[cursor] == ("punctuation", ";"):
+                    break
+    return blocks
+
+
+def enclosing_named_function(index: int, blocks: list[tuple[str, int, int, int]]) -> int | None:
+    """Return the innermost named function body containing a token index."""
+
+    candidates = [
+        block_index
+        for block_index, (_, _, opening_brace, closing_brace) in enumerate(blocks)
+        if opening_brace < index < closing_brace
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda block_index: blocks[block_index][3] - blocks[block_index][2])
+
+
+def is_in_block(index: int, blocks: list[tuple[int, int]]) -> bool:
+    return any(opening_brace < index < closing_brace for opening_brace, closing_brace in blocks)
+
+
+def reachable_named_functions(
+    tokens: list[tuple[str, str]],
+    blocks: list[tuple[str, int, int, int]],
+    unsupported_blocks: list[tuple[int, int]],
+) -> set[int]:
+    """Build a conservative call graph rooted at activation lifecycle code."""
+
+    by_name: dict[str, list[int]] = {}
+    for block_index, (name, _, _, _) in enumerate(blocks):
+        by_name.setdefault(name, []).append(block_index)
+    reachable: set[int] = set()
+    pending: list[int] = []
+    edges: dict[int, set[int]] = {block_index: set() for block_index in range(len(blocks))}
+
+    for index in range(len(tokens) - 1):
+        kind, value = tokens[index]
+        if kind != "identifier" or value not in by_name or tokens[index + 1] != ("punctuation", "("):
+            continue
+        # The declaration's own ``name(...)`` is not a call edge.
+        if any(declaration_start <= index <= opening_brace for _, declaration_start, opening_brace, _ in blocks):
+            continue
+        # A call captured by an unsupported closure cannot establish a
+        # reachability proof for a named helper.
+        if is_in_block(index, unsupported_blocks):
+            continue
+        caller = enclosing_named_function(index, blocks)
+        for callee in by_name[value]:
+            if caller is None:
+                reachable.add(callee)
+                pending.append(callee)
+            else:
+                edges[caller].add(callee)
+
+    while pending:
+        caller = pending.pop()
+        for callee in edges[caller]:
+            if callee not in reachable:
+                reachable.add(callee)
+                pending.append(callee)
+    return reachable
+
+
 def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
+    named_blocks = named_javascript_function_blocks(tokens)
+    unsupported_blocks = unsupported_javascript_function_blocks(tokens)
+    reachable_blocks = reachable_named_functions(tokens, named_blocks, unsupported_blocks)
     calls: set[str] = set()
     for index in range(len(tokens) - 4):
         sequence = tokens[index:index + 5]
@@ -263,6 +426,11 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
             ("identifier", "request"),
             ("punctuation", "("),
         ]:
+            continue
+        if is_in_block(index, unsupported_blocks):
+            continue
+        owner = enclosing_named_function(index, named_blocks)
+        if owner is not None and owner not in reachable_blocks:
             continue
         kind, method = sequence[4]
         if kind == "string" and method in APPROVALS_FRONTEND_METHODS:
