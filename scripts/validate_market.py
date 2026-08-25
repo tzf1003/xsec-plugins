@@ -38,6 +38,12 @@ WINDOWS_DEVICE_SUPERSCRIPT_DIGITS = str.maketrans({
     "³": "3",
 })
 ENTRYPOINT_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
+APPROVALS_PLUGIN_ID = "com.xsec.workspace.approvals"
+APPROVALS_FRONTEND_METHODS = frozenset({
+    "xsec.approvals.list",
+    "xsec.approvals.statistics",
+})
+ACTIVATE_EXPORT = re.compile(r"^\s*export\s+(?:async\s+)?function\s+activate\s*\(\s*host\s*\)", re.MULTILINE)
 
 
 class MarketplaceValidationError(ValueError):
@@ -108,6 +114,36 @@ def desktop_entrypoints(manifest: dict[str, object], label: str) -> list[tuple[s
         relative = safe_relative_path(value, f"{label} entrypoint {name}")
         result.append((name, relative))
     return result
+
+
+def validate_approvals_frontend(manifest: dict[str, object], source: str, label: str) -> None:
+    """Verify the first non-placeholder official frontend release contract.
+
+    This is deliberately a static, fail-closed check: marketplace validation
+    must not execute an archive's untrusted JavaScript.  It proves that the
+    approvals package declares the v2 broker contract and exports its expected
+    activation function, while the Desktop host remains responsible for
+    manifest-derived permission checks at execution time.
+    """
+
+    if manifest.get("name") != APPROVALS_PLUGIN_ID:
+        return
+    try:
+        desktop = manifest["extensions"]["com.xsec.desktop"]
+    except (KeyError, TypeError):
+        fail(f"{label} lacks XSEC Desktop extension metadata")
+    if not isinstance(desktop, dict):
+        fail(f"{label} has invalid XSEC Desktop extension metadata")
+    frontend_api = desktop.get("frontendApi")
+    if not isinstance(frontend_api, dict) or frontend_api.get("version") != 2 or frontend_api.get("module") != "single-esm":
+        fail(f"{label} must declare the approvals frontend API v2 single-esm contract")
+    methods = frontend_api.get("methods")
+    if not isinstance(methods, dict) or not APPROVALS_FRONTEND_METHODS.issubset(methods):
+        fail(f"{label} must declare the approvals read RPC methods")
+    if not ACTIVATE_EXPORT.search(source):
+        fail(f"{label} must export activate(host)")
+    if any(method not in source for method in APPROVALS_FRONTEND_METHODS) or "host.request(" not in source:
+        fail(f"{label} must implement the declared approvals RPC requests")
 
 
 def zip_member_is_regular_file(info: zipfile.ZipInfo) -> bool:
@@ -220,12 +256,23 @@ def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, obje
         fail(f"artifact {path} plugin.json name does not match {plugin_id}")
     if manifest.get("version") != version:
         fail(f"artifact {path} plugin.json version does not match {version}")
-    for entrypoint_name, entrypoint_path in desktop_entrypoints(manifest, f"artifact {path} plugin.json"):
+    entrypoints = desktop_entrypoints(manifest, f"artifact {path} plugin.json")
+    for entrypoint_name, entrypoint_path in entrypoints:
         entrypoint = members.get(entrypoint_path.as_posix())
         if entrypoint is None:
             fail(f"artifact {path} does not include XSEC Desktop entrypoint {entrypoint_name} at {entrypoint_path.as_posix()}")
         if not zip_member_is_regular_file(entrypoint):
             fail(f"artifact {path} XSEC Desktop entrypoint {entrypoint_name} must be a regular file")
+    if plugin_id == APPROVALS_PLUGIN_ID:
+        frontend_path = dict(entrypoints).get("frontend")
+        if frontend_path is None:
+            fail(f"artifact {path} approvals plugin must declare a frontend entrypoint")
+        try:
+            with zipfile.ZipFile(path) as archive:
+                frontend_source = archive.read(frontend_path.as_posix()).decode("utf-8")
+        except (OSError, RuntimeError, UnicodeDecodeError, zipfile.BadZipFile) as error:
+            fail(f"artifact {path} approvals frontend cannot be read as UTF-8: {error}")
+        validate_approvals_frontend(manifest, frontend_source, f"artifact {path} approvals frontend")
     return manifest
 
 
@@ -329,8 +376,23 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
         fail(f"plugin manifest {plugin_id} lacks XSEC Desktop engine metadata")
     if not isinstance(engines, dict):
         fail(f"plugin manifest {plugin_id} has invalid XSEC Desktop engine metadata")
-    for entrypoint_name, entrypoint_path in desktop_entrypoints(manifest, f"plugin manifest {plugin_id}"):
-        resolve_below(plugin_dir, entrypoint_path, f"plugin manifest {plugin_id} entrypoint {entrypoint_name}")
+    entrypoints = desktop_entrypoints(manifest, f"plugin manifest {plugin_id}")
+    resolved_entrypoints: dict[str, Path] = {}
+    for entrypoint_name, entrypoint_path in entrypoints:
+        resolved_entrypoints[entrypoint_name] = resolve_below(
+            plugin_dir,
+            entrypoint_path,
+            f"plugin manifest {plugin_id} entrypoint {entrypoint_name}",
+        )
+    if plugin_id == APPROVALS_PLUGIN_ID:
+        frontend = resolved_entrypoints.get("frontend")
+        if frontend is None:
+            fail(f"plugin manifest {plugin_id} must declare a frontend entrypoint")
+        try:
+            frontend_source = frontend.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            fail(f"plugin manifest {plugin_id} approvals frontend cannot be read as UTF-8: {error}")
+        validate_approvals_frontend(manifest, frontend_source, f"plugin manifest {plugin_id} approvals frontend")
     return manifest
 
 

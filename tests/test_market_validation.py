@@ -54,6 +54,53 @@ class MarketplaceValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(MarketplaceValidationError, "SHA-256"):
                 validate_source(ROOT, output)
 
+    def test_approvals_frontend_v2_contract_survives_the_generated_archive(self) -> None:
+        plugin_id = "com.xsec.workspace.approvals"
+        plugin_dir = ROOT / "plugins" / plugin_id
+        manifest = validate_source_manifest(plugin_id, plugin_dir)
+        desktop = manifest["extensions"]["com.xsec.desktop"]
+        self.assertEqual(desktop["frontendApi"]["version"], 2)
+        frontend = plugin_dir / "com.xsec.desktop" / "frontend" / "index.js"
+        self.assertRegex(frontend.read_text(encoding="utf-8"), r"export\s+function\s+activate\s*\(\s*host\s*\)")
+
+        with tempfile.TemporaryDirectory(prefix="xsec-market-approvals-frontend-") as directory:
+            output = Path(directory) / "marketplace"
+            self.build_marketplace(output)
+            artifact = next(output.glob(f"plugins/{plugin_id}/.xsec-market/artifacts/*.xsec-plugin"))
+            archived_manifest = validate_archive(artifact, plugin_id, "1.1.0")
+            self.assertEqual(archived_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["version"], 2)
+
+    def test_approvals_frontend_contract_rejects_placeholder_archive(self) -> None:
+        plugin_id = "com.xsec.workspace.approvals"
+        plugin_dir = ROOT / "plugins" / plugin_id
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        entrypoint = "com.xsec.desktop/frontend/index.js"
+        source = (plugin_dir / entrypoint).read_text(encoding="utf-8")
+
+        for label, change_manifest, archive_source, message in (
+            (
+                "old-api",
+                lambda value: value["extensions"]["com.xsec.desktop"]["frontendApi"].update({"version": 1}),
+                source,
+                "frontend API v2",
+            ),
+            (
+                "placeholder-module",
+                lambda value: None,
+                "export function renderPlaceholder() {}\n",
+                "export activate\\(host\\)",
+            ),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory(prefix=f"xsec-market-approvals-{label}-") as directory:
+                candidate = json.loads(json.dumps(manifest))
+                change_manifest(candidate)
+                artifact = Path(directory) / f"{label}.xsec-plugin"
+                with zipfile.ZipFile(artifact, "w") as archive:
+                    archive.writestr("plugin.json", json.dumps(candidate))
+                    archive.writestr(entrypoint, archive_source)
+                with self.assertRaisesRegex(MarketplaceValidationError, message):
+                    validate_archive(artifact, plugin_id, "1.1.0")
+
     def test_unsafe_zip_member_is_rejected_before_manifest_read(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-zip-test-") as directory:
             artifact = Path(directory) / "unsafe.xsec-plugin"
