@@ -445,10 +445,9 @@ def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path) -> None:
         raise ValueError(f"release metadata for {plugin_id} has invalid channels")
     # Only the beta pointer moves during automatic main publication.  Stable
     # promotion uses scripts/promote_release.py and reuses this exact record.
+    # In particular, a brand-new plugin begins as beta-only: publishing its
+    # first artifact must not silently make it available on the stable channel.
     channels["beta"] = {"releaseId": target["releaseId"]}
-    stable = channels.get("stable")
-    if not isinstance(stable, dict) or stable.get("releaseId") is None:
-        channels["stable"] = {"releaseId": target["releaseId"]}
 
     release_path.parent.mkdir(parents=True, exist_ok=True)
     release_path.write_bytes(stable_json(release))

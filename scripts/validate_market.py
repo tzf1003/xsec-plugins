@@ -1205,7 +1205,22 @@ def validate_zip_member(name: str, info: zipfile.ZipInfo, entries: dict[str, str
     entries[normalized_name] = member_kind
 
 
-def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, object]:
+def validate_archive(
+    path: Path,
+    plugin_id: str,
+    version: str,
+    *,
+    require_current_official_frontend_contract: bool = True,
+) -> dict[str, object]:
+    """Validate one packaged artifact.
+
+    Every historical release is subjected to package-integrity, archive-safety,
+    manifest, and entrypoint checks.  The API-v2 official-frontend contract is
+    deliberately a current-source policy: applying a newly introduced source
+    contract to an older immutable Stable artifact would make a valid rollback
+    target impossible to retain.  Callers validating the current Beta release
+    keep the stricter default enabled.
+    """
     if not zipfile.is_zipfile(path):
         fail(f"artifact {path} is not a ZIP archive")
     try:
@@ -1260,9 +1275,10 @@ def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, obje
                 frontend_source = archive.read(frontend_path.as_posix()).decode("utf-8")
         except (OSError, RuntimeError, UnicodeDecodeError, zipfile.BadZipFile) as error:
             fail(f"artifact {path} official frontend cannot be read as UTF-8: {error}")
-        if plugin_id == APPROVALS_PLUGIN_ID:
-            validate_approvals_frontend(manifest, frontend_source, f"artifact {path} approvals frontend")
-        validate_official_frontend(manifest, frontend_source, f"artifact {path} official frontend")
+        if require_current_official_frontend_contract:
+            if plugin_id == APPROVALS_PLUGIN_ID:
+                validate_approvals_frontend(manifest, frontend_source, f"artifact {path} approvals frontend")
+            validate_official_frontend(manifest, frontend_source, f"artifact {path} official frontend")
     return manifest
 
 
@@ -1319,6 +1335,8 @@ def validate_artifacts(
     version: str,
     artifacts: object,
     label: str,
+    *,
+    require_current_official_frontend_contract: bool = False,
 ) -> list[tuple[Path, str, dict[str, object]]]:
     if not isinstance(artifacts, list) or not artifacts:
         fail(f"{label} has no artifacts")
@@ -1340,7 +1358,12 @@ def validate_artifacts(
         artifact_path = resolve_below(release_path.parent, relative, f"artifact URL for {plugin_id}")
         if sha256(artifact_path) != digest:
             fail(f"artifact SHA-256 does not match release metadata for {plugin_id}")
-        manifest = validate_archive(artifact_path, plugin_id, version)
+        manifest = validate_archive(
+            artifact_path,
+            plugin_id,
+            version,
+            require_current_official_frontend_contract=require_current_official_frontend_contract,
+        )
         result.append((artifact_path, version, manifest))
     return result
 
@@ -1422,6 +1445,10 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
     for channel in ("beta", "stable"):
         pointer = channels.get(channel)
         target = pointer.get("releaseId") if isinstance(pointer, dict) and set(pointer) == {"releaseId"} else None
+        if channel == "stable" and target is None:
+            # A new plugin is beta-only until an operator explicitly promotes
+            # an immutable release to Stable.
+            continue
         if not isinstance(target, str) or target not in records:
             fail(f"release metadata for {plugin_id} {channel} pointer must reference an immutable release")
     return release, records
@@ -1523,6 +1550,7 @@ def validate_source(source_root: Path, built_root: Path) -> None:
             str(generated_item["version"]),
             generated_item["artifacts"],
             f"temporary beta release metadata for {plugin_id}",
+            require_current_official_frontend_contract=True,
         )
         if len(candidate_artifacts) != 1 or candidate_artifacts[0][1] != source_manifest["version"]:
             fail(f"temporary output for {plugin_id} does not contain exactly its current beta artifact")

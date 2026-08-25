@@ -77,7 +77,10 @@ class MarketplaceValidationTests(unittest.TestCase):
             build_market.build_plugin(plugin_dir, output_dir)
             first = build_market.load_release_document(output_dir / ".xsec-market" / "releases.json", "com.example.test")
             first_id = first["channels"]["beta"]["releaseId"]
-            self.assertEqual(first_id, first["channels"]["stable"]["releaseId"])
+            self.assertIsNone(first["channels"]["stable"]["releaseId"])
+            validated_first, validated_records = validate_market.validate_release_index("com.example.test", output_dir)
+            self.assertEqual(validated_first, first)
+            self.assertIn(first_id, validated_records)
 
             # A source edit without a version bump is a new beta release, not
             # an overwrite of the old artifact or the stable selection.
@@ -86,11 +89,43 @@ class MarketplaceValidationTests(unittest.TestCase):
             second = build_market.load_release_document(output_dir / ".xsec-market" / "releases.json", "com.example.test")
             second_id = second["channels"]["beta"]["releaseId"]
             self.assertNotEqual(first_id, second_id)
-            self.assertEqual(first_id, second["channels"]["stable"]["releaseId"])
+            self.assertIsNone(second["channels"]["stable"]["releaseId"])
             self.assertEqual(len(second["releases"]), 2)
             artifacts = sorted((output_dir / ".xsec-market" / "artifacts").glob("*.xsec-plugin"))
             self.assertEqual(len(artifacts), 2)
             self.assertEqual(len({artifact.name for artifact in artifacts}), 2)
+
+    def test_release_index_keeps_historical_archive_checks_without_requiring_the_current_frontend_contract(self) -> None:
+        """A new frontend policy cannot invalidate an immutable rollback archive."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-market-historical-archive-") as directory:
+            plugin_id = "com.xsec.asset-discovery"
+            plugin_dir = Path(directory) / plugin_id
+            entrypoint = plugin_dir / "frontend" / "index.js"
+            entrypoint.parent.mkdir(parents=True)
+            manifest = {
+                "name": plugin_id,
+                "version": "1.0.0",
+                "extensions": {
+                    "com.xsec.desktop": {
+                        "engines": {"xsec": ">=1", "pluginApi": "^1.0.0"},
+                        "entrypoints": {"frontend": "./frontend/index.js"},
+                    }
+                },
+            }
+            (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+            entrypoint.write_text("export function activate(){ return {}; }\n", encoding="utf-8")
+            build_market.build_plugin(plugin_dir, plugin_dir)
+            release_path = plugin_dir / ".xsec-market" / "releases.json"
+            release = build_market.load_release_document(release_path, plugin_id)
+            beta_id = release["channels"]["beta"]["releaseId"]
+            beta_release = next(item for item in release["releases"] if item["releaseId"] == beta_id)
+            artifact = release_path.parent / beta_release["artifacts"][0]["url"]
+
+            with self.assertRaisesRegex(MarketplaceValidationError, "plugin API 1.2"):
+                validate_archive(artifact, plugin_id, manifest["version"])
+            _, records = validate_market.validate_release_index(plugin_id, plugin_dir)
+            self.assertIn(beta_id, records)
 
     def test_stable_promotion_reuses_an_existing_release_and_changes_no_artifact(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-stable-promotion-") as directory:
@@ -158,8 +193,12 @@ class MarketplaceValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-market-approvals-frontend-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
-            artifact = next(output.glob(f"plugins/{plugin_id}/.xsec-market/artifacts/*.xsec-plugin"))
-            archived_manifest = validate_archive(artifact, plugin_id, "1.2.0")
+            release_path = output / "plugins" / plugin_id / ".xsec-market" / "releases.json"
+            release = build_market.load_release_document(release_path, plugin_id)
+            beta_id = release["channels"]["beta"]["releaseId"]
+            beta_release = next(item for item in release["releases"] if item["releaseId"] == beta_id)
+            artifact = release_path.parent / beta_release["artifacts"][0]["url"]
+            archived_manifest = validate_archive(artifact, plugin_id, manifest["version"])
             self.assertEqual(archived_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["version"], 2)
 
     def test_every_official_frontend_is_executable_and_placeholder_free(self) -> None:

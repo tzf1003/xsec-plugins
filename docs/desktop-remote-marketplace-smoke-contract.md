@@ -39,6 +39,12 @@ user opt-in. For a stable promotion or rollback, Desktop must download the
 already-published artifact whose SHA-256 is in the selected immutable record;
 it must never expect a newly rebuilt package.
 
+A newly added plugin is Beta-only: its first automatic publication leaves
+`channels.stable.releaseId` as `null` and never dispatches `stable`. Desktop
+must treat that absent Stable pointer as no Stable release, rather than falling
+back to Beta; only the protected manual promotion may make it installable from
+the Stable channel.
+
 The Desktop implementation runs this request on Windows, macOS and Linux using
 a fresh temporary profile. Each platform must: refresh the remote index; verify
 the index and release signatures; resolve the dispatched channel; download,

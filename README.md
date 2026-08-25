@@ -30,14 +30,18 @@ credential values or create a competing inventory here.
 
 Release records are immutable and content addressed. A record contains its
 version, engine range, artifact URL(s) and SHA-256; its `releaseId` is derived
-from the version, engine range, artifact targets and SHA-256 values. Artifact
-filenames include a digest prefix, so a source change without a version bump
-cannot overwrite an existing package.
+from the version, engine range, each artifact's OS/architecture target, and
+SHA-256. It deliberately excludes the delivery URL so an existing package can
+retain its identity if its URL moves; the signed release record still binds the
+URL itself. Artifact filenames include a digest prefix, so a source change
+without a version bump cannot overwrite an existing package.
 
-The protected `Publish signed marketplace` workflow runs after a normal main
+The protected `Publish immutable marketplace beta release` workflow runs after a normal main
 change. It preserves every existing record and artifact, appends a new record
 only when the current deterministic package is new, and moves **only** the
-`beta` pointer. It then requests sidecars from the production Cloud KMS broker
+`beta` pointer. This includes a newly added plugin: its first Beta release
+leaves `channels.stable.releaseId` as `null`, so it cannot reach Stable without
+an explicit promotion. It then requests sidecars from the production Cloud KMS broker
 using a short-lived GitHub OIDC token, validates every broker response, and
 publishes the generated metadata through a protected PR. The broker accepts
 only the protected `xsec-plugins` production workflow; it calculates the
