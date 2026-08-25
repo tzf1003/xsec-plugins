@@ -17,6 +17,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - name: Build a disposable marketplace without official sidecars
         run: python scripts/build_market.py --clean --output-root "$RUNNER_TEMP/xsec-marketplace-build"
       - name: Validate source manifests, deterministic artifacts and package safety

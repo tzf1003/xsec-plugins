@@ -10,8 +10,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
 import stat
+import subprocess
 import tempfile
 import unicodedata
 import zipfile
@@ -43,6 +46,9 @@ APPROVALS_FRONTEND_METHODS = frozenset({
     "xsec.approvals.list",
     "xsec.approvals.statistics",
 })
+APPROVALS_FRONTEND_CAPABILITY = "workspace.session.read"
+APPROVALS_FRONTEND_BINDING = "session"
+JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
 
 
 class MarketplaceValidationError(ValueError):
@@ -209,29 +215,88 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
     return tokens
 
 
-def exports_activate_host(tokens: list[tuple[str, str]]) -> bool:
-    values = [value for _, value in tokens]
-    for index, value in enumerate(values):
-        if value != "export":
+def matching_brace(tokens: list[tuple[str, str]], opening_index: int) -> int | None:
+    """Find the closing brace for a tokenized JavaScript block."""
+
+    depth = 0
+    for index in range(opening_index, len(tokens)):
+        if tokens[index] == ("punctuation", "{"):
+            depth += 1
+        elif tokens[index] == ("punctuation", "}"):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def activate_body_tokens(tokens: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
+    """Return the exact exported ``activate(host)`` function body tokens."""
+
+    for index, token in enumerate(tokens):
+        if token != ("identifier", "export"):
             continue
         cursor = index + 1
-        if cursor < len(values) and values[cursor] == "async":
+        if cursor < len(tokens) and tokens[cursor] == ("identifier", "async"):
             cursor += 1
-        if values[cursor:cursor + 5] == ["function", "activate", "(", "host", ")"]:
-            return True
-    return False
+        if tokens[cursor:cursor + 6] != [
+            ("identifier", "function"),
+            ("identifier", "activate"),
+            ("punctuation", "("),
+            ("identifier", "host"),
+            ("punctuation", ")"),
+            ("punctuation", "{"),
+        ]:
+            continue
+        closing = matching_brace(tokens, cursor + 5)
+        if closing is not None:
+            return tokens[cursor + 6:closing]
+    return None
 
 
 def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
     calls: set[str] = set()
     for index in range(len(tokens) - 4):
         sequence = tokens[index:index + 5]
-        if [value for _, value in sequence[:4]] != ["host", ".", "request", "("]:
+        if sequence[:4] != [
+            ("identifier", "host"),
+            ("punctuation", "."),
+            ("identifier", "request"),
+            ("punctuation", "("),
+        ]:
             continue
         kind, method = sequence[4]
         if kind == "string" and method in APPROVALS_FRONTEND_METHODS:
             calls.add(method)
     return calls
+
+
+def validate_javascript_esm_syntax(source: str, label: str) -> None:
+    """Parse a frontend as ESM without importing or executing archive code."""
+
+    node = shutil.which("node")
+    if node is None:
+        fail(f"{label} requires Node.js to validate ESM syntax")
+    environment = os.environ.copy()
+    # Do not let a caller-provided preload influence this parse-only process.
+    environment.pop("NODE_OPTIONS", None)
+    environment.pop("NODE_PATH", None)
+    try:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-esm-check-") as directory:
+            candidate = Path(directory) / "frontend.mjs"
+            candidate.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [node, "--check", str(candidate)],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                timeout=JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail(f"{label} ESM syntax validation could not run: {error}")
+    if result.returncode != 0:
+        fail(f"{label} must contain valid executable ESM syntax")
 
 
 def validate_approvals_frontend(manifest: dict[str, object], source: str, label: str) -> None:
@@ -256,12 +321,18 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     if not isinstance(frontend_api, dict) or frontend_api.get("version") != 2 or frontend_api.get("module") != "single-esm":
         fail(f"{label} must declare the approvals frontend API v2 single-esm contract")
     methods = frontend_api.get("methods")
-    if not isinstance(methods, dict) or not APPROVALS_FRONTEND_METHODS.issubset(methods):
+    if not isinstance(methods, dict) or set(methods) != APPROVALS_FRONTEND_METHODS:
         fail(f"{label} must declare the approvals read RPC methods")
+    for method in APPROVALS_FRONTEND_METHODS:
+        descriptor = methods.get(method)
+        if not isinstance(descriptor, dict) or descriptor.get("capability") != APPROVALS_FRONTEND_CAPABILITY or descriptor.get("binding") != APPROVALS_FRONTEND_BINDING:
+            fail(f"{label} must bind approvals RPC methods to the session read capability")
+    validate_javascript_esm_syntax(source, label)
     tokens = javascript_contract_tokens(source, label)
-    if not exports_activate_host(tokens):
-        fail(f"{label} must export activate(host)")
-    if declared_approvals_rpc_calls(tokens) != APPROVALS_FRONTEND_METHODS:
+    body = activate_body_tokens(tokens)
+    if body is None:
+        fail(f"{label} must export an executable activate(host) function")
+    if declared_approvals_rpc_calls(body) != APPROVALS_FRONTEND_METHODS:
         fail(f"{label} must implement the declared approvals RPC requests")
 
 

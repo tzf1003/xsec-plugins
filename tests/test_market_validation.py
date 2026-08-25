@@ -88,7 +88,7 @@ class MarketplaceValidationTests(unittest.TestCase):
                 "placeholder-module",
                 lambda value: None,
                 "export function renderPlaceholder() {}\n",
-                "export activate\\(host\\)",
+                "export an executable activate",
             ),
             (
                 "commented-out-contract",
@@ -101,19 +101,61 @@ export function activate(host) {
 */
 export function renderPlaceholder() {}
 """,
-                "export activate\\(host\\)",
+                "export an executable activate",
             ),
             (
                 "regex-literal-contract",
                 lambda value: None,
                 "/export function activate(host) host.request(\"xsec.approvals.list\") host.request(\"xsec.approvals.statistics\")/;\n",
-                "export activate\\(host\\)",
+                "export an executable activate",
             ),
             (
                 "conditional-regex-literal-contract",
                 lambda value: None,
                 "if (true) /export function activate(host) host.request(\"xsec.approvals.list\") host.request(\"xsec.approvals.statistics\")/;\n",
-                "export activate\\(host\\)",
+                "export an executable activate",
+            ),
+            (
+                "quoted-export",
+                lambda value: None,
+                "\"export\"\nfunction activate(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }\n",
+                "export an executable activate",
+            ),
+            (
+                "quoted-host-receiver",
+                lambda value: None,
+                "export function activate(host) { \"host\".request(\"xsec.approvals.list\", {}); \"host\".request(\"xsec.approvals.statistics\", {}); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-outside-activate",
+                lambda value: None,
+                "export function activate(host) { return {}; }\nfunction unused() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "missing-function-body",
+                lambda value: None,
+                "export function activate(host)\nhost.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {});\n",
+                "valid executable ESM syntax",
+            ),
+            (
+                "wrong-method-capability",
+                lambda value: value["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]["xsec.approvals.list"].update({"capability": "workspace.session.write"}),
+                source,
+                "session read capability",
+            ),
+            (
+                "wrong-method-binding",
+                lambda value: value["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]["xsec.approvals.statistics"].update({"binding": "workspace"}),
+                source,
+                "session read capability",
+            ),
+            (
+                "unexpected-method",
+                lambda value: value["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].update({"xsec.approvals.extra": {"capability": "workspace.session.read", "binding": "session"}}),
+                source,
+                "approvals read RPC methods",
             ),
         ):
             with self.subTest(label=label), tempfile.TemporaryDirectory(prefix=f"xsec-market-approvals-{label}-") as directory:
