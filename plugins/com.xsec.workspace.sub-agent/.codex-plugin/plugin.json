@@ -1,6 +1,6 @@
 {
   "name": "com.xsec.workspace.sub-agent",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "XSEC sub-agent workspace tools",
   "author": {
     "name": "XSEC"

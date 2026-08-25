@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "com.xsec.system-terminal",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "XSEC workspace system terminal",
   "author": { "name": "XSEC" },
   "license": "MIT",
@@ -13,7 +13,7 @@
       "icon": "terminal",
       "engines": {
         "xsec": ">=0.1.0",
-        "pluginApi": "^1.0.0"
+        "pluginApi": "^1.2.0"
       },
       "entrypoints": {
         "frontend": "./com.xsec.desktop/frontend/index.js"
@@ -39,7 +39,15 @@
       "permissions": {
         "workspace.session.read": {},
         "terminal.shell:session.cwd": {}
-      }
+      },
+      "frontendApi": { "version": 2, "module": "single-esm", "methods": {
+        "xsec.terminal.profiles": { "capability": "terminal.shell", "binding": "session" },
+        "xsec.terminal.open": { "capability": "terminal.shell", "binding": "session" },
+        "xsec.terminal.read": { "capability": "terminal.shell", "binding": "session" },
+        "xsec.terminal.write": { "capability": "terminal.shell", "binding": "session" },
+        "xsec.terminal.resize": { "capability": "terminal.shell", "binding": "session" },
+        "xsec.terminal.close": { "capability": "terminal.shell", "binding": "session" }
+      } }
     }
   }
 }

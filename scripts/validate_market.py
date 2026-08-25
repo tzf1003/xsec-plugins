@@ -48,7 +48,7 @@ APPROVALS_FRONTEND_METHODS = frozenset({
 })
 APPROVALS_FRONTEND_CAPABILITY = "workspace.session.read"
 APPROVALS_FRONTEND_BINDING = "session"
-APPROVALS_FRONTEND_PLUGIN_API_RANGE = "^1.1.0"
+APPROVALS_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT = "onWorkspaceTool:approvals"
 APPROVALS_WORKSPACE_TOOL_CONTRIBUTION = {
     "title": "审批记录",
@@ -63,6 +63,15 @@ APPROVALS_WORKSPACE_TOOL_CONTRIBUTION = {
 }
 JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
 APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
+OFFICIAL_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
+OFFICIAL_FRONTEND_MIN_BYTES = 1_000
+FORBIDDEN_OFFICIAL_FRONTEND_MARKERS = (
+    "XSEC official plugin is active in Desktop.",
+    "renderPlaceholder",
+    "placeholder-module",
+    "mock",
+    "fallback",
+)
 # The approvals frontend is the first official package whose archive contract
 # needs a browser-side broker implementation.  Its complete reviewed source is
 # pinned intentionally: accepting arbitrary JavaScript while trying to prove
@@ -1045,7 +1054,7 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
         fail(f"{label} must declare the approvals session read permission")
     engines = desktop.get("engines")
     if not isinstance(engines, dict) or engines.get("pluginApi") != APPROVALS_FRONTEND_PLUGIN_API_RANGE:
-        fail(f"{label} must require plugin API 1.1 or later for the approvals frontend")
+        fail(f"{label} must require plugin API 1.2 for the approvals frontend")
     if desktop.get("activationEvents") != [APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT]:
         fail(f"{label} must declare the approvals workspace-tool activation event")
     contributes = desktop.get("contributes")
@@ -1077,6 +1086,44 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
     if hashlib.sha256(normalized_source.encode("utf-8")).hexdigest() != APPROVALS_FRONTEND_SOURCE_SHA256:
         fail(f"{label} must match the approved official approvals frontend structure")
+
+
+def validate_official_frontend(manifest: dict[str, object], source: str, label: str) -> None:
+    """Reject empty official UIs and require an executable API-v2 contract."""
+
+    try:
+        desktop = manifest["extensions"]["com.xsec.desktop"]
+    except (KeyError, TypeError):
+        fail(f"{label} lacks XSEC Desktop extension metadata")
+    if not isinstance(desktop, dict):
+        fail(f"{label} has invalid XSEC Desktop extension metadata")
+    engines = desktop.get("engines")
+    if not isinstance(engines, dict) or engines.get("pluginApi") != OFFICIAL_FRONTEND_PLUGIN_API_RANGE:
+        fail(f"{label} must require plugin API 1.2")
+    frontend_api = desktop.get("frontendApi")
+    if not isinstance(frontend_api, dict) or frontend_api.get("version") != 2 or frontend_api.get("module") != "single-esm":
+        fail(f"{label} must declare frontend API v2 single-esm")
+    methods = frontend_api.get("methods")
+    if not isinstance(methods, dict) or not methods:
+        fail(f"{label} must declare at least one host RPC method")
+    lowered = source.lower()
+    for marker in FORBIDDEN_OFFICIAL_FRONTEND_MARKERS:
+        if marker.lower() in lowered:
+            fail(f"{label} contains forbidden placeholder/fallback marker: {marker}")
+    if len(source.encode("utf-8")) < OFFICIAL_FRONTEND_MIN_BYTES:
+        fail(f"{label} is too small to be a functional official frontend")
+    validate_javascript_esm_syntax(source, label)
+    if not re.search(r"export\s+function\s+activate\s*\(\s*host\s*\)", source):
+        fail(f"{label} must export activate(host)")
+    for lifecycle_method in APPROVALS_FRONTEND_LIFECYCLE_METHODS:
+        if not re.search(rf"\b{lifecycle_method}\s*\(", source):
+            fail(f"{label} must implement lifecycle method {lifecycle_method}")
+    source_method_literals = set(re.findall(r"[\"'](xsec\.[A-Za-z0-9_.-]+)[\"']", source))
+    missing_methods = set(methods) - source_method_literals
+    if missing_methods:
+        fail(f"{label} does not reference declared RPC methods: {sorted(missing_methods)}")
+    if "host.request(" not in source:
+        fail(f"{label} does not call the declared host RPC surface")
 
 
 def zip_member_is_regular_file(info: zipfile.ZipInfo) -> bool:
@@ -1196,16 +1243,18 @@ def validate_archive(path: Path, plugin_id: str, version: str) -> dict[str, obje
             fail(f"artifact {path} does not include XSEC Desktop entrypoint {entrypoint_name} at {entrypoint_path.as_posix()}")
         if not zip_member_is_regular_file(entrypoint):
             fail(f"artifact {path} XSEC Desktop entrypoint {entrypoint_name} must be a regular file")
-    if plugin_id == APPROVALS_PLUGIN_ID:
+    if plugin_id in DEFAULT_OFFICIAL_PLUGIN_IDS:
         frontend_path = dict(entrypoints).get("frontend")
         if frontend_path is None:
-            fail(f"artifact {path} approvals plugin must declare a frontend entrypoint")
+            fail(f"artifact {path} official plugin must declare a frontend entrypoint")
         try:
             with zipfile.ZipFile(path) as archive:
                 frontend_source = archive.read(frontend_path.as_posix()).decode("utf-8")
         except (OSError, RuntimeError, UnicodeDecodeError, zipfile.BadZipFile) as error:
-            fail(f"artifact {path} approvals frontend cannot be read as UTF-8: {error}")
-        validate_approvals_frontend(manifest, frontend_source, f"artifact {path} approvals frontend")
+            fail(f"artifact {path} official frontend cannot be read as UTF-8: {error}")
+        if plugin_id == APPROVALS_PLUGIN_ID:
+            validate_approvals_frontend(manifest, frontend_source, f"artifact {path} approvals frontend")
+        validate_official_frontend(manifest, frontend_source, f"artifact {path} official frontend")
     return manifest
 
 
@@ -1317,15 +1366,17 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
             entrypoint_path,
             f"plugin manifest {plugin_id} entrypoint {entrypoint_name}",
         )
-    if plugin_id == APPROVALS_PLUGIN_ID:
+    if plugin_id in DEFAULT_OFFICIAL_PLUGIN_IDS:
         frontend = resolved_entrypoints.get("frontend")
         if frontend is None:
             fail(f"plugin manifest {plugin_id} must declare a frontend entrypoint")
         try:
             frontend_source = frontend.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
-            fail(f"plugin manifest {plugin_id} approvals frontend cannot be read as UTF-8: {error}")
-        validate_approvals_frontend(manifest, frontend_source, f"plugin manifest {plugin_id} approvals frontend")
+            fail(f"plugin manifest {plugin_id} official frontend cannot be read as UTF-8: {error}")
+        if plugin_id == APPROVALS_PLUGIN_ID:
+            validate_approvals_frontend(manifest, frontend_source, f"plugin manifest {plugin_id} approvals frontend")
+        validate_official_frontend(manifest, frontend_source, f"plugin manifest {plugin_id} official frontend")
     return manifest
 
 

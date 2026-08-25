@@ -1,10 +1,14 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "com.xsec.workspace.sub-agent", "version": "1.0.0", "description": "XSEC sub-agent workspace tools", "author": { "name": "XSEC" }, "license": "MIT",
+  "name": "com.xsec.workspace.sub-agent", "version": "1.2.0", "description": "XSEC sub-agent workspace tools", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "子 Agent", "publisher": "XSEC", "icon": "bot",
-    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.0.0" }, "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
+    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.2.0" }, "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
     "activationEvents": ["onWorkspaceTool:sub-agent", "onWorkspaceTool:subagent-detail"], "permissions": { "workspace.session.read": {} },
+    "frontendApi": { "version": 2, "module": "single-esm", "methods": {
+      "xsec.subagents.list": { "capability": "workspace.session.read", "binding": "context" },
+      "xsec.subagents.get": { "capability": "workspace.session.read", "binding": "context" }
+    } },
     "contributes": { "workspaceTools": {
       "sub-agent": { "title": "子 Agent", "icon": "bot", "scope": "assignment", "launchable": true, "policy": "singleton", "surface": "standard", "retain": "active", "preferredSideWidth": 460, "preferredBottomHeight": 360, "surfaces": ["interactive-dock", "batch-observe"] },
       "subagent-detail": { "title": "子 Agent 详情", "icon": "bot", "scope": "entity", "launchable": false, "policy": "entity-singleton", "surface": "edge-to-edge", "retain": "active", "preferredSideWidth": 680, "preferredBottomHeight": 420, "hostClassName": "is-subagent-detail", "surfaces": ["interactive-dock", "batch-observe"] }

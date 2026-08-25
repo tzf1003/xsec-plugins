@@ -67,8 +67,31 @@ class MarketplaceValidationTests(unittest.TestCase):
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
             artifact = next(output.glob(f"plugins/{plugin_id}/.xsec-market/artifacts/*.xsec-plugin"))
-            archived_manifest = validate_archive(artifact, plugin_id, "1.1.0")
+            archived_manifest = validate_archive(artifact, plugin_id, "1.2.0")
             self.assertEqual(archived_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["version"], 2)
+
+    def test_every_official_frontend_is_executable_and_placeholder_free(self) -> None:
+        placeholder = "XSEC official plugin is active in Desktop."
+        for plugin_dir in sorted((ROOT / "plugins").iterdir()):
+            if not plugin_dir.is_dir():
+                continue
+            plugin_id = plugin_dir.name
+            manifest = validate_source_manifest(plugin_id, plugin_dir)
+            desktop = manifest["extensions"]["com.xsec.desktop"]
+            self.assertEqual(desktop["engines"]["pluginApi"], "^1.2.0", plugin_id)
+            self.assertEqual(desktop["frontendApi"]["version"], 2, plugin_id)
+            self.assertTrue(desktop["frontendApi"]["methods"], plugin_id)
+            source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+            self.assertNotIn(placeholder, source, plugin_id)
+            self.assertIn("export function activate(host)", source, plugin_id)
+
+    def test_generic_official_frontend_gate_rejects_success_screen_stub(self) -> None:
+        plugin_id = "com.xsec.workspace.files"
+        plugin_dir = ROOT / "plugins" / plugin_id
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        stub = "export function activate(host){document.body.textContent='XSEC official plugin is active in Desktop.';return{mount(){},update(){},dispose(){}}}"
+        with self.assertRaisesRegex(MarketplaceValidationError, "placeholder/fallback marker"):
+            validate_market.validate_official_frontend(manifest, stub, "files stub")
 
     def test_approvals_frontend_rejects_any_noncanonical_reviewed_structure(self) -> None:
         plugin_id = "com.xsec.workspace.approvals"
@@ -83,7 +106,7 @@ class MarketplaceValidationTests(unittest.TestCase):
                 archive.writestr("plugin.json", json.dumps(manifest))
                 archive.writestr(entrypoint, source + "\n")
             with self.assertRaisesRegex(MarketplaceValidationError, "approved official approvals frontend structure"):
-                validate_archive(artifact, plugin_id, "1.1.0")
+                validate_archive(artifact, plugin_id, "1.2.0")
 
     def test_approvals_frontend_contract_rejects_placeholder_archive(self) -> None:
         plugin_id = "com.xsec.workspace.approvals"
@@ -109,7 +132,7 @@ class MarketplaceValidationTests(unittest.TestCase):
                 "unsupported-plugin-api-engine",
                 lambda value: value["extensions"]["com.xsec.desktop"]["engines"].update({"pluginApi": "^1.0.0"}),
                 source,
-                "plugin API 1.1 or later",
+                "plugin API 1.2",
             ),
             (
                 "missing-approvals-workspace-tool",
@@ -481,7 +504,7 @@ export function renderPlaceholder() {}
                     archive.writestr("plugin.json", json.dumps(candidate))
                     archive.writestr(entrypoint, archive_source)
                 with self.assertRaises(MarketplaceValidationError) as raised:
-                    validate_archive(artifact, plugin_id, "1.1.0")
+                    validate_archive(artifact, plugin_id, "1.2.0")
                 self.assertTrue(
                     message in str(raised.exception)
                     or "approved official approvals frontend structure" in str(raised.exception),

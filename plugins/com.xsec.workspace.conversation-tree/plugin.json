@@ -1,12 +1,16 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "com.xsec.workspace.conversation-tree", "version": "1.0.0",
+  "name": "com.xsec.workspace.conversation-tree", "version": "1.2.0",
   "description": "XSEC conversation-tree workspace tool", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "对话树", "publisher": "XSEC", "icon": "message-circle",
-    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.0.0" },
+    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.2.0" },
     "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
-    "activationEvents": ["onWorkspaceTool:conversation-tree"], "permissions": { "workspace.session.read": {} },
+    "activationEvents": ["onWorkspaceTool:conversation-tree"], "permissions": { "workspace.session.read": {}, "workspace.session.write": {} },
+    "frontendApi": { "version": 2, "module": "single-esm", "methods": {
+      "xsec.conversation-tree.read": { "capability": "workspace.session.read", "binding": "session" },
+      "xsec.conversation-tree.navigate": { "capability": "workspace.session.write", "binding": "session" }
+    } },
     "contributes": { "workspaceTools": { "conversation-tree": {
       "title": "对话树", "icon": "message-circle", "scope": "session", "launchable": true,
       "policy": "singleton", "surface": "standard", "retain": "active", "preferredSideWidth": 420,
