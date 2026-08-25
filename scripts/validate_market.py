@@ -561,14 +561,13 @@ def is_in_statically_false_branch(tokens: list[tuple[str, str]], index: int) -> 
     return False
 
 
-def is_in_statically_false_expression(tokens: list[tuple[str, str]], index: int) -> bool:
-    """Reject evidence guarded by a literal-false short circuit or ternary.
+def is_in_statically_unreachable_expression(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Reject evidence guarded by literal short-circuit or ternary branches.
 
-    This deliberately recognizes only the two compact forms that can make a
+    This deliberately recognizes only compact literal forms that can make a
     syntactically present broker request unconditionally unreachable.  The
     official frontend has no such expressions, so uncertainty remains
-    fail-closed without trying to implement JavaScript's whole expression
-    grammar.
+    fail-closed without implementing JavaScript's whole expression grammar.
     """
 
     # A semicolon ends the preceding expression.  Newlines do not: JavaScript
@@ -586,16 +585,23 @@ def is_in_statically_false_expression(tokens: list[tuple[str, str]], index: int)
             ("punctuation", "&"),
         ]:
             return True
-
-    # For a literal ``false ? consequent : alternate``, evidence in the
-    # consequent cannot run.  Pick the nearest literal-false ``?`` before the
-    # request, then ensure no matching top-level ``:`` has started its
-    # alternate branch.  Nested ternaries are skipped conservatively.
-    for question in range(index - 1, statement_start, -1):
-        if tokens[question - 1:question + 1] != [
-            ("identifier", "false"),
-            ("punctuation", "?"),
+        if tokens[cursor:cursor + 3] == [
+            ("identifier", "true"),
+            ("punctuation", "|"),
+            ("punctuation", "|"),
         ]:
+            return True
+
+    # For ``false ? consequent : alternate`` evidence in the consequent is
+    # unreachable; for ``true ? consequent : alternate`` the alternate is.
+    # Pick the nearest literal Boolean condition before the request and track
+    # whether a matching top-level colon has started its alternate branch.
+    # Nested ternaries are skipped conservatively.
+    for question in range(index - 1, statement_start, -1):
+        if tokens[question] != ("punctuation", "?") or question == 0:
+            continue
+        condition = tokens[question - 1]
+        if condition not in {("identifier", "false"), ("identifier", "true")}:
             continue
         ternary_depth = 0
         delimiter_depth = 0
@@ -622,7 +628,29 @@ def is_in_statically_false_expression(tokens: list[tuple[str, str]], index: int)
                 else:
                     alternate_started = True
                     break
-        if not alternate_started:
+        if condition == ("identifier", "false") and not alternate_started:
+            return True
+        if condition == ("identifier", "true") and alternate_started:
+            return True
+    return False
+
+
+def lexical_declaration_shadows_helper(tokens: list[tuple[str, str]], name: str) -> bool:
+    """Fail closed when a lexical binding could shadow a helper call.
+
+    A full JavaScript scope resolver is intentionally outside this static,
+    non-executing verifier.  A ``const`` or ``let`` declaration sharing a
+    helper name is enough ambiguity to reject every matching call edge.  This
+    also handles a declaration later in the block, whose temporal-dead-zone
+    semantics make an earlier call fail instead of reaching the function.
+    This is stricter than JavaScript's exact block-scope rules but the official
+    source has no such collisions.
+    """
+
+    for cursor in range(len(tokens) - 1):
+        if tokens[cursor] not in {("identifier", "const"), ("identifier", "let")}:
+            continue
+        if tokens[cursor + 1:cursor + 2] == [("identifier", name)]:
             return True
     return False
 
@@ -847,7 +875,9 @@ def reachable_named_functions(
         # reachability proof for a named helper.
         if is_in_block(index, unsupported_blocks):
             continue
-        if is_in_statically_false_branch(tokens, index) or is_in_statically_false_expression(tokens, index):
+        if is_in_statically_false_branch(tokens, index) or is_in_statically_unreachable_expression(tokens, index):
+            continue
+        if lexical_declaration_shadows_helper(tokens, value):
             continue
         caller = enclosing_named_function(index, blocks)
         lifecycle_owner = next(
@@ -899,7 +929,7 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
             continue
         if is_in_block(index, unsupported_blocks):
             continue
-        if is_in_statically_false_branch(tokens, index) or is_in_statically_false_expression(tokens, index):
+        if is_in_statically_false_branch(tokens, index) or is_in_statically_unreachable_expression(tokens, index):
             continue
         owner = enclosing_named_function(index, named_blocks)
         if owner is not None and (
