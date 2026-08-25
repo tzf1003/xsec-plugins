@@ -302,6 +302,12 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-newline-continued-statically-false-branch",
+                lambda value: None,
+                "export function activate(host) { if (false) void\n host.request(\"xsec.approvals.list\", {}); if (false) void\n host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "rpc-in-statically-true-else-branch",
                 lambda value: None,
                 "export function activate(host) { if (true) {} else { host.request(\"xsec.approvals.list\", {}); } if (true) undefined; else host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
@@ -311,6 +317,12 @@ export function renderPlaceholder() {}
                 "rpc-in-statically-false-loop",
                 lambda value: None,
                 "export function activate(host) { while (false)\n host.request(\"xsec.approvals.list\", {}); for (; false;) { host.request(\"xsec.approvals.statistics\", {}); } return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-statically-false-for-update",
+                lambda value: None,
+                "export function activate(host) { for (; false; host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})) {} return {}; }\n",
                 "declared approvals RPC requests",
             ),
             (
@@ -371,6 +383,18 @@ export function renderPlaceholder() {}
                 "rpc-in-uncalled-helper-default-parameters",
                 lambda value: None,
                 "export function activate(host) { function dead(value = Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})])) {} return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-uncalled-arrow-default-parameters",
+                lambda value: None,
+                "export function activate(host) { const dead = (value = Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})])) => {}; return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-in-uncalled-method-default-parameters",
+                lambda value: None,
+                "export function activate(host) { const dead = { load(value = Promise.all([host.request(\"xsec.approvals.list\", {}), host.request(\"xsec.approvals.statistics\", {})])) {} }; return {}; }\n",
                 "declared approvals RPC requests",
             ),
             (

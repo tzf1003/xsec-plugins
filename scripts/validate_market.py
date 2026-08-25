@@ -538,7 +538,7 @@ def conditional_branch_end(tokens: list[tuple[str, str]], body_start: int) -> in
         elif current == ("punctuation", "]") and bracket_depth:
             bracket_depth -= 1
         elif (
-            current in {("punctuation", ";"), ("newline", "\n")}
+            current == ("punctuation", ";")
             and brace_depth == 0
             and parenthesis_depth == 0
             and bracket_depth == 0
@@ -614,27 +614,48 @@ def is_in_statically_unreachable_loop_body(tokens: list[tuple[str, str]], index:
                 while body_start < len(tokens) and tokens[body_start] == ("newline", "\n"):
                     body_start += 1
                 body_end = conditional_branch_end(tokens, body_start)
-                if body_start <= index < body_end:
+                update_start = cursor + 5
+                if update_start <= index < closing or body_start <= index < body_end:
                     return True
     return False
 
 
-def is_in_javascript_function_parameters(tokens: list[tuple[str, str]], index: int) -> bool:
-    """Exclude unproved default-parameter initializers from broker evidence."""
+def is_in_function_like_parameters(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Exclude unproved defaults from function, method, and arrow parameters."""
 
     for cursor, token in enumerate(tokens):
-        if token != ("identifier", "function"):
-            continue
-        parameter_start = cursor + 1
-        if parameter_start < len(tokens) and tokens[parameter_start] == ("punctuation", "*"):
-            parameter_start += 1
-        if parameter_start < len(tokens) and tokens[parameter_start][0] == "identifier":
-            parameter_start += 1
-        if parameter_start >= len(tokens) or tokens[parameter_start] != ("punctuation", "("):
-            continue
-        parameter_end = matching_parenthesis(tokens, parameter_start)
-        if parameter_end is not None and parameter_start < index < parameter_end:
-            return True
+        if token == ("identifier", "function"):
+            parameter_start = cursor + 1
+            if parameter_start < len(tokens) and tokens[parameter_start] == ("punctuation", "*"):
+                parameter_start += 1
+            if parameter_start < len(tokens) and tokens[parameter_start][0] == "identifier":
+                parameter_start += 1
+            if parameter_start < len(tokens) and tokens[parameter_start] == ("punctuation", "("):
+                parameter_end = matching_parenthesis(tokens, parameter_start)
+                if parameter_end is not None and parameter_start < index < parameter_end:
+                    return True
+        # Parenthesized arrows: ``(value = expression) =>``.  We only need to
+        # reject their parameter initializers, never execute or resolve them.
+        if token == ("punctuation", "=") and cursor + 1 < len(tokens) and tokens[cursor + 1] == ("punctuation", ">"):
+            parameter_end = cursor - 1
+            if parameter_end >= 0 and tokens[parameter_end] == ("punctuation", ")"):
+                parameter_start = matching_opening_parenthesis(tokens, parameter_end)
+                if parameter_start is not None and parameter_start < index < parameter_end:
+                    return True
+        # Method-shaped declarations: ``method(value = expression) {}``.  Do
+        # not mistake a control-flow condition for a method parameter list.
+        if token == ("punctuation", "(") and cursor and tokens[cursor - 1][0] == "identifier":
+            name = tokens[cursor - 1][1]
+            if name in {"if", "for", "while", "switch", "catch", "with"}:
+                continue
+            parameter_end = matching_parenthesis(tokens, cursor)
+            if (
+                parameter_end is not None
+                and parameter_end + 1 < len(tokens)
+                and tokens[parameter_end + 1] == ("punctuation", "{")
+                and cursor < index < parameter_end
+            ):
+                return True
     return False
 
 
@@ -1008,7 +1029,7 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
             ("punctuation", "("),
         ]:
             continue
-        if is_in_javascript_function_parameters(tokens, index):
+        if is_in_function_like_parameters(tokens, index):
             continue
         if is_in_block(index, unsupported_blocks):
             continue
