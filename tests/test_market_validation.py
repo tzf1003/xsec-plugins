@@ -106,6 +106,12 @@ class MarketplaceValidationTests(unittest.TestCase):
                 "session read permission",
             ),
             (
+                "unsupported-plugin-api-engine",
+                lambda value: value["extensions"]["com.xsec.desktop"]["engines"].update({"pluginApi": "^1.0.0"}),
+                source,
+                "plugin API 1.1 or later",
+            ),
+            (
                 "placeholder-module",
                 lambda value: None,
                 "export function renderPlaceholder() {}\n",
