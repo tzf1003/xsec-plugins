@@ -109,6 +109,12 @@ export function renderPlaceholder() {}
                 "/export function activate(host) host.request(\"xsec.approvals.list\") host.request(\"xsec.approvals.statistics\")/;\n",
                 "export activate\\(host\\)",
             ),
+            (
+                "conditional-regex-literal-contract",
+                lambda value: None,
+                "if (true) /export function activate(host) host.request(\"xsec.approvals.list\") host.request(\"xsec.approvals.statistics\")/;\n",
+                "export activate\\(host\\)",
+            ),
         ):
             with self.subTest(label=label), tempfile.TemporaryDirectory(prefix=f"xsec-market-approvals-{label}-") as directory:
                 candidate = json.loads(json.dumps(manifest))

@@ -115,27 +115,6 @@ def desktop_entrypoints(manifest: dict[str, object], label: str) -> list[tuple[s
     return result
 
 
-REGEX_PREFIX_KEYWORDS = frozenset({
-    "await", "case", "delete", "in", "instanceof", "new", "of", "return",
-    "throw", "typeof", "void", "yield",
-})
-REGEX_PREFIX_PUNCTUATION = frozenset({
-    "(", "[", "{", ",", ":", ";", "=", "!", "?", "&", "|", "+", "-", "*", "%", "~", "^", "<", ">",
-})
-
-
-def can_start_javascript_regex(tokens: list[tuple[str, str]]) -> bool:
-    """Conservatively identify contexts where `/` starts a regex literal."""
-
-    if not tokens:
-        return True
-    kind, value = tokens[-1]
-    return (
-        (kind == "identifier" and value in REGEX_PREFIX_KEYWORDS)
-        or (kind == "punctuation" and value in REGEX_PREFIX_PUNCTUATION)
-    )
-
-
 def consume_javascript_regex(source: str, index: int) -> int | None:
     """Return the first position following a regex literal, without executing it."""
 
@@ -168,10 +147,11 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
 
     Marketplace validation must never import or execute a plugin archive.  The
     tokenizer deliberately recognizes comments, string/template literals and
-    regular-expression literals so an `activate` or RPC snippet merely written
-    as data cannot satisfy the release contract.  It is not a JavaScript
-    evaluator; unsupported constructs may fail closed rather than weakening
-    the gate.
+    slash-delimited literal candidates so an `activate` or RPC snippet merely
+    written as data cannot satisfy the release contract.  Because the checker
+    intentionally does not parse or execute plugins, slash pairs are consumed
+    conservatively even where JavaScript could interpret them as division;
+    that can reject an unusual valid program, but never accepts a placeholder.
     """
 
     tokens: list[tuple[str, str]] = []
@@ -192,7 +172,7 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
                 fail(f"{label} contains an unterminated JavaScript block comment")
             index = end + 2
             continue
-        if character == "/" and can_start_javascript_regex(tokens):
+        if character == "/":
             end = consume_javascript_regex(source, index)
             if end is not None:
                 tokens.append(("regex", source[index:end]))
