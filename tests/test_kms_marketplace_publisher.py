@@ -355,6 +355,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
 
     def test_stable_promotion_workflow_only_moves_an_existing_pointer(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")
+        publish_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("plugin_id:", workflow)
         self.assertIn("release_id:", workflow)
@@ -365,6 +366,10 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertNotIn("scripts/build_market.py", workflow)
         self.assertIn("chore: promote marketplace stable release", workflow)
         self.assertIn('--arg channel "stable"', workflow)
+        # Both workflows write the same signed index and generated PRs; do
+        # not allow an otherwise valid promotion to race beta publication.
+        self.assertIn("group: xsec-marketplace-publish-main", workflow)
+        self.assertIn("group: xsec-marketplace-publish-main", publish_workflow)
 
 
 if __name__ == "__main__":

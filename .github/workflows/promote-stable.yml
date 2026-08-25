@@ -19,7 +19,10 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: xsec-marketplace-promote-stable
+  # Stable promotion and beta publication both regenerate the signed market
+  # index and merge a generated PR. They must share one queue so neither run
+  # can publish against a stale immutable release list or channel pointer.
+  group: xsec-marketplace-publish-main
   cancel-in-progress: false
 
 jobs:
