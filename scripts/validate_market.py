@@ -49,6 +49,18 @@ APPROVALS_FRONTEND_METHODS = frozenset({
 APPROVALS_FRONTEND_CAPABILITY = "workspace.session.read"
 APPROVALS_FRONTEND_BINDING = "session"
 APPROVALS_FRONTEND_PLUGIN_API_RANGE = "^1.1.0"
+APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT = "onWorkspaceTool:approvals"
+APPROVALS_WORKSPACE_TOOL_CONTRIBUTION = {
+    "title": "审批记录",
+    "icon": "clipboard-check",
+    "scope": "session",
+    "launchable": True,
+    "policy": "singleton",
+    "surface": "standard",
+    "retain": "active",
+    "preferredBottomHeight": 340,
+    "surfaces": ["interactive-dock", "batch-observe"],
+}
 JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
 APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
 # The approvals frontend is the first official package whose archive contract
@@ -1034,6 +1046,15 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     engines = desktop.get("engines")
     if not isinstance(engines, dict) or engines.get("pluginApi") != APPROVALS_FRONTEND_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.1 or later for the approvals frontend")
+    if desktop.get("activationEvents") != [APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT]:
+        fail(f"{label} must declare the approvals workspace-tool activation event")
+    contributes = desktop.get("contributes")
+    workspace_tools = contributes.get("workspaceTools") if isinstance(contributes, dict) else None
+    if (
+        not isinstance(workspace_tools, dict)
+        or workspace_tools.get("approvals") != APPROVALS_WORKSPACE_TOOL_CONTRIBUTION
+    ):
+        fail(f"{label} must declare the canonical approvals workspace-tool contribution")
     frontend_api = desktop.get("frontendApi")
     if not isinstance(frontend_api, dict) or frontend_api.get("version") != 2 or frontend_api.get("module") != "single-esm":
         fail(f"{label} must declare the approvals frontend API v2 single-esm contract")

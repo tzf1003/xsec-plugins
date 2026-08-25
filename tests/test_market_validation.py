@@ -112,6 +112,30 @@ class MarketplaceValidationTests(unittest.TestCase):
                 "plugin API 1.1 or later",
             ),
             (
+                "missing-approvals-workspace-tool",
+                lambda value: value["extensions"]["com.xsec.desktop"]["contributes"]["workspaceTools"].pop("approvals"),
+                source,
+                "canonical approvals workspace-tool contribution",
+            ),
+            (
+                "renamed-approvals-workspace-tool",
+                lambda value: value["extensions"]["com.xsec.desktop"]["contributes"]["workspaceTools"].update({"approval-log": value["extensions"]["com.xsec.desktop"]["contributes"]["workspaceTools"].pop("approvals")}),
+                source,
+                "canonical approvals workspace-tool contribution",
+            ),
+            (
+                "missing-approvals-workspace-tool-activation",
+                lambda value: value["extensions"]["com.xsec.desktop"].update({"activationEvents": []}),
+                source,
+                "workspace-tool activation event",
+            ),
+            (
+                "renamed-approvals-workspace-tool-activation",
+                lambda value: value["extensions"]["com.xsec.desktop"].update({"activationEvents": ["onWorkspaceTool:approval-log"]}),
+                source,
+                "workspace-tool activation event",
+            ),
+            (
                 "placeholder-module",
                 lambda value: None,
                 "export function renderPlaceholder() {}\n",
