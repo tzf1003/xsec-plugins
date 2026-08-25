@@ -1,9 +1,16 @@
-name: Publish immutable marketplace beta release
+name: Promote immutable marketplace release to stable
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      plugin_id:
+        description: Marketplace plugin ID to promote or roll back
+        required: true
+        type: string
+      release_id:
+        description: Existing immutable releaseId to select for stable
+        required: true
+        type: string
 
 permissions:
   actions: write
@@ -12,34 +19,25 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: xsec-marketplace-publish-main
+  group: xsec-marketplace-promote-stable
   cancel-in-progress: false
 
 jobs:
-  enforce-publish-ref:
+  enforce-promotion-ref:
     runs-on: ubuntu-latest
     steps:
-      - name: Reject manual dispatches outside protected main
+      - name: Require protected main for manual stable promotion
         env:
-          EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           REF_PROTECTED: ${{ github.ref_protected }}
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
-            echo "Manual marketplace publishing is permitted only from refs/heads/main." >&2
+          if [ "$REF" != "refs/heads/main" ] || [ "$REF_PROTECTED" != "true" ]; then
+            echo "Stable promotion requires a manual run from protected refs/heads/main." >&2
             exit 1
           fi
-          if [ "$REF_PROTECTED" != "true" ]; then
-            echo "Marketplace publication requires a protected main branch or ruleset." >&2
-            exit 1
-          fi
-  sign-and-publish:
-    needs: enforce-publish-ref
-    # GitHub's merge API puts the generated title in both the subject and
-    # body of the resulting main commit.  Do not recursively build another
-    # beta release from a generated beta or stable-pointer metadata commit.
-    if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected && (github.event_name == 'workflow_dispatch' || (!startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release') && !startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release'))) }}
+  promote-and-publish:
+    needs: enforce-promotion-ref
+    if: ${{ needs.enforce-promotion-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -54,9 +52,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # `git push` uses checkout's persisted credential, not GH_TOKEN.
-          # Keep that credential on the same narrowly scoped token used by
-          # the subsequent GitHub CLI calls.
           token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
       - uses: actions/setup-python@v5
         with:
@@ -64,47 +59,47 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Build an immutable beta release without a private signing key
-        run: python scripts/build_market.py --clean
-      - name: Validate source manifests, deterministic artifacts and package safety
+      - name: Move only the stable channel pointer
+        id: promote
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          python scripts/promote_release.py --root . --plugin-id "$PLUGIN_ID" --release-id "$RELEASE_ID"
+          if git diff --quiet -- plugins; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate the selected immutable release without rebuilding artifacts
+        if: ${{ steps.promote.outputs.changed == 'true' }}
         run: python scripts/validate_market.py source --source-root . --built-root .
       - name: Request KMS sidecars through the production Cloud broker
+        if: ${{ steps.promote.outputs.changed == 'true' }}
         run: python scripts/kms_marketplace_publisher.py --root .
       - name: Gate the KMS sidecar protocol before publishing
+        if: ${{ steps.promote.outputs.changed == 'true' }}
         run: python scripts/kms_marketplace_publisher.py --root . --validate-only
-      - name: Publish generated metadata through a protected pull request
+      - name: Publish the stable pointer through a protected pull request
         id: publish
+        if: ${{ steps.promote.outputs.changed == 'true' }}
         env:
-          # The repository deliberately does not allow the default Actions
-          # token to create pull requests. This narrowly scoped fine-grained
-          # token is restricted to xsec-plugins and is the only credential
-          # permitted to push the generated branch, create/merge its PR, and
-          # dispatch the immutable source gate.
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
         run: |
-          # Stage the index sidecar as well as the index itself. A KMS sidecar
-          # binds exact bytes and must never be left untracked beside a newly
-          # published marketplace.json.
           git add -A .agents/plugins plugins
-          if git diff --cached --quiet; then
-            echo "marketplace_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          git diff --cached --quiet && { echo "No stable pointer update to publish."; exit 1; }
           git config user.name "xsec-marketplace[bot]"
           git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
-          git commit -m "chore: publish marketplace beta release"
+          git commit -m "chore: promote marketplace stable release"
           generated_revision="$(git rev-parse HEAD)"
-          # A re-run retains GITHUB_RUN_ID but gets a new attempt number. Keep
-          # that number in the generated branch so an earlier, divergent
-          # publication attempt cannot make this push non-fast-forward.
-          branch="xsec-marketplace/publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          branch="xsec-marketplace/promote-stable-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
           pull_url="$(gh pr create \
             --base main \
             --head "$branch" \
-            --title "chore: publish marketplace beta release" \
-            --body "Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. This appends immutable releases as needed and advances beta only; the source gate must pass before the signed update can merge.")"
+            --title "chore: promote marketplace stable release" \
+            --body "Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It changes only channels.stable.releaseId and reuses the existing artifact digests.")"
           pull_number="$(gh pr view "$pull_url" --json number --jq .number)"
           gh workflow run validate.yml --ref "$branch"
           deadline="$((SECONDS + 900))"
@@ -122,30 +117,22 @@ jobs:
               source_gate_status="$(printf '%s' "$source_gate_json" | jq -r .status)"
               source_gate_conclusion="$(printf '%s' "$source_gate_json" | jq -r .conclusion)"
               if [ "$source_gate_status" = "completed" ]; then
-                if [ "$source_gate_conclusion" != "success" ]; then
-                  echo "The generated marketplace source gate did not succeed." >&2
-                  exit 1
-                fi
+                [ "$source_gate_conclusion" = "success" ] || { echo "The generated marketplace source gate did not succeed." >&2; exit 1; }
                 break
               fi
             fi
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "Timed out waiting for the generated marketplace source gate." >&2
-              exit 1
-            fi
+            [ "$SECONDS" -lt "$deadline" ] || { echo "Timed out waiting for the generated marketplace source gate." >&2; exit 1; }
             sleep 5
           done
           merge_result="$(gh api \
             --method PUT \
             "repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge" \
-            -f commit_title="chore: publish marketplace beta release" \
+            -f commit_title="chore: promote marketplace stable release" \
             -f merge_method=merge)"
-          if [ "$(printf '%s' "$merge_result" | jq -r .merged)" != "true" ]; then
-            echo "The generated marketplace pull request was not merged." >&2
-            exit 1
-          fi
+          [ "$(printf '%s' "$merge_result" | jq -r .merged)" = "true" ] || { echo "The generated marketplace pull request was not merged." >&2; exit 1; }
           echo "marketplace_revision=$(printf '%s' "$merge_result" | jq -r .sha)" >> "$GITHUB_OUTPUT"
-      - name: Dispatch the immutable marketplace revision to the Desktop smoke gate
+      - name: Dispatch the promoted stable revision to the Desktop smoke gate
+        if: ${{ steps.promote.outputs.changed == 'true' }}
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
           MARKETPLACE_REVISION: ${{ steps.publish.outputs.marketplace_revision }}
@@ -154,17 +141,12 @@ jobs:
             echo "The protected Desktop smoke-dispatch token and marketplace revision are required." >&2
             exit 1
           fi
-          # The receiver checks these values against its compiled official
-          # GitHub origin. `GITHUB_SHA` is the protected main revision whose
-          # source was signed; `MARKETPLACE_REVISION` is the immutable merge
-          # commit containing those sidecars. The former must be an ancestor
-          # of the latter, so Desktop can reject redirected dispatch requests.
           payload="$(jq -cn \
             --arg source_repository "$GITHUB_REPOSITORY" \
             --arg source_ref "refs/heads/main" \
             --arg source_sha "$GITHUB_SHA" \
             --arg marketplace_revision "$MARKETPLACE_REVISION" \
-            --arg channel "beta" \
+            --arg channel "stable" \
             '{event_type:"xsec_official_marketplace_published",client_payload:{source_repository:$source_repository,source_ref:$source_ref,source_sha:$source_sha,marketplace_revision:$marketplace_revision,channel:$channel}}')"
           curl --fail --silent --show-error --retry 3 --retry-all-errors \
             --request POST \

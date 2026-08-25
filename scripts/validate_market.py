@@ -21,7 +21,15 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
-from build_market import MARKETPLACE_RELATIVE_PATH, ROOT, is_link, sha256, write_zip
+from build_market import (
+    MARKETPLACE_RELATIVE_PATH,
+    RELEASE_ID_PATTERN,
+    ROOT,
+    is_link,
+    release_id,
+    sha256,
+    write_zip,
+)
 from marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS
 
 
@@ -1305,44 +1313,134 @@ def marketplace_entries(root: Path) -> list[tuple[str, Path, dict[str, object]]]
     return result
 
 
-def validate_release(plugin_id: str, plugin_dir: Path) -> list[tuple[Path, str, dict[str, object]]]:
+def validate_artifacts(
+    plugin_id: str,
+    release_path: Path,
+    version: str,
+    artifacts: object,
+    label: str,
+) -> list[tuple[Path, str, dict[str, object]]]:
+    if not isinstance(artifacts, list) or not artifacts:
+        fail(f"{label} has no artifacts")
+    result: list[tuple[Path, str, dict[str, object]]] = []
+    seen_targets: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            fail(f"release metadata for {plugin_id} contains a non-object artifact")
+        os_name, arch = artifact.get("os"), artifact.get("arch")
+        if not isinstance(os_name, str) or not os_name or not isinstance(arch, str) or not arch:
+            fail(f"release metadata for {plugin_id} artifact must have non-empty os and arch")
+        if (os_name, arch) in seen_targets:
+            fail(f"{label} has duplicate {os_name}/{arch} artifacts")
+        seen_targets.add((os_name, arch))
+        digest = artifact.get("sha256")
+        if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            fail(f"release metadata for {plugin_id} has a non-canonical SHA-256 digest")
+        relative = safe_relative_path(artifact.get("url"), f"artifact URL for {plugin_id}")
+        artifact_path = resolve_below(release_path.parent, relative, f"artifact URL for {plugin_id}")
+        if sha256(artifact_path) != digest:
+            fail(f"artifact SHA-256 does not match release metadata for {plugin_id}")
+        manifest = validate_archive(artifact_path, plugin_id, version)
+        result.append((artifact_path, version, manifest))
+    return result
+
+
+def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
+    """Validate release metadata and return its records keyed by release ID.
+
+    Schema v1 remains readable for a rolling Desktop migration.  New builds
+    and all new publication documents must use v2; `validate_source` enforces
+    that requirement on the generated output.
+    """
+
     release_path = plugin_dir / ".xsec-market" / "releases.json"
     if is_link(release_path.parent) or is_link(release_path):
         fail(f"release metadata for {plugin_id} must not use symbolic links")
     release = read_json(release_path, str(release_path))
-    if release.get("schemaVersion") != 1 or release.get("pluginId") != plugin_id:
+    if release.get("pluginId") != plugin_id:
         fail(f"release metadata for {plugin_id} has an invalid schemaVersion or pluginId")
     releases = release.get("releases")
     if not isinstance(releases, list) or not releases:
         fail(f"release metadata for {plugin_id} must have at least one release")
+    schema_version = release.get("schemaVersion")
+    records: dict[str, dict[str, object]] = {}
+    if schema_version == 1:
+        seen_release_keys: set[tuple[str, str]] = set()
+        for index, item in enumerate(releases):
+            label = f"release metadata for {plugin_id} legacy release {index}"
+            if not isinstance(item, dict):
+                fail(f"release metadata for {plugin_id} contains a non-object release")
+            version, channel = item.get("version"), item.get("channel")
+            if not isinstance(version, str) or not version or channel not in {"beta", "stable"}:
+                fail(f"release metadata for {plugin_id} has an invalid legacy version or channel")
+            if (version, channel) in seen_release_keys:
+                fail(f"release metadata for {plugin_id} duplicates {version}/{channel}")
+            seen_release_keys.add((version, channel))
+            engines = item.get("engines")
+            if not isinstance(engines, dict) or not engines:
+                fail(f"{label} has invalid engines")
+            artifacts = item.get("artifacts")
+            validate_artifacts(plugin_id, release_path, version, artifacts, label)
+            if not isinstance(artifacts, list):  # already guarded, helps type narrowing
+                raise AssertionError("artifacts unexpectedly absent")
+            identifier = release_id(version, engines, artifacts)
+            records[identifier] = {
+                "releaseId": identifier,
+                "version": version,
+                "engines": engines,
+                "artifacts": artifacts,
+            }
+        return release, records
+
+    if schema_version != 2 or set(release) != {"schemaVersion", "pluginId", "releases", "channels"}:
+        fail(f"release metadata for {plugin_id} has an unsupported schema")
+    for index, item in enumerate(releases):
+        label = f"release metadata for {plugin_id} release {index}"
+        if not isinstance(item, dict) or set(item) != {"releaseId", "version", "engines", "artifacts"}:
+            fail(f"{label} has an unsupported schema")
+        identifier, version, engines, artifacts = (
+            item.get("releaseId"),
+            item.get("version"),
+            item.get("engines"),
+            item.get("artifacts"),
+        )
+        if not isinstance(identifier, str) or not RELEASE_ID_PATTERN.fullmatch(identifier):
+            fail(f"{label} has an invalid releaseId")
+        if not isinstance(version, str) or not version or not isinstance(engines, dict) or not engines:
+            fail(f"{label} has an invalid version or engines")
+        validate_artifacts(plugin_id, release_path, version, artifacts, label)
+        if not isinstance(artifacts, list):
+            raise AssertionError("artifacts unexpectedly absent")
+        if identifier != release_id(version, engines, artifacts):
+            fail(f"{label} releaseId does not match immutable release content")
+        if identifier in records:
+            fail(f"release metadata for {plugin_id} contains duplicate releaseIds")
+        records[identifier] = item
+    channels = release.get("channels")
+    if not isinstance(channels, dict) or set(channels) != {"beta", "stable"}:
+        fail(f"release metadata for {plugin_id} must contain beta and stable channel pointers")
+    for channel in ("beta", "stable"):
+        pointer = channels.get(channel)
+        target = pointer.get("releaseId") if isinstance(pointer, dict) and set(pointer) == {"releaseId"} else None
+        if not isinstance(target, str) or target not in records:
+            fail(f"release metadata for {plugin_id} {channel} pointer must reference an immutable release")
+    return release, records
+
+
+def validate_release(plugin_id: str, plugin_dir: Path) -> list[tuple[Path, str, dict[str, object]]]:
+    """Compatibility helper retained for tests that need all archived releases."""
+
+    release, records = validate_release_index(plugin_id, plugin_dir)
+    release_path = plugin_dir / ".xsec-market" / "releases.json"
     result: list[tuple[Path, str, dict[str, object]]] = []
-    seen_release_keys: set[tuple[str, str]] = set()
-    for item in releases:
+    if release.get("schemaVersion") == 1:
+        items = release["releases"]
+    else:
+        items = records.values()
+    for item in items:
         if not isinstance(item, dict):
-            fail(f"release metadata for {plugin_id} contains a non-object release")
-        version, channel = item.get("version"), item.get("channel")
-        if not isinstance(version, str) or not version or not isinstance(channel, str) or not channel:
-            fail(f"release metadata for {plugin_id} has an invalid version or channel")
-        if (version, channel) in seen_release_keys:
-            fail(f"release metadata for {plugin_id} duplicates {version}/{channel}")
-        seen_release_keys.add((version, channel))
-        artifacts = item.get("artifacts")
-        if not isinstance(artifacts, list) or not artifacts:
-            fail(f"release metadata for {plugin_id} {version}/{channel} has no artifacts")
-        for artifact in artifacts:
-            if not isinstance(artifact, dict):
-                fail(f"release metadata for {plugin_id} contains a non-object artifact")
-            if not isinstance(artifact.get("os"), str) or not isinstance(artifact.get("arch"), str):
-                fail(f"release metadata for {plugin_id} artifact must have os and arch")
-            digest = artifact.get("sha256")
-            if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-                fail(f"release metadata for {plugin_id} has a non-canonical SHA-256 digest")
-            relative = safe_relative_path(artifact.get("url"), f"artifact URL for {plugin_id}")
-            artifact_path = resolve_below(release_path.parent, relative, f"artifact URL for {plugin_id}")
-            if sha256(artifact_path) != digest:
-                fail(f"artifact SHA-256 does not match release metadata for {plugin_id}")
-            manifest = validate_archive(artifact_path, plugin_id, version)
-            result.append((artifact_path, version, manifest))
+            raise AssertionError("validated release item must be an object")
+        result.extend(validate_artifacts(plugin_id, release_path, str(item["version"]), item["artifacts"], f"release metadata for {plugin_id}"))
     return result
 
 
@@ -1391,29 +1489,48 @@ def validate_source(source_root: Path, built_root: Path) -> None:
     for plugin_id, source_dir, _ in source_entries:
         source_manifest = validate_source_manifest(plugin_id, source_dir)
         built_plugin_dir = built_by_id[plugin_id]
-        generated_release = read_json(
-            built_plugin_dir / ".xsec-market" / "releases.json",
-            f"temporary release metadata for {plugin_id}",
-        )
-        generated_releases = generated_release.get("releases")
-        if not isinstance(generated_releases, list) or len(generated_releases) != 1 or not isinstance(generated_releases[0], dict):
-            fail(f"temporary output for {plugin_id} must contain exactly one stable release")
-        generated_item = generated_releases[0]
+        source_release, source_records = validate_release_index(plugin_id, source_dir)
+        generated_release, generated_records = validate_release_index(plugin_id, built_plugin_dir)
+        if generated_release.get("schemaVersion") != 2:
+            fail(f"temporary output for {plugin_id} must migrate release metadata to schema v2")
+        generated_channels = generated_release.get("channels")
+        if not isinstance(generated_channels, dict):
+            fail(f"temporary output for {plugin_id} has no channel pointers")
+        beta = generated_channels.get("beta")
+        beta_id = beta.get("releaseId") if isinstance(beta, dict) else None
+        generated_item = generated_records.get(beta_id) if isinstance(beta_id, str) else None
+        if generated_item is None:
+            fail(f"temporary output for {plugin_id} beta pointer does not select a release")
         if (
             generated_item.get("version") != source_manifest["version"]
-            or generated_item.get("channel") != "stable"
             or generated_item.get("engines") != source_manifest["extensions"]["com.xsec.desktop"]["engines"]
         ):
-            fail(f"temporary release metadata for {plugin_id} does not match its source manifest")
-        artifacts = validate_release(plugin_id, built_plugin_dir)
-        expected_artifact_name = f"{plugin_id}-{source_manifest['version']}-any-any.xsec-plugin"
-        if len(artifacts) != 1 or artifacts[0][0].name != expected_artifact_name or artifacts[0][1] != source_manifest["version"]:
-            fail(f"temporary output for {plugin_id} does not contain exactly its current stable artifact")
+            fail(f"temporary beta release metadata for {plugin_id} does not match its source manifest")
+
+        # A regular build may append an immutable release and advance beta, but
+        # must never mutate an already-published v2 record or stable pointer.
+        if source_release.get("schemaVersion") == 2:
+            for identifier, source_item in source_records.items():
+                if generated_records.get(identifier) != source_item:
+                    fail(f"temporary output for {plugin_id} mutated immutable release {identifier}")
+            source_channels = source_release.get("channels")
+            if isinstance(source_channels, dict) and generated_channels.get("stable") != source_channels.get("stable"):
+                fail(f"temporary output for {plugin_id} moved the stable channel pointer")
+
+        candidate_artifacts = validate_artifacts(
+            plugin_id,
+            built_plugin_dir / ".xsec-market" / "releases.json",
+            str(generated_item["version"]),
+            generated_item["artifacts"],
+            f"temporary beta release metadata for {plugin_id}",
+        )
+        if len(candidate_artifacts) != 1 or candidate_artifacts[0][1] != source_manifest["version"]:
+            fail(f"temporary output for {plugin_id} does not contain exactly its current beta artifact")
         with tempfile.TemporaryDirectory(prefix="xsec-market-repro-") as directory:
-            reproducible = Path(directory) / expected_artifact_name
+            reproducible = Path(directory) / candidate_artifacts[0][0].name
             write_zip(source_dir, reproducible)
-            if reproducible.read_bytes() != artifacts[0][0].read_bytes():
-                fail(f"artifact for {plugin_id} is not deterministic from its source tree")
+            if reproducible.read_bytes() != candidate_artifacts[0][0].read_bytes():
+                fail(f"beta artifact for {plugin_id} is not deterministic from its source tree")
 
 
 def main() -> None:

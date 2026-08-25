@@ -16,6 +16,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import build_market  # noqa: E402
+import promote_release  # noqa: E402
 import validate_market  # noqa: E402
 from validate_market import (  # noqa: E402
     MarketplaceValidationError,
@@ -43,6 +44,97 @@ class MarketplaceValidationTests(unittest.TestCase):
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
             validate_source(ROOT, output)
+
+    def test_v1_migration_initially_points_beta_and_stable_to_the_same_release(self) -> None:
+        artifacts = [{"os": "any", "arch": "any", "url": "artifacts/test.xsec-plugin", "sha256": "a" * 64}]
+        legacy = {
+            "schemaVersion": 1,
+            "pluginId": "com.example.test",
+            "releases": [{"version": "1.0.0", "channel": "stable", "engines": {"xsec": ">=1"}, "artifacts": artifacts}],
+        }
+
+        migrated = build_market.migrate_v1_release_document(legacy, "com.example.test")
+
+        self.assertEqual(migrated["schemaVersion"], 2)
+        self.assertEqual(migrated["channels"]["beta"], migrated["channels"]["stable"])
+        self.assertEqual(migrated["channels"]["stable"]["releaseId"], migrated["releases"][0]["releaseId"])
+
+    def test_beta_build_appends_an_immutable_release_and_preserves_stable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-v2-build-") as directory:
+            root = Path(directory)
+            plugin_dir = root / "source"
+            output_dir = root / "output"
+            entrypoint = plugin_dir / "frontend" / "index.js"
+            entrypoint.parent.mkdir(parents=True)
+            manifest = {
+                "name": "com.example.test",
+                "version": "1.0.0",
+                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1"}, "entrypoints": {"frontend": "./frontend/index.js"}}},
+            }
+            (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+            entrypoint.write_text("export const value = 1;\n", encoding="utf-8")
+
+            build_market.build_plugin(plugin_dir, output_dir)
+            first = build_market.load_release_document(output_dir / ".xsec-market" / "releases.json", "com.example.test")
+            first_id = first["channels"]["beta"]["releaseId"]
+            self.assertEqual(first_id, first["channels"]["stable"]["releaseId"])
+
+            # A source edit without a version bump is a new beta release, not
+            # an overwrite of the old artifact or the stable selection.
+            entrypoint.write_text("export const value = 2;\n", encoding="utf-8")
+            build_market.build_plugin(plugin_dir, output_dir)
+            second = build_market.load_release_document(output_dir / ".xsec-market" / "releases.json", "com.example.test")
+            second_id = second["channels"]["beta"]["releaseId"]
+            self.assertNotEqual(first_id, second_id)
+            self.assertEqual(first_id, second["channels"]["stable"]["releaseId"])
+            self.assertEqual(len(second["releases"]), 2)
+            artifacts = sorted((output_dir / ".xsec-market" / "artifacts").glob("*.xsec-plugin"))
+            self.assertEqual(len(artifacts), 2)
+            self.assertEqual(len({artifact.name for artifact in artifacts}), 2)
+
+    def test_stable_promotion_reuses_an_existing_release_and_changes_no_artifact(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-stable-promotion-") as directory:
+            root = Path(directory)
+            plugin_dir = root / "plugins" / "com.example.test"
+            entrypoint = plugin_dir / "frontend" / "index.js"
+            entrypoint.parent.mkdir(parents=True)
+            manifest = {
+                "name": "com.example.test",
+                "version": "1.0.0",
+                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1"}, "entrypoints": {"frontend": "./frontend/index.js"}}},
+            }
+            (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+            entrypoint.write_text("export const value = 1;\n", encoding="utf-8")
+            build_market.build_plugin(plugin_dir, plugin_dir)
+            entrypoint.write_text("export const value = 2;\n", encoding="utf-8")
+            build_market.build_plugin(plugin_dir, plugin_dir)
+            release_path = plugin_dir / ".xsec-market" / "releases.json"
+            before = build_market.load_release_document(release_path, "com.example.test")
+            beta_id = before["channels"]["beta"]["releaseId"]
+            stable_id = before["channels"]["stable"]["releaseId"]
+            artifact_bytes = {path.name: path.read_bytes() for path in (plugin_dir / ".xsec-market" / "artifacts").glob("*.xsec-plugin")}
+
+            self.assertTrue(promote_release.promote_stable(root, "com.example.test", str(beta_id)))
+            after = build_market.load_release_document(release_path, "com.example.test")
+            self.assertEqual(after["channels"]["stable"]["releaseId"], beta_id)
+            self.assertNotEqual(stable_id, beta_id)
+            self.assertEqual(artifact_bytes, {path.name: path.read_bytes() for path in (plugin_dir / ".xsec-market" / "artifacts").glob("*.xsec-plugin")})
+            self.assertFalse(promote_release.promote_stable(root, "com.example.test", str(beta_id)))
+
+    def test_stable_promotion_rejects_an_unknown_release_id(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-stable-promotion-invalid-") as directory:
+            root = Path(directory)
+            plugin_dir = root / "plugins" / "com.example.test" / ".xsec-market"
+            plugin_dir.mkdir(parents=True)
+            release = {
+                "schemaVersion": 2,
+                "pluginId": "com.example.test",
+                "releases": [],
+                "channels": {"beta": {"releaseId": None}, "stable": {"releaseId": None}},
+            }
+            (plugin_dir / "releases.json").write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(promote_release.PromotionError, "target is not an existing immutable release"):
+                promote_release.promote_stable(root, "com.example.test", "sha256-" + "a" * 64)
 
     def test_source_gate_rejects_tampered_generated_artifact(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-tampered-artifact-") as directory:
@@ -698,7 +790,8 @@ export function renderPlaceholder() {}
         self.assertIn("needs: enforce-publish-ref", signing_job)
         self.assertIn("needs.enforce-publish-ref.result == 'success'", signing_job)
         self.assertNotIn("needs.require_publish_token.result == 'success'", signing_job)
-        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: publish KMS-signed marketplace artifacts')", signing_job)
+        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release')", signing_job)
+        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release')", signing_job)
         steps = workflow.split("  sign-and-publish:\n", 1)[1].split("    steps:\n", 1)[1]
         self.assertLess(
             steps.index("Require the protected marketplace publication token before checkout or KMS"),
@@ -734,7 +827,7 @@ export function renderPlaceholder() {}
                 patch.object(build_market.shutil, "copytree") as copytree,
                 link_check,
             ):
-                with self.assertRaisesRegex(ValueError, "plugin package must not contain symbolic links"):
+                with self.assertRaisesRegex(ValueError, "plugin source tree must not contain symbolic links"):
                     build_market.copy_source_tree(destination)
                 copytree.assert_not_called()
 
@@ -809,13 +902,11 @@ export function renderPlaceholder() {}
                 patch.object(build_market, "is_link", side_effect=lambda path: path == output_plugins),
                 patch.object(Path, "exists") as exists,
                 patch.object(Path, "iterdir") as iterdir,
-                patch.object(build_market.shutil, "rmtree") as rmtree,
             ):
                 with self.assertRaisesRegex(ValueError, "generated plugin root must not be a symbolic link"):
                     build_market.clean_generated_output(output_root)
                 exists.assert_not_called()
                 iterdir.assert_not_called()
-                rmtree.assert_not_called()
 
     def test_cleanup_rejects_linked_plugin_directory_before_cleanup(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-clean-child-link-") as directory:
@@ -826,11 +917,9 @@ export function renderPlaceholder() {}
 
             with (
                 patch.object(build_market, "is_link", side_effect=lambda path: path == linked_plugin),
-                patch.object(build_market.shutil, "rmtree") as rmtree,
             ):
                 with self.assertRaisesRegex(ValueError, "generated plugin directory must not be a symbolic link"):
                     build_market.clean_generated_output(output_root)
-                rmtree.assert_not_called()
 
 
 if __name__ == "__main__":

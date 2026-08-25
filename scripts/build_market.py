@@ -3,8 +3,9 @@
 
 The default output is the repository itself, for the protected publishing
 workflow. Validation and pull-request jobs must instead supply ``--output-root``
-to make a complete, disposable marketplace tree without touching tracked
-release artifacts.
+to make a complete, disposable marketplace tree.  Existing immutable release
+history is copied into that tree so output follows the same append-only rules
+as protected publication.
 """
 
 from __future__ import annotations
@@ -12,7 +13,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -23,6 +26,7 @@ MARKETPLACE = ROOT / MARKETPLACE_RELATIVE_PATH
 PLUGIN_ROOT = ROOT / "plugins"
 ARTIFACT_DIR_NAME = "artifacts"
 EXCLUDED_PARTS = {"__pycache__", ".git", ".xsec-market"}
+RELEASE_ID_PATTERN = re.compile(r"^sha256-[0-9a-f]{64}$")
 
 
 def is_link(path: Path) -> bool:
@@ -33,6 +37,12 @@ def is_link(path: Path) -> bool:
 
 def stable_json(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def canonical_json(value: object) -> bytes:
+    """Bytes used to derive an immutable release identity."""
+
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def sha256(value: bytes | Path) -> str:
@@ -61,6 +71,190 @@ def iter_plugin_files(plugin_dir: Path) -> list[Path]:
         if path.is_file():
             files.append(path)
     return files
+
+
+def require_link_free_tree(root: Path, label: str) -> None:
+    """Reject a link anywhere in a tree before copytree can follow it."""
+
+    if is_link(root):
+        raise ValueError(f"{label} must not be a symbolic link: {root}")
+    for path in root.rglob("*"):
+        if is_link(path):
+            raise ValueError(f"{label} must not contain symbolic links: {path}")
+
+
+def release_id(version: str, engines: object, artifacts: list[dict[str, object]]) -> str:
+    """Return a content-addressed ID that stays stable when artifact URLs move.
+
+    The release record itself remains immutable.  Excluding the URL here lets
+    the one-time v1 migration identify an existing legacy artifact instead of
+    needlessly creating a second beta release with identical payload bytes.
+    """
+
+    descriptor = {
+        "version": version,
+        "engines": engines,
+        "artifacts": sorted(
+            [
+                {
+                    "os": artifact.get("os"),
+                    "arch": artifact.get("arch"),
+                    "sha256": artifact.get("sha256"),
+                }
+                for artifact in artifacts
+            ],
+            key=lambda artifact: (str(artifact["os"]), str(artifact["arch"]), str(artifact["sha256"])),
+        ),
+    }
+    return f"sha256-{sha256(canonical_json(descriptor))}"
+
+
+def require_release_id(value: object, label: str) -> str:
+    if not isinstance(value, str) or not RELEASE_ID_PATTERN.fullmatch(value):
+        raise ValueError(f"{label} must be a canonical content-addressed releaseId")
+    return value
+
+
+def require_release_artifacts(value: object, label: str) -> list[dict[str, object]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{label}.artifacts must be a non-empty list")
+    artifacts: list[dict[str, object]] = []
+    seen_targets: set[tuple[str, str]] = set()
+    for artifact in value:
+        if not isinstance(artifact, dict):
+            raise ValueError(f"{label}.artifacts must contain objects")
+        os_name, arch = artifact.get("os"), artifact.get("arch")
+        digest, url = artifact.get("sha256"), artifact.get("url")
+        if not isinstance(os_name, str) or not os_name or not isinstance(arch, str) or not arch:
+            raise ValueError(f"{label}.artifacts must declare non-empty os and arch")
+        if (os_name, arch) in seen_targets:
+            raise ValueError(f"{label}.artifacts has duplicate {os_name}/{arch} target")
+        seen_targets.add((os_name, arch))
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"{label}.artifacts must contain canonical SHA-256 values")
+        if not isinstance(url, str) or not url:
+            raise ValueError(f"{label}.artifacts must contain non-empty URLs")
+        artifacts.append({"os": os_name, "arch": arch, "url": url, "sha256": digest})
+    return artifacts
+
+
+def require_release_record(value: object, plugin_id: str, label: str) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"releaseId", "version", "engines", "artifacts"}:
+        raise ValueError(f"{label} must contain only releaseId, version, engines and artifacts")
+    version = safe_artifact_component(value.get("version"), f"{label}.version")
+    engines = value.get("engines")
+    if not isinstance(engines, dict) or not engines:
+        raise ValueError(f"{label}.engines must be a non-empty object")
+    artifacts = require_release_artifacts(value.get("artifacts"), label)
+    calculated = release_id(version, engines, artifacts)
+    supplied = require_release_id(value.get("releaseId"), label)
+    if supplied != calculated:
+        raise ValueError(f"{label}.releaseId does not match immutable release content")
+    return {
+        "releaseId": supplied,
+        "version": version,
+        "engines": engines,
+        "artifacts": artifacts,
+    }
+
+
+def migrate_v1_release_document(value: dict[str, object], plugin_id: str) -> dict[str, object]:
+    """Turn legacy per-channel release records into v2 immutable records."""
+
+    if value.get("schemaVersion") != 1 or value.get("pluginId") != plugin_id:
+        raise ValueError(f"release metadata for {plugin_id} has an invalid legacy schemaVersion or pluginId")
+    legacy_releases = value.get("releases")
+    if not isinstance(legacy_releases, list) or not legacy_releases:
+        raise ValueError(f"release metadata for {plugin_id} must have at least one legacy release")
+    releases: list[dict[str, object]] = []
+    release_ids: set[str] = set()
+    channel_targets: dict[str, str] = {}
+    for index, legacy in enumerate(legacy_releases):
+        label = f"legacy release metadata for {plugin_id} at index {index}"
+        if not isinstance(legacy, dict) or set(legacy) != {"version", "channel", "engines", "artifacts"}:
+            raise ValueError(f"{label} has an unsupported schema")
+        version = safe_artifact_component(legacy.get("version"), f"{label}.version")
+        channel = legacy.get("channel")
+        engines = legacy.get("engines")
+        if not isinstance(channel, str) or channel not in {"beta", "stable"}:
+            raise ValueError(f"{label}.channel must be beta or stable")
+        if not isinstance(engines, dict) or not engines:
+            raise ValueError(f"{label}.engines must be a non-empty object")
+        artifacts = require_release_artifacts(legacy.get("artifacts"), label)
+        identifier = release_id(version, engines, artifacts)
+        if identifier not in release_ids:
+            release_ids.add(identifier)
+            releases.append(
+                {
+                    "releaseId": identifier,
+                    "version": version,
+                    "engines": engines,
+                    "artifacts": artifacts,
+                }
+            )
+        channel_targets[channel] = identifier
+    stable = channel_targets.get("stable")
+    if stable is None:
+        raise ValueError(f"legacy release metadata for {plugin_id} must select a stable release")
+    return {
+        "schemaVersion": 2,
+        "pluginId": plugin_id,
+        "releases": releases,
+        "channels": {
+            "beta": {"releaseId": channel_targets.get("beta", stable)},
+            "stable": {"releaseId": stable},
+        },
+    }
+
+
+def load_release_document(release_path: Path, plugin_id: str) -> dict[str, object]:
+    """Load v2, migrating a checked-in v1 document in memory when needed."""
+
+    # Test links before exists(): a broken link reports non-existence on some
+    # platforms and must not be mistaken for a fresh release document.
+    if is_link(release_path) or is_link(release_path.parent):
+        raise ValueError(f"release metadata for {plugin_id} must not use symbolic links")
+    if not release_path.exists():
+        return {
+            "schemaVersion": 2,
+            "pluginId": plugin_id,
+            "releases": [],
+            "channels": {"beta": {"releaseId": None}, "stable": {"releaseId": None}},
+        }
+    try:
+        value = json.loads(release_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"release metadata for {plugin_id} cannot be read") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"release metadata for {plugin_id} must be an object")
+    if value.get("schemaVersion") == 1:
+        return migrate_v1_release_document(value, plugin_id)
+    if value.get("schemaVersion") != 2 or value.get("pluginId") != plugin_id:
+        raise ValueError(f"release metadata for {plugin_id} has an invalid schemaVersion or pluginId")
+    if set(value) != {"schemaVersion", "pluginId", "releases", "channels"}:
+        raise ValueError(f"release metadata for {plugin_id} has an unsupported v2 schema")
+    items = value.get("releases")
+    if not isinstance(items, list):
+        raise ValueError(f"release metadata for {plugin_id}.releases must be a list")
+    releases = [require_release_record(item, plugin_id, f"release metadata for {plugin_id} at index {index}") for index, item in enumerate(items)]
+    identifiers = [item["releaseId"] for item in releases]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError(f"release metadata for {plugin_id} contains duplicate releaseIds")
+    channels = value.get("channels")
+    if not isinstance(channels, dict) or set(channels) != {"beta", "stable"}:
+        raise ValueError(f"release metadata for {plugin_id}.channels must contain beta and stable pointers")
+    normalized_channels: dict[str, dict[str, str | None]] = {}
+    for channel in ("beta", "stable"):
+        pointer = channels.get(channel)
+        if not isinstance(pointer, dict) or set(pointer) != {"releaseId"}:
+            raise ValueError(f"release metadata for {plugin_id}.{channel} must contain only releaseId")
+        target = pointer.get("releaseId")
+        if target is not None:
+            target = require_release_id(target, f"release metadata for {plugin_id}.{channel}")
+            if target not in identifiers:
+                raise ValueError(f"release metadata for {plugin_id}.{channel} points at an unknown release")
+        normalized_channels[channel] = {"releaseId": target}
+    return {"schemaVersion": 2, "pluginId": plugin_id, "releases": releases, "channels": normalized_channels}
 
 
 def write_zip(plugin_dir: Path, destination: Path) -> None:
@@ -145,16 +339,24 @@ def copy_source_tree(output_root: Path) -> None:
             raise ValueError(f"plugin directory must not be a symbolic link: {source_dir}")
         # `copytree` follows directory links by default. Validate every nested
         # member before copying so a source-tree link cannot make the temporary
-        # validation tree include files outside the plugin package.
-        iter_plugin_files(source_dir)
+        # validation tree include files outside the plugin package.  Unlike the
+        # package archive, a disposable publication must retain existing
+        # immutable .xsec-market history and artifacts.
+        require_link_free_tree(source_dir, "plugin source tree")
         shutil.copytree(
             source_dir,
             output_root / "plugins" / source_dir.name,
-            ignore=shutil.ignore_patterns(".xsec-market", "__pycache__", ".git"),
+            ignore=shutil.ignore_patterns("__pycache__", ".git", "*.sig", "*.sig.jws.json"),
         )
 
 
 def clean_generated_output(output_root: Path) -> None:
+    """Remove stale signatures without deleting immutable releases or artifacts.
+
+    Older versions removed every `.xsec-market` directory for `--clean`.  That
+    made publishing a new version erase the only artifact a stable pointer
+    could reference, so it is intentionally no longer a release-history clean.
+    """
     output_plugins = output_root / "plugins"
     if is_link(output_plugins):
         raise ValueError(f"generated plugin root must not be a symbolic link: {output_plugins}")
@@ -176,7 +378,8 @@ def clean_generated_output(output_root: Path) -> None:
             release_root.resolve(strict=True).relative_to(output_plugins.resolve(strict=True))
         except (OSError, ValueError) as error:
             raise ValueError(f"generated output path must remain below plugins/: {release_root}") from error
-        shutil.rmtree(release_root)
+        for suffix in (".sig", ".sig.jws.json"):
+            release_root.joinpath("releases.json").with_name("releases.json" + suffix).unlink(missing_ok=True)
     marketplace_path = output_root / MARKETPLACE_RELATIVE_PATH
     for suffix in (".sig", ".sig.jws.json"):
         marketplace_path.with_name(marketplace_path.name + suffix).unlink(missing_ok=True)
@@ -188,29 +391,65 @@ def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path) -> None:
     version = safe_artifact_component(manifest.get("version"), "plugin manifest version")
     release_root = output_plugin_dir / ".xsec-market"
     artifact_dir = release_root / ARTIFACT_DIR_NAME
-    artifact_name = f"{plugin_id}-{version}-any-any.xsec-plugin"
-    artifact = path_below(artifact_dir, artifact_name, "artifact path")
-    write_zip(source_plugin_dir, artifact)
-    release = {
-        "schemaVersion": 1,
-        "pluginId": plugin_id,
-        "releases": [
-            {
-                "version": version,
-                "channel": "stable",
-                "engines": manifest["extensions"]["com.xsec.desktop"]["engines"],
-                "artifacts": [
-                    {
-                        "os": "any",
-                        "arch": "any",
-                        "url": f"{ARTIFACT_DIR_NAME}/{artifact_name}",
-                        "sha256": sha256(artifact),
-                    }
-                ],
-            }
-        ],
-    }
     release_path = release_root / "releases.json"
+    release = load_release_document(release_path, plugin_id)
+    engines = manifest["extensions"]["com.xsec.desktop"]["engines"]
+    if not isinstance(engines, dict) or not engines:
+        raise ValueError(f"plugin manifest {plugin_id} must have non-empty XSEC Desktop engines")
+
+    # Hash the deterministic archive before deriving the filename.  The digest
+    # is part of the filename so two code revisions with the same manifest
+    # version cannot overwrite each other.
+    with tempfile.TemporaryDirectory(prefix="xsec-market-artifact-") as directory:
+        candidate = Path(directory) / "candidate.xsec-plugin"
+        write_zip(source_plugin_dir, candidate)
+        candidate_digest = sha256(candidate)
+        artifact_name = f"{plugin_id}-{version}-sha256-{candidate_digest[:16]}-any-any.xsec-plugin"
+        artifact = path_below(artifact_dir, artifact_name, "artifact path")
+        candidate_artifacts = [
+            {
+                "os": "any",
+                "arch": "any",
+                "url": f"{ARTIFACT_DIR_NAME}/{artifact_name}",
+                "sha256": candidate_digest,
+            }
+        ]
+        candidate_release_id = release_id(version, engines, candidate_artifacts)
+
+        releases = release["releases"]
+        if not isinstance(releases, list):  # guarded by load_release_document
+            raise ValueError(f"release metadata for {plugin_id} has invalid releases")
+        existing: dict[str, dict[str, object]] = {}
+        for item in releases:
+            if not isinstance(item, dict):
+                raise ValueError(f"release metadata for {plugin_id} has an invalid release")
+            existing[str(item["releaseId"])] = item
+        target = existing.get(candidate_release_id)
+        if target is None:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            if artifact.exists():
+                if sha256(artifact) != candidate_digest:
+                    raise ValueError(f"immutable artifact path already contains different bytes: {artifact}")
+            else:
+                shutil.copyfile(candidate, artifact)
+            target = {
+                "releaseId": candidate_release_id,
+                "version": version,
+                "engines": engines,
+                "artifacts": candidate_artifacts,
+            }
+            releases.append(target)
+
+    channels = release["channels"]
+    if not isinstance(channels, dict):  # guarded by load_release_document
+        raise ValueError(f"release metadata for {plugin_id} has invalid channels")
+    # Only the beta pointer moves during automatic main publication.  Stable
+    # promotion uses scripts/promote_release.py and reuses this exact record.
+    channels["beta"] = {"releaseId": target["releaseId"]}
+    stable = channels.get("stable")
+    if not isinstance(stable, dict) or stable.get("releaseId") is None:
+        channels["stable"] = {"releaseId": target["releaseId"]}
+
     release_path.parent.mkdir(parents=True, exist_ok=True)
     release_path.write_bytes(stable_json(release))
 
