@@ -550,17 +550,91 @@ def lifecycle_block_binds_host(tokens: list[tuple[str, str]], block: tuple[int, 
     return declarations_bind_host(tokens, opening_brace + 1, closing_brace)
 
 
-def is_after_activation_return(tokens: list[tuple[str, str]], index: int) -> bool:
-    """Return whether a top-level return makes an activation-level token dead."""
+def is_after_unconditional_return(
+    tokens: list[tuple[str, str]],
+    index: int,
+    scope_start: int,
+    scope_end: int,
+) -> bool:
+    """Return whether a completed direct-scope return precedes ``index``."""
 
     brace_depth = 0
-    for cursor in range(index):
+    parenthesis_depth = 0
+    bracket_depth = 0
+    for cursor in range(scope_start, min(index, scope_end)):
         token = tokens[cursor]
         if token == ("punctuation", "{"):
             brace_depth += 1
         elif token == ("punctuation", "}") and brace_depth:
             brace_depth -= 1
-        elif token == ("identifier", "return") and brace_depth == 0:
+        elif token == ("punctuation", "("):
+            parenthesis_depth += 1
+        elif token == ("punctuation", ")") and parenthesis_depth:
+            parenthesis_depth -= 1
+        elif token == ("punctuation", "["):
+            bracket_depth += 1
+        elif token == ("punctuation", "]") and bracket_depth:
+            bracket_depth -= 1
+        elif (
+            token == ("identifier", "return")
+            and brace_depth == 0
+            and parenthesis_depth == 0
+            and bracket_depth == 0
+        ):
+            expression_braces = 0
+            expression_parentheses = 0
+            expression_brackets = 0
+            for end in range(cursor + 1, min(index, scope_end)):
+                current = tokens[end]
+                if current == ("punctuation", "{"):
+                    expression_braces += 1
+                elif current == ("punctuation", "}") and expression_braces:
+                    expression_braces -= 1
+                elif current == ("punctuation", "("):
+                    expression_parentheses += 1
+                elif current == ("punctuation", ")") and expression_parentheses:
+                    expression_parentheses -= 1
+                elif current == ("punctuation", "["):
+                    expression_brackets += 1
+                elif current == ("punctuation", "]") and expression_brackets:
+                    expression_brackets -= 1
+                elif (
+                    current == ("punctuation", ";")
+                    and expression_braces == 0
+                    and expression_parentheses == 0
+                    and expression_brackets == 0
+                ):
+                    return True
+    return False
+
+
+def host_is_reassigned_before(
+    tokens: list[tuple[str, str]],
+    index: int,
+    scope_start: int,
+) -> bool:
+    """Conservatively detect a prior write to the bare broker binding."""
+
+    for cursor in range(scope_start, index):
+        if tokens[cursor] != ("identifier", "host"):
+            continue
+        if cursor and tokens[cursor - 1] == ("punctuation", "."):
+            continue
+        following = tokens[cursor + 1:cursor + 3]
+        if following[:1] == [("punctuation", "=")]:
+            return True
+        if tuple(following[:2]) in {
+            (("punctuation", "+"), ("punctuation", "=")),
+            (("punctuation", "-"), ("punctuation", "=")),
+            (("punctuation", "*"), ("punctuation", "=")),
+            (("punctuation", "/"), ("punctuation", "=")),
+            (("punctuation", "%"), ("punctuation", "=")),
+            (("punctuation", "&"), ("punctuation", "=")),
+            (("punctuation", "|"), ("punctuation", "=")),
+            (("punctuation", "^"), ("punctuation", "=")),
+            (("punctuation", "+"), ("punctuation", "+")),
+            (("punctuation", "-"), ("punctuation", "-")),
+        }:
             return True
     return False
 
@@ -569,6 +643,7 @@ def reachable_named_functions(
     tokens: list[tuple[str, str]],
     blocks: list[tuple[str, int, int, int]],
     unsupported_blocks: list[tuple[int, int]],
+    lifecycle_blocks: set[tuple[int, int]],
 ) -> set[int]:
     """Build a conservative call graph rooted at activation lifecycle code."""
 
@@ -605,6 +680,14 @@ def reachable_named_functions(
         if is_in_block(index, unsupported_blocks):
             continue
         caller = enclosing_named_function(index, blocks)
+        lifecycle_owner = next(
+            (block for block in lifecycle_blocks if block[0] < index < block[1]),
+            None,
+        )
+        if caller is None and lifecycle_owner is None and is_after_unconditional_return(tokens, index, 0, len(tokens)):
+            continue
+        if lifecycle_owner is not None and is_after_unconditional_return(tokens, index, lifecycle_owner[0] + 1, lifecycle_owner[1]):
+            continue
         for callee in by_name[value]:
             if caller is None:
                 reachable.add(callee)
@@ -626,7 +709,7 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
     provisional_unsupported_blocks = unsupported_javascript_function_blocks(tokens, set())
     lifecycle_blocks = activation_lifecycle_method_blocks(tokens, named_blocks, provisional_unsupported_blocks)
     unsupported_blocks = unsupported_javascript_function_blocks(tokens, lifecycle_blocks)
-    reachable_blocks = reachable_named_functions(tokens, named_blocks, unsupported_blocks)
+    reachable_blocks = reachable_named_functions(tokens, named_blocks, unsupported_blocks, lifecycle_blocks)
     calls: set[str] = set()
     for index in range(len(tokens) - 4):
         sequence = tokens[index:index + 5]
@@ -643,6 +726,8 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
         if owner is not None and (
             owner not in reachable_blocks
             or block_binds_host(tokens, named_blocks[owner])
+            or is_after_unconditional_return(tokens, index, named_blocks[owner][2] + 1, named_blocks[owner][3])
+            or host_is_reassigned_before(tokens, index, named_blocks[owner][2] + 1)
         ):
             continue
         if owner is None:
@@ -651,11 +736,16 @@ def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
                 None,
             )
             if lifecycle_owner is not None:
-                if lifecycle_block_binds_host(tokens, lifecycle_owner):
+                if (
+                    lifecycle_block_binds_host(tokens, lifecycle_owner)
+                    or is_after_unconditional_return(tokens, index, lifecycle_owner[0] + 1, lifecycle_owner[1])
+                    or host_is_reassigned_before(tokens, index, lifecycle_owner[0] + 1)
+                ):
                     continue
             elif (
                 declarations_bind_host(tokens, 0, len(tokens))
-                or is_after_activation_return(tokens, index)
+                or is_after_unconditional_return(tokens, index, 0, len(tokens))
+                or host_is_reassigned_before(tokens, index, 0)
             ):
                 continue
         kind, method = sequence[4]

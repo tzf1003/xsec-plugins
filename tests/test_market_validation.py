@@ -200,6 +200,24 @@ export function renderPlaceholder() {}
                 "declared approvals RPC requests",
             ),
             (
+                "rpc-in-helper-called-after-activation-return",
+                lambda value: None,
+                "export function activate(host) { function load() { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } return {}; load(); }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-lifecycle-return",
+                lambda value: None,
+                "export function activate(host) { return { mount() { return; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } }; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
+                "rpc-after-host-reassignment",
+                lambda value: None,
+                "export function activate(host) { host = { request() {} }; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
+                "declared approvals RPC requests",
+            ),
+            (
                 "rpc-in-helper-with-shadowed-host-parameter",
                 lambda value: None,
                 "export function activate(host) { function load(host) { host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); } load({ request() {} }); return {}; }\n",
