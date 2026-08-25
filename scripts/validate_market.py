@@ -43,7 +43,6 @@ APPROVALS_FRONTEND_METHODS = frozenset({
     "xsec.approvals.list",
     "xsec.approvals.statistics",
 })
-ACTIVATE_EXPORT = re.compile(r"^\s*export\s+(?:async\s+)?function\s+activate\s*\(\s*host\s*\)", re.MULTILINE)
 
 
 class MarketplaceValidationError(ValueError):
@@ -116,6 +115,90 @@ def desktop_entrypoints(manifest: dict[str, object], label: str) -> list[tuple[s
     return result
 
 
+def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]:
+    """Tokenize the small JavaScript subset used by static frontend checks.
+
+    Marketplace validation must never import or execute a plugin archive.  The
+    tokenizer deliberately recognizes comments and string/template literals so
+    that an `activate` or RPC snippet merely written in a comment or string
+    cannot satisfy the release contract.  It is not a JavaScript evaluator;
+    unsupported constructs may fail closed rather than weakening the gate.
+    """
+
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    length = len(source)
+    while index < length:
+        character = source[index]
+        if character.isspace():
+            index += 1
+            continue
+        if source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            index = length if newline == -1 else newline + 1
+            continue
+        if source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            if end == -1:
+                fail(f"{label} contains an unterminated JavaScript block comment")
+            index = end + 2
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            start = index + 1
+            index += 1
+            escaped = False
+            while index < length:
+                current = source[index]
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == quote:
+                    tokens.append(("string", source[start:index]))
+                    index += 1
+                    break
+                index += 1
+            else:
+                fail(f"{label} contains an unterminated JavaScript string")
+            continue
+        if character.isalpha() or character in {"_", "$"}:
+            start = index
+            index += 1
+            while index < length and (source[index].isalnum() or source[index] in {"_", "$"}):
+                index += 1
+            tokens.append(("identifier", source[start:index]))
+            continue
+        tokens.append(("punctuation", character))
+        index += 1
+    return tokens
+
+
+def exports_activate_host(tokens: list[tuple[str, str]]) -> bool:
+    values = [value for _, value in tokens]
+    for index, value in enumerate(values):
+        if value != "export":
+            continue
+        cursor = index + 1
+        if cursor < len(values) and values[cursor] == "async":
+            cursor += 1
+        if values[cursor:cursor + 5] == ["function", "activate", "(", "host", ")"]:
+            return True
+    return False
+
+
+def declared_approvals_rpc_calls(tokens: list[tuple[str, str]]) -> set[str]:
+    calls: set[str] = set()
+    for index in range(len(tokens) - 4):
+        sequence = tokens[index:index + 5]
+        if [value for _, value in sequence[:4]] != ["host", ".", "request", "("]:
+            continue
+        kind, method = sequence[4]
+        if kind == "string" and method in APPROVALS_FRONTEND_METHODS:
+            calls.add(method)
+    return calls
+
+
 def validate_approvals_frontend(manifest: dict[str, object], source: str, label: str) -> None:
     """Verify the first non-placeholder official frontend release contract.
 
@@ -140,9 +223,10 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     methods = frontend_api.get("methods")
     if not isinstance(methods, dict) or not APPROVALS_FRONTEND_METHODS.issubset(methods):
         fail(f"{label} must declare the approvals read RPC methods")
-    if not ACTIVATE_EXPORT.search(source):
+    tokens = javascript_contract_tokens(source, label)
+    if not exports_activate_host(tokens):
         fail(f"{label} must export activate(host)")
-    if any(method not in source for method in APPROVALS_FRONTEND_METHODS) or "host.request(" not in source:
+    if declared_approvals_rpc_calls(tokens) != APPROVALS_FRONTEND_METHODS:
         fail(f"{label} must implement the declared approvals RPC requests")
 
 

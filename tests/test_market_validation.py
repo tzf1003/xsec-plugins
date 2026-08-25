@@ -90,6 +90,19 @@ class MarketplaceValidationTests(unittest.TestCase):
                 "export function renderPlaceholder() {}\n",
                 "export activate\\(host\\)",
             ),
+            (
+                "commented-out-contract",
+                lambda value: None,
+                """/*
+export function activate(host) {
+  return host.request(\"xsec.approvals.list\", {});
+  return host.request(\"xsec.approvals.statistics\", {});
+}
+*/
+export function renderPlaceholder() {}
+""",
+                "export activate\\(host\\)",
+            ),
         ):
             with self.subTest(label=label), tempfile.TemporaryDirectory(prefix=f"xsec-market-approvals-{label}-") as directory:
                 candidate = json.loads(json.dumps(manifest))
