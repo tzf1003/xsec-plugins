@@ -1110,6 +1110,7 @@ def validate_registry_and_snapshots(root: Path) -> None:
     """Validate external records in addition to the existing generic market gate."""
 
     registrations = load_registry(root)
+    registered_ids = {registration.plugin_id for registration in registrations}
     index = read_json(root / MARKETPLACE_RELATIVE_PATH, "official marketplace index")
     entries = index.get("plugins")
     if not isinstance(entries, list):
@@ -1122,6 +1123,36 @@ def validate_registry_and_snapshots(root: Path) -> None:
         if plugin_id in entries_by_id:
             fail(f"official marketplace index contains duplicate plugin {plugin_id}")
         entries_by_id[plugin_id] = value
+
+    # An external Factory package is never allowed to become an ordinary local
+    # official package merely because a PR deletes its registry/evidence files.
+    # The only packages permitted outside the external registry are the
+    # statically mirrored Desktop-owned package IDs. This intentionally makes
+    # registry ownership sticky for every non-Desktop package that has reached
+    # the official marketplace; use status=disabled to withdraw it instead of
+    # deregistering a published snapshot.
+    for plugin_id in entries_by_id:
+        if plugin_id not in registered_ids and plugin_id not in RESERVED_DESKTOP_PLUGIN_IDS:
+            fail(
+                f"official marketplace plugin {plugin_id} is neither Desktop-owned nor registered "
+                "as an external Factory package"
+            )
+
+    snapshot_root = root / PLUGIN_ROOT_RELATIVE_PATH
+    if snapshot_root.exists():
+        if is_link(snapshot_root) or not snapshot_root.is_dir():
+            fail("official plugin snapshot directory must be a regular directory")
+        for snapshot in snapshot_root.iterdir():
+            if is_link(snapshot):
+                fail(f"official plugin snapshot directory must not contain symbolic links: {snapshot.name}")
+            if not snapshot.is_dir():
+                continue
+            if snapshot.name not in registered_ids and snapshot.name not in RESERVED_DESKTOP_PLUGIN_IDS:
+                fail(
+                    f"official plugin snapshot {snapshot.name} is neither Desktop-owned nor registered "
+                    "as an external Factory package"
+                )
+
     publication_root = root / PUBLICATIONS_RELATIVE_PATH
     if publication_root.exists():
         if is_link(publication_root) or not publication_root.is_dir():

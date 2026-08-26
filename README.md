@@ -66,6 +66,10 @@ An administrator first reviews an allowlist entry in
 `ON_INSTALL`, never default-install privilege. External source packages also
 cannot use the Desktop-owned `com.xsec` namespace (including any future
 internal package IDs) or reserved official workspace/MCP routes.
+Once an external package has a Factory snapshot or marketplace entry, its
+registry ownership is sticky: do not delete its registry/evidence files to
+reclassify it as a local official plugin. Use `status: "disabled"` to withdraw
+it while retaining the ownership record and audit history.
 Their archive member paths must also meet Desktop's portable Windows/macOS
 rules: ASCII only; no case-fold, file/directory, trailing-dot/space, NTFS
 stream, forbidden-character, or device-name alias. Source file count and sizes

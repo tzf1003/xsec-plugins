@@ -387,6 +387,46 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "is disabled"):
                 factory.stage_beta(root, PLUGIN_ID, source)
 
+    def test_published_external_plugin_cannot_be_deregistered_into_an_ordinary_official_package(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-deregister-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+
+            # Removing the allowlist and evidence must not make a previously
+            # external marketplace entry eligible for the generic signed path.
+            # The operator must keep a disabled registration for a withdrawn
+            # external package instead.
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 1, "plugins": []})
+            factory.publication_path(root, PLUGIN_ID).unlink()
+            manifest_path = root / "plugins" / PLUGIN_ID / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["extensions"]["com.xsec.desktop"]["permissions"] = {"process.spawn": {}}
+            write_json(manifest_path, manifest)
+
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "neither Desktop-owned nor registered"):
+                factory.validate_registry_and_snapshots(root)
+
+            # The same ownership rule also rejects an orphaned snapshot if a
+            # deregistration PR removes its marketplace entry at the same time.
+            write_json(root / ".agents" / "plugins" / "marketplace.json", {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []})
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "neither Desktop-owned nor registered"):
+                factory.validate_registry_and_snapshots(root)
+
+    def test_snapshot_root_rejects_symlink_entries_before_ownership_checks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-snapshot-link-") as directory:
+            root = Path(directory)
+            self.make_factory(root)
+            snapshot = root / "plugins" / "com.xsec.asset-discovery"
+            snapshot.mkdir(parents=True)
+
+            # Keep the regression deterministic on Windows machines where
+            # creating a real symlink requires Developer Mode or elevation.
+            with patch.object(factory, "is_link", side_effect=lambda path: Path(path) == snapshot):
+                with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must not contain symbolic links"):
+                    factory.validate_registry_and_snapshots(root)
+
     def test_legacy_stable_workflow_guard_rejects_any_registered_external_plugin(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-legacy-stable-") as directory:
             root = Path(directory)
