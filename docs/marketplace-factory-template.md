@@ -36,5 +36,7 @@ Factory 的 `main` 必须由 GitHub branch protection/ruleset 保护；模板工
 
 Factory 生成的 metadata、artifact、release index 与 Beta 发布证据可追溯；同一
 `plugin.json.version` 不得对应不同 package bytes。Stable 推广只移动现有
-`channels.stable.releaseId`，不会重传或覆盖 artifact。Desktop 对该类市场保持
-“未信任/需确认”语义，不能因 registry 中的 `policy` 变成官方默认安装插件。
+`channels.stable.releaseId`，不会重传或覆盖 artifact；但在提交该 pointer 前会
+下载选中的 Beta GitHub Release asset 并校验其 SHA-256 仍与 release record 一致。
+Desktop 对该类市场保持“未信任/需确认”语义，不能因 registry 中的 `policy` 变成
+官方默认安装插件。

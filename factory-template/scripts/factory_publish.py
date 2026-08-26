@@ -214,7 +214,12 @@ def stable_promote(
     with tempfile.TemporaryDirectory(prefix="xsec-factory-promote-") as directory:
         candidate_path = Path(directory) / "candidate.xsec-plugin"
         write_zip(plugin_dir, candidate_path)
-        candidate, _, _ = candidate_release(registration.plugin_id, manifest, sha256(candidate_path), factory_repository)
+        candidate, artifact_name, selected_release_tag = candidate_release(
+            registration.plugin_id,
+            manifest,
+            sha256(candidate_path),
+            factory_repository,
+        )
 
     release_path = release_document_path(root, registration.plugin_id)
     document = load_release_document(release_path, registration.plugin_id)
@@ -245,6 +250,12 @@ def stable_promote(
         "source_sha": source_sha,
         "source_ref": registration.stable_ref,
         "changed": "true" if previous != channels["stable"] else "false",
+        # The workflow downloads this exact immutable Beta asset before it
+        # commits a Stable pointer. These values are derived only from the
+        # candidate that already proved equal to `selected` above.
+        "release_tag": selected_release_tag,
+        "artifact_name": artifact_name,
+        "artifact_sha256": str(candidate["artifacts"][0]["sha256"]),
     }
 
 

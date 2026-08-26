@@ -118,8 +118,10 @@ SHA, and requested channel.
    `main` SHA, and the verified `beta_release_id`.
 5. The Stable workflow proves the SHA remains reachable from `main`, rebuilds
    it deterministically, and succeeds only if the result is exactly the chosen
-   Beta `releaseId`. It changes only `channels.stable.releaseId`; it does not
-   upload, replace, or rebuild a production artifact.
+   Beta `releaseId`. Before committing the pointer, it downloads the selected
+   immutable GitHub Release asset and verifies its SHA-256 against the Beta
+   record. It changes only `channels.stable.releaseId`; it does not upload,
+   replace, or rebuild a production artifact.
 
 An unchanged retry is idempotent. Different bytes at an already published
 `plugin.json.version` fail closed: increase the plugin version and dispatch a

@@ -123,6 +123,27 @@ jobs:
             --publisher "$GITHUB_ACTOR"
       - name: Validate generated snapshots and release metadata
         run: python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
+      - name: Verify selected immutable GitHub Release asset before moving Stable
+        if: ${{ steps.promote.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.promote.outputs.release_tag }}
+          ARTIFACT_NAME: ${{ steps.promote.outputs.artifact_name }}
+          ARTIFACT_SHA256: ${{ steps.promote.outputs.artifact_sha256 }}
+        run: |
+          set -euo pipefail
+          asset_directory="$RUNNER_TEMP/xsec-factory-stable-asset"
+          mkdir -p "$asset_directory"
+          # The Factory release record is not enough on its own: do not make
+          # Stable discoverable if the immutable Beta asset was deleted or
+          # replaced after Beta publication.
+          gh release download "$RELEASE_TAG" --pattern "$ARTIFACT_NAME" --dir "$asset_directory"
+          asset_path="$asset_directory/$ARTIFACT_NAME"
+          [ -f "$asset_path" ] || { echo "Expected immutable Factory Release asset is unavailable." >&2; exit 1; }
+          [ "$(sha256sum "$asset_path" | awk '{print $1}')" = "$ARTIFACT_SHA256" ] || {
+            echo "Immutable Factory Release asset digest does not match the selected Beta record." >&2
+            exit 1
+          }
       - name: Commit the stable channel pointer and immutable promotion evidence
         if: ${{ steps.promote.outputs.changed == 'true' }}
         env:

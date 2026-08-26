@@ -124,6 +124,9 @@ class MarketplaceFactoryTests(unittest.TestCase):
                 "example/factory",
             )
             self.assertEqual(promoted["changed"], "true")
+            self.assertEqual(promoted["release_tag"], built["release_tag"])
+            self.assertEqual(promoted["artifact_name"], built["artifact_name"])
+            self.assertEqual(promoted["artifact_sha256"], built["artifact_sha256"])
             release = load_release_document(snapshot / ".xsec-market" / "releases.json", "com.example.sample")
             self.assertEqual(release["channels"]["stable"], {"releaseId": built["release_id"]})
             validate_factory(factory, "example/factory")
@@ -325,6 +328,14 @@ class MarketplaceFactoryTests(unittest.TestCase):
                 self.assertIn("unset token_header SOURCE_TOKEN", source)
                 self.assertIn("config --local --get-all http.https://github.com/.extraheader", source)
                 self.assertIn(f"--channel {channel}", source)
+                if name == "promote-stable.yml":
+                    self.assertIn("Verify selected immutable GitHub Release asset before moving Stable", source)
+                    self.assertIn('gh release download "$RELEASE_TAG" --pattern "$ARTIFACT_NAME"', source)
+                    self.assertIn("sha256sum \"$asset_path\"", source)
+                    self.assertLess(
+                        source.index("Verify selected immutable GitHub Release asset before moving Stable"),
+                        source.index("Commit the stable channel pointer and immutable promotion evidence"),
+                    )
 
 
 if __name__ == "__main__":
