@@ -28,6 +28,7 @@ from build_market import (
     MARKETPLACE_RELATIVE_PATH,
     RELEASE_ID_PATTERN,
     ROOT,
+    WINDOWS_RESERVED_DEVICE_NAMES,
     is_link,
     iter_plugin_files,
     load_release_document,
@@ -40,12 +41,16 @@ from build_market import (
 from kms_marketplace_publisher import (
     MarketplaceDocument,
     MarketplaceKmsPublisherError,
+    OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH,
+    official_publication_provenance_document,
+    sidecar_path_for,
     verify_historical_sidecar_signature,
 )
 
 
 REGISTRY_RELATIVE_PATH = Path(".xsec-factory") / "official-registry.json"
 PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publications"
+PUBLICATION_PROOFS_RELATIVE_PATH = OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH
 PLUGIN_ROOT_RELATIVE_PATH = Path("plugins")
 GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 # Keep this in lockstep with Desktop's package/catalog validator: ASCII
@@ -330,6 +335,11 @@ def safe_plugin_id(value: object, label: str = "plugin ID") -> str:
         or "--" in value
     ):
         fail(f"{label} must be a safe plugin identifier")
+    # Publication evidence is persisted as `<plugin-id>.json`; reject the
+    # Windows device aliases that would make that file ambiguous or
+    # uncreatable on a supported Factory host.
+    if value.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES:
+        fail(f"{label} must not be a Windows reserved device name")
     return value
 
 
@@ -1111,6 +1121,33 @@ def validate_evidence(root: Path, registration: Registration, document: dict[str
         fail(f"external official plugin {registration.plugin_id} lacks Stable provenance")
 
 
+def validate_publication_proof(root: Path, registration: Registration) -> None:
+    """Require a KMS signature over the exact external provenance document.
+
+    The release sidecar only binds ``releases.json``.  It cannot prove which
+    external source SHA or publisher produced an evidence event, so a normal
+    pull request could otherwise append fabricated provenance while retaining
+    a valid release sidecar.  This additional fixed-purpose KMS document binds
+    the whole append-only evidence history to the protected publish workflow.
+    """
+
+    try:
+        document = official_publication_provenance_document(root, registration.plugin_id)
+        sidecar = sidecar_path_for(document)
+    except MarketplaceKmsPublisherError as error:
+        raise ExternalSourceFactoryError(
+            f"external official plugin {registration.plugin_id} KMS provenance proof is unavailable"
+        ) from error
+    if is_link(sidecar) or not sidecar.is_file():
+        fail(f"external official plugin {registration.plugin_id} KMS provenance proof is unavailable")
+    try:
+        verify_historical_sidecar_signature(sidecar.read_bytes(), document)
+    except (OSError, MarketplaceKmsPublisherError) as error:
+        raise ExternalSourceFactoryError(
+            f"external official plugin {registration.plugin_id} KMS provenance proof is invalid"
+        ) from error
+
+
 def validate_disabled_release_sidecar(root: Path, registration: Registration) -> None:
     """Require the signed immutable release document retained by a withdrawal."""
 
@@ -1390,8 +1427,19 @@ def validate_trusted_baseline_continuity(
             )
 
 
-def validate_registry_and_snapshots(root: Path, *, baseline_root: Path | None = None) -> None:
-    """Validate external records in addition to the existing generic market gate."""
+def validate_registry_and_snapshots(
+    root: Path,
+    *,
+    baseline_root: Path | None = None,
+    require_publication_proofs: bool = True,
+) -> None:
+    """Validate external records in addition to the existing generic market gate.
+
+    Source-gate validation sets ``require_publication_proofs``.  The only
+    exception is the protected publisher's short pre-KMS staging window: it
+    validates structure with the explicit opt-out, obtains the new sidecars,
+    and sends the generated branch through this strict gate before merge.
+    """
 
     registrations = load_registry(root)
     validate_trusted_baseline_continuity(root, registrations, baseline_root)
@@ -1446,10 +1494,19 @@ def validate_registry_and_snapshots(root: Path, *, baseline_root: Path | None = 
         for path in publication_root.iterdir():
             if is_link(path) or not path.is_file() or path.name not in allowed_files:
                 fail(f"official external publication directory has an unregistered entry: {path.name}")
+    publication_proof_root = root / PUBLICATION_PROOFS_RELATIVE_PATH
+    if publication_proof_root.exists():
+        if is_link(publication_proof_root) or not publication_proof_root.is_dir():
+            fail("official external publication proof directory must be a regular directory")
+        allowed_proofs = {f"{item.plugin_id}.json" for item in registrations}
+        for path in publication_proof_root.iterdir():
+            if is_link(path) or not path.is_file() or path.name not in allowed_proofs:
+                fail(f"official external publication proof directory has an unregistered entry: {path.name}")
     for registration in registrations:
         entry = entries_by_id.get(registration.plugin_id)
         snapshot = snapshot_directory(root, registration.plugin_id)
         evidence = publication_path(root, registration.plugin_id)
+        proof = publication_proof_root / f"{registration.plugin_id}.json"
         if registration.status == "disabled":
             if entry is not None:
                 fail(f"disabled external official plugin {registration.plugin_id} remains in marketplace index")
@@ -1465,7 +1522,7 @@ def validate_registry_and_snapshots(root: Path, *, baseline_root: Path | None = 
                     "snapshot, release history, and publication evidence"
                 )
         elif entry is None:
-            if snapshot.exists() or evidence.exists():
+            if snapshot.exists() or evidence.exists() or proof.exists() or is_link(proof):
                 fail(f"active external official plugin {registration.plugin_id} has an incomplete publication")
             continue
         elif entry != marketplace_entry(registration):
@@ -1492,6 +1549,8 @@ def validate_registry_and_snapshots(root: Path, *, baseline_root: Path | None = 
         if snapshot_engines != beta.get("engines"):
             fail(f"external official plugin {registration.plugin_id} snapshot engines do not match its Beta release")
         validate_evidence(root, registration, document)
+        if require_publication_proofs:
+            validate_publication_proof(root, registration)
         if registration.status == "disabled":
             validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
             validate_disabled_release_sidecar(root, registration)
@@ -1548,6 +1607,11 @@ def main() -> None:
         type=Path,
         help="trusted pre-change Factory checkout used to prevent publication-history deletion",
     )
+    validate_parser.add_argument(
+        "--allow-unsigned-publication-proofs",
+        action="store_true",
+        help="only for the protected publisher's pre-KMS staging window",
+    )
     args = parser.parse_args()
     root = args.root.resolve()
     try:
@@ -1565,7 +1629,11 @@ def main() -> None:
             result = reject_legacy_stable_promotion(root, args.plugin_id)
         else:
             baseline_root = args.baseline_root.resolve() if args.baseline_root is not None else None
-            validate_registry_and_snapshots(root, baseline_root=baseline_root)
+            validate_registry_and_snapshots(
+                root,
+                baseline_root=baseline_root,
+                require_publication_proofs=not args.allow_unsigned_publication_proofs,
+            )
             result = {"valid": "true"}
         write_outputs(result, args.github_output)
     except ExternalSourceFactoryError as error:

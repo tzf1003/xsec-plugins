@@ -269,6 +269,40 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 self.assertNotIn("issuer_url", sidecar)
             self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
 
+    def test_publisher_signs_external_factory_provenance_in_a_separate_fixed_proof_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            evidence = root / ".xsec-factory" / "official-publications" / "com.example.alpha.json"
+            evidence.parent.mkdir(parents=True)
+            evidence.write_bytes(b'{"schemaVersion":1,"pluginId":"com.example.alpha","events":[]}\n')
+
+            documents = publisher.marketplace_documents(root)
+            provenance = next(
+                document for document in documents
+                if document.purpose == publisher.OFFICIAL_PUBLICATION_PROVENANCE_PURPOSE
+            )
+            self.assertEqual(
+                provenance.subject,
+                ".xsec-factory/official-publications/com.example.alpha.json",
+            )
+            self.assertEqual(
+                publisher.sidecar_path_for(provenance),
+                root / ".xsec-factory" / "official-publication-proofs" / "com.example.alpha.json",
+            )
+
+            written = publisher.publish_sidecars(root, REVISION, self.broker_response)
+            self.assertIn(publisher.sidecar_path_for(provenance), written)
+            self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+
+    def test_official_factory_provenance_rejects_windows_device_plugin_ids(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-id-") as directory:
+            root = Path(directory)
+            for plugin_id in ("con", "nul", "lpt1", "com1.foo"):
+                with self.subTest(plugin_id=plugin_id):
+                    with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "plugin ID is unsafe"):
+                        publisher.official_publication_provenance_document(root, plugin_id)
+
     def test_unexpected_broker_issuer_prevents_every_sidecar_write(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
             root = Path(directory)

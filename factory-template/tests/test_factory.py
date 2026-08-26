@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 TEMPLATE = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ from factory_core import (  # noqa: E402
 )
 from factory_publish import beta_publish, registry_prepare, stable_promote  # noqa: E402
 from factory_validate import validate_factory  # noqa: E402
+import factory_attestation  # noqa: E402
 
 
 class MarketplaceFactoryTests(unittest.TestCase):
@@ -145,6 +147,87 @@ class MarketplaceFactoryTests(unittest.TestCase):
             )
             self.assertEqual(retried["changed"], "false")
             self.assertEqual(evidence_path.read_bytes(), before_retry)
+
+    def test_strict_provenance_download_covers_every_historical_event_including_disabled_plugins(self) -> None:
+        """A source gate cannot accept only the newest event's Release asset."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-attestation-history-test-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+
+            first_beta = beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+            stable_promote(
+                factory,
+                "com.example.sample",
+                source,
+                "b" * 40,
+                first_beta["release_id"],
+                "example/factory",
+            )
+            manifest_path = source / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.1.0"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (source / "frontend" / "index.js").write_text("export const value = 2;\n", encoding="utf-8")
+            beta_publish(factory, "com.example.sample", source, "c" * 40, "example/factory", root / "artifacts")
+
+            # Disabled packages retain their immutable history and therefore
+            # their proof requirements.  A source gate must not omit it.
+            self.configure_registry(factory, status="disabled")
+            write_marketplace_index(factory, load_registry(factory))
+            events = factory_attestation.publication_events(factory)
+            self.assertEqual(len(events), 3)
+            self.assertTrue(all(registration.status == "disabled" for registration, *_ in events))
+
+            evidence = json.loads(
+                (factory / ".xsec-factory" / "publications" / "com.example.sample.json").read_text(encoding="utf-8")
+            )
+            first_event = evidence["events"][0]
+            incomplete_root = root / "incomplete-proofs"
+            factory_attestation.materialize(
+                factory,
+                "com.example.sample",
+                str(first_event["channel"]),
+                str(first_event["releaseId"]),
+                str(first_event["source"]["sha"]),
+                incomplete_root,
+            )
+            with self.assertRaisesRegex(FactoryError, "attestation.*unavailable"):
+                validate_factory(
+                    factory,
+                    "example/factory",
+                    publication_attestation_root=incomplete_root,
+                    require_publication_attestations=True,
+                )
+
+            expected_assets: dict[str, tuple[str, bytes]] = {}
+            for registration, event, _, _, _ in events:
+                tag, filename, payload, _ = factory_attestation.attestation_spec(registration, event)
+                expected_assets[filename] = (tag, payload)
+            calls: list[tuple[str, str, str]] = []
+
+            def download(repository: str, tag: str, filename: str, destination: Path) -> None:
+                calls.append((repository, tag, filename))
+                expected_tag, payload = expected_assets[filename]
+                self.assertEqual(repository, "example/factory")
+                self.assertEqual(tag, expected_tag)
+                (destination / filename).write_bytes(payload)
+
+            complete_root = root / "complete-proofs"
+            with patch.object(factory_attestation, "gh_download", side_effect=download):
+                result = factory_attestation.download_all(factory, "example/factory", complete_root)
+            self.assertEqual(result["attestation_count"], "3")
+            self.assertEqual({filename for _, _, filename in calls}, set(expected_assets))
+            self.assertEqual({path.name for path in complete_root.iterdir()}, set(expected_assets))
+            validate_factory(
+                factory,
+                "example/factory",
+                publication_attestation_root=complete_root,
+                require_publication_attestations=True,
+            )
 
     def test_factory_validation_rejects_snapshot_engine_drift(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-factory-engine-drift-test-") as directory:
@@ -487,9 +570,13 @@ class MarketplaceFactoryTests(unittest.TestCase):
             "com.example.",
             "-com.example",
             "a" * 65,
+            "con",
+            "nul",
+            "lpt1",
+            "com1.foo",
         ):
             with self.subTest(plugin_id=plugin_id):
-                with self.assertRaisesRegex(FactoryError, "safe plugin identifier"):
+                with self.assertRaisesRegex(FactoryError, "safe plugin identifier|Windows reserved device name"):
                     safe_plugin_id(plugin_id)
 
         for plugin_id in ("com.xsec", "com.xsec.external-example"):
@@ -536,6 +623,12 @@ class MarketplaceFactoryTests(unittest.TestCase):
         readme = (TEMPLATE / "README.md").read_text(encoding="utf-8")
         validate_workflow = (workflows / "validate.yml").read_text(encoding="utf-8")
         self.assertIn('factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"', validate_workflow)
+        self.assertIn("permissions:\n  contents: read", validate_workflow)
+        self.assertIn("Download and verify the complete immutable publication provenance set", validate_workflow)
+        self.assertIn('GH_TOKEN: ${{ github.token }}', validate_workflow)
+        self.assertIn('factory_attestation.py --github-output "$GITHUB_OUTPUT" download', validate_workflow)
+        self.assertIn('--publication-attestation-root "$ATTESTATION_ROOT"', validate_workflow)
+        self.assertNotIn("--allow-unsigned-publication-attestations", validate_workflow)
         self.assertIn("fetch-depth: 0", validate_workflow)
         self.assertIn("Materialize trusted pre-change Factory baseline", validate_workflow)
         self.assertIn("PULL_REQUEST_BASE_SHA", validate_workflow)
@@ -586,14 +679,27 @@ class MarketplaceFactoryTests(unittest.TestCase):
                 self.assertNotIn("fetch --no-tags origin", source)
                 self.assertNotIn("ls-remote origin", source)
                 self.assertIn(f"--channel {channel}", source)
+                self.assertIn("--allow-unsigned-publication-attestations", source)
+                self.assertIn("Download and verify the complete immutable provenance set", source)
+                self.assertIn('factory_attestation.py --github-output "$GITHUB_OUTPUT" download', source)
+                self.assertIn('ATTESTATION_ROOT: ${{ steps.attestation-proofs.outputs.attestation_root }}', source)
+                self.assertIn('--publication-attestation-root "$ATTESTATION_ROOT"', source)
+                self.assertLess(
+                    source.index("Download and verify the complete immutable provenance set"),
+                    source.index("Strictly validate the complete immutable provenance set"),
+                )
                 if name == "promote-stable.yml":
-                    self.assertIn("Verify selected immutable GitHub Release asset before moving Stable", source)
-                    self.assertIn('gh release download "$RELEASE_TAG" --pattern "$ARTIFACT_NAME"', source)
+                    self.assertIn("Materialize the exact immutable Stable provenance attestation", source)
+                    self.assertIn("Verify the immutable Beta package and publish the Stable provenance attestation", source)
+                    self.assertIn('gh release download "$RELEASE_TAG" --repo "$release_repo" --pattern "$ARTIFACT_NAME"', source)
                     self.assertIn("sha256sum \"$asset_path\"", source)
                     self.assertLess(
-                        source.index("Verify selected immutable GitHub Release asset before moving Stable"),
+                        source.index("Strictly validate the complete immutable provenance set before moving Stable"),
                         source.index("Commit the stable channel pointer and immutable promotion evidence"),
                     )
+                else:
+                    self.assertIn("Materialize the exact immutable Beta provenance attestation", source)
+                    self.assertIn("Create or verify the immutable GitHub Release asset", source)
         self.assertIn("GitHub.com only", readme)
         self.assertIn("Git transport redirection", readme)
 

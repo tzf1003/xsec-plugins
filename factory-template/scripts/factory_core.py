@@ -26,6 +26,8 @@ MARKETPLACE_RELATIVE_PATH = Path(".agents") / "plugins" / "marketplace.json"
 PLUGIN_ROOT_RELATIVE_PATH = Path("plugins")
 PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "publications"
 ARTIFACT_DIR_NAME = "artifacts"
+PUBLICATION_ATTESTATION_SCHEMA_VERSION = 1
+MAX_PUBLICATION_ATTESTATION_BYTES = 64 * 1024
 RELEASE_ID_PATTERN = re.compile(r"^sha256-[0-9a-f]{64}$")
 GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 # Keep emitted Factory artifacts consumable by Desktop on every platform. This
@@ -105,6 +107,10 @@ def safe_plugin_id(value: object, label: str = "plugin ID") -> str:
         or "--" in value
     ):
         fail(f"{label} must be a safe plugin identifier")
+    # A publication is written as `<plugin-id>.json`; Windows treats names
+    # such as `con.json` and `com1.foo.json` as device paths.
+    if value.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES:
+        fail(f"{label} must not be a Windows reserved device name")
     # A Factory always packages external source. Keep Desktop's internal
     # namespace out of any user-owned Factory as well, otherwise a custom
     # source can be mistaken for OfficialDevelopment in developer workflows.
@@ -362,6 +368,41 @@ def release_tag(plugin_id: str, identifier: str) -> str:
         fail("release ID is not canonical")
     plugin_digest = sha256(plugin_id.encode("utf-8"))[:16]
     return f"xsec-plugin-{plugin_digest}-{identifier}"
+
+
+def publication_attestation_document(
+    registration: PluginRegistration,
+    event: dict[str, object],
+) -> dict[str, object]:
+    """Return the immutable GitHub Release asset payload for one event.
+
+    The Factory's repository evidence is useful audit data but a normal pull
+    request can write it. The controlled production workflow uploads this
+    canonical payload to the immutable release associated with the event, so
+    the source gate can reject a fabricated first publication or later source
+    SHA/publisher append.
+    """
+
+    safe_plugin_id(registration.plugin_id)
+    return {
+        "schemaVersion": PUBLICATION_ATTESTATION_SCHEMA_VERSION,
+        "pluginId": registration.plugin_id,
+        "event": event,
+    }
+
+
+def publication_attestation_bytes(registration: PluginRegistration, event: dict[str, object]) -> bytes:
+    return canonical_json(publication_attestation_document(registration, event))
+
+
+def publication_attestation_name(registration: PluginRegistration, event: dict[str, object]) -> str:
+    """Derive one bounded opaque asset name from its exact canonical bytes."""
+
+    digest = sha256(publication_attestation_bytes(registration, event))
+    name = f"{registration.plugin_id}-provenance-{digest[:32]}.json"
+    if len(name.encode("utf-8")) > MAX_ARTIFACT_FILENAME_BYTES:
+        fail("publication attestation filename is too long")
+    return name
 
 
 def archive_bytes(path: Path) -> bytes:
@@ -819,7 +860,7 @@ def append_publication(
     source_sha: str,
     channel: str,
     publisher: str,
-) -> None:
+) -> dict[str, object]:
     """Append non-Desktop audit evidence without mutating a release record."""
 
     source_sha = safe_git_sha(source_sha)
@@ -870,6 +911,7 @@ def append_publication(
             existing_source.get("sha") if isinstance(existing_source, dict) else None,
         )
         if existing_identity == identity:
-            return
+            return existing
     events.append(event)
     atomic_write(path, stable_json({"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events}))
+    return event

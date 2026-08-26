@@ -97,16 +97,19 @@ def verify_test_historical_sidecar(
     )
 
 
-def write_historical_release_sidecar(root: Path, plugin_id: str, *, source_revision: str = BETA_SHA) -> Path:
-    """Write a real signed release sidecar without needing a test KMS broker."""
+def write_historical_sidecar(
+    document: publisher.MarketplaceDocument,
+    destination: Path,
+    *,
+    source_revision: str = BETA_SHA,
+) -> Path:
+    """Write one real KMS sidecar without needing a test Cloud broker."""
 
-    release = factory.release_path(root, plugin_id)
-    subject = f"plugins/{plugin_id}/.xsec-market/releases.json"
     envelope = {
         "schema_version": 1,
-        "purpose": "xsec.plugin-marketplace.release",
-        "subject": subject,
-        "content_sha256": hashlib.sha256(release.read_bytes()).hexdigest(),
+        "purpose": document.purpose,
+        "subject": document.subject,
+        "content_sha256": hashlib.sha256(document.path.read_bytes()).hexdigest(),
         "source_revision": source_revision,
         "issued_at": int(time.time()),
     }
@@ -123,13 +126,47 @@ def write_historical_release_sidecar(root: Path, plugin_id: str, *, source_revis
         "envelope_b64": base64url(envelope_bytes),
         "jws": {"protected": protected, "payload": base64url(envelope_bytes), "signature": base64url(signature)},
     }
-    destination = release.with_name(release.name + ".sig.jws.json")
+    destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(sidecar, separators=(",", ":")), encoding="utf-8")
     return destination
 
 
+def write_historical_release_sidecar(root: Path, plugin_id: str, *, source_revision: str = BETA_SHA) -> Path:
+    """Write a real signed release sidecar without needing a test KMS broker."""
+
+    release = factory.release_path(root, plugin_id)
+    return write_historical_sidecar(
+        publisher.MarketplaceDocument(
+            "xsec.plugin-marketplace.release",
+            f"plugins/{plugin_id}/.xsec-market/releases.json",
+            release,
+        ),
+        release.with_name(release.name + ".sig.jws.json"),
+        source_revision=source_revision,
+    )
+
+
+def write_publication_proof(root: Path, plugin_id: str, *, source_revision: str = BETA_SHA) -> Path:
+    """Write a test KMS proof for the exact Factory evidence bytes."""
+
+    document = factory.official_publication_provenance_document(root, plugin_id)
+    return write_historical_sidecar(
+        document,
+        publisher.sidecar_path_for(document),
+        source_revision=source_revision,
+    )
+
+
 class ExternalSourceFactoryTests(unittest.TestCase):
     maxDiff = None
+
+    def setUp(self) -> None:
+        # Unit fixtures create deterministic local KMS proofs. Production
+        # always fetches the fixed issuer JWKS, but tests must not depend on
+        # that network endpoint to exercise the strict default validator.
+        proof_verifier = patch.object(factory, "verify_historical_sidecar_signature", verify_test_historical_sidecar)
+        proof_verifier.start()
+        self.addCleanup(proof_verifier.stop)
 
     def registry_entry(self, *, status: str = "active", repository: str = "acme/external-plugin", path: str = "package") -> dict[str, object]:
         return {
@@ -170,11 +207,20 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         (plugin / "frontend.js").write_text("export function activate() {}\n", encoding="utf-8")
         return root
 
-    def stage_and_record_beta(self, root: Path, source_root: Path, *, source_sha: str = BETA_SHA) -> str:
+    def stage_and_record_beta(
+        self,
+        root: Path,
+        source_root: Path,
+        *,
+        source_sha: str = BETA_SHA,
+        write_proof: bool = True,
+    ) -> str:
         factory.stage_beta(root, PLUGIN_ID, source_root)
         snapshot = root / "plugins" / PLUGIN_ID
         build_market.build_plugin(snapshot, snapshot)
         factory.record_beta(root, PLUGIN_ID, source_sha, "test-publisher")
+        if write_proof:
+            write_publication_proof(root, PLUGIN_ID)
         _, record = factory.current_beta_record(root, PLUGIN_ID)
         return str(record["releaseId"])
 
@@ -214,12 +260,16 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 "com--example",
                 "com.example-",
                 "a" * 65,
+                "con",
+                "nul",
+                "lpt1",
+                "com1.foo",
             ):
                 with self.subTest(plugin_id=plugin_id):
                     entry = self.registry_entry()
                     entry["pluginId"] = plugin_id
                     self.make_factory(root, entry)
-                    with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "safe plugin identifier"):
+                    with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "safe plugin identifier|Windows reserved device name"):
                         factory.load_registry(root)
 
     def test_active_registration_may_exist_before_its_first_beta_snapshot(self) -> None:
@@ -301,6 +351,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(verified["release_id"], release_id)
             self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
             factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
             factory.validate_registry_and_snapshots(root)
 
             events = json.loads(factory.publication_path(root, PLUGIN_ID).read_text(encoding="utf-8"))["events"]
@@ -717,6 +768,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             factory.verify_stable(root, PLUGIN_ID, source, release_id)
             self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
             factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
             # Appending the Stable event is valid.
             factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
@@ -729,6 +781,47 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 "must retain every immutable publication evidence event",
             ):
                 factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_strict_gate_rejects_a_complete_preseeded_first_publication_without_kms_proof(self) -> None:
+        """A PR cannot manufacture snapshot/release/evidence in its first change."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-external-preseeded-first-publication-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source, write_proof=False)
+
+            # This is deliberately a complete syntactically-valid Factory
+            # publication. Its only absent input is the KMS proof that the
+            # protected workflow signs after checking external reachability.
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS provenance proof is unavailable"):
+                factory.validate_registry_and_snapshots(root, require_publication_proofs=True)
+
+            write_publication_proof(root, PLUGIN_ID)
+            with patch.object(factory, "verify_historical_sidecar_signature", verify_test_historical_sidecar):
+                factory.validate_registry_and_snapshots(root, require_publication_proofs=True)
+
+    def test_strict_gate_rejects_an_unsigned_append_to_existing_source_evidence(self) -> None:
+        """A previous release sidecar cannot authenticate a later fake source SHA."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-external-forged-provenance-append-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+            write_publication_proof(root, PLUGIN_ID)
+
+            registration = factory.registration_for(root, PLUGIN_ID)
+            _, record = factory.current_beta_record(root, PLUGIN_ID)
+            factory.append_evidence(
+                root,
+                registration,
+                factory.publication_event(registration, "beta", STABLE_SHA, record, "forged-pr-author"),
+            )
+
+            with patch.object(factory, "verify_historical_sidecar_signature", verify_test_historical_sidecar):
+                with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS provenance proof is invalid"):
+                    factory.validate_registry_and_snapshots(root, require_publication_proofs=True)
 
     def test_trusted_baseline_without_a_factory_allows_its_first_published_registration(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-first-factory-") as directory:

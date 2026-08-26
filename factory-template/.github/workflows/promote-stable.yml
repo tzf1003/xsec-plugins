@@ -168,29 +168,87 @@ jobs:
             --beta-release-id "$BETA_RELEASE_ID" \
             --factory-repository "$GITHUB_REPOSITORY" \
             --publisher "$GITHUB_ACTOR"
-      - name: Validate generated snapshots and release metadata
-        run: python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
-      - name: Verify selected immutable GitHub Release asset before moving Stable
+      - name: Validate generated snapshots and release metadata before attestation upload
+        # A changed Stable pointer appends an evidence event whose immutable
+        # Release asset is created in the controlled production steps below.
+        # The normal source gate always performs the strict check after it
+        # downloads the complete proof set.
+        run: >-
+          python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
+          --allow-unsigned-publication-attestations
+      - name: Materialize the exact immutable Stable provenance attestation
+        id: stable-attestation
+        if: ${{ steps.promote.outputs.changed == 'true' }}
+        env:
+          PLUGIN_ID: ${{ steps.promote.outputs.plugin_id }}
+          RELEASE_ID: ${{ steps.promote.outputs.release_id }}
+          SOURCE_SHA: ${{ steps.promote.outputs.source_sha }}
+        run: |
+          python scripts/factory_attestation.py --github-output "$GITHUB_OUTPUT" materialize \
+            --plugin-id "$PLUGIN_ID" \
+            --channel stable \
+            --release-id "$RELEASE_ID" \
+            --source-sha "$SOURCE_SHA" \
+            --output-directory "$RUNNER_TEMP/xsec-factory-new-attestation"
+      - name: Verify the immutable Beta package and publish the Stable provenance attestation
         if: ${{ steps.promote.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          FACTORY_REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ steps.promote.outputs.release_tag }}
           ARTIFACT_NAME: ${{ steps.promote.outputs.artifact_name }}
           ARTIFACT_SHA256: ${{ steps.promote.outputs.artifact_sha256 }}
+          ATTESTATION_PATH: ${{ steps.stable-attestation.outputs.attestation_path }}
+          ATTESTATION_NAME: ${{ steps.stable-attestation.outputs.attestation_name }}
+          ATTESTATION_SHA256: ${{ steps.stable-attestation.outputs.attestation_sha256 }}
         run: |
           set -euo pipefail
+          release_repo="github.com/$FACTORY_REPOSITORY"
           asset_directory="$RUNNER_TEMP/xsec-factory-stable-asset"
           mkdir -p "$asset_directory"
           # The Factory release record is not enough on its own: do not make
           # Stable discoverable if the immutable Beta asset was deleted or
           # replaced after Beta publication.
-          gh release download "$RELEASE_TAG" --pattern "$ARTIFACT_NAME" --dir "$asset_directory"
+          gh release view "$RELEASE_TAG" --repo "$release_repo" --json tagName >/dev/null
+          gh release download "$RELEASE_TAG" --repo "$release_repo" --pattern "$ARTIFACT_NAME" --dir "$asset_directory"
           asset_path="$asset_directory/$ARTIFACT_NAME"
           [ -f "$asset_path" ] || { echo "Expected immutable Factory Release asset is unavailable." >&2; exit 1; }
           [ "$(sha256sum "$asset_path" | awk '{print $1}')" = "$ARTIFACT_SHA256" ] || {
             echo "Immutable Factory Release asset digest does not match the selected Beta record." >&2
             exit 1
           }
+          attestation_directory="$RUNNER_TEMP/xsec-factory-stable-attestation"
+          mkdir -p "$attestation_directory"
+          if gh release download "$RELEASE_TAG" --repo "$release_repo" --pattern "$ATTESTATION_NAME" --dir "$attestation_directory"; then
+            existing_attestation="$attestation_directory/$ATTESTATION_NAME"
+            [ -f "$existing_attestation" ] || { echo "Expected Stable provenance attestation is unavailable." >&2; exit 1; }
+            [ "$(sha256sum "$existing_attestation" | awk '{print $1}')" = "$ATTESTATION_SHA256" ] || {
+              echo "Existing Stable provenance attestation has different bytes." >&2
+              exit 1
+            }
+          else
+            gh release upload "$RELEASE_TAG" --repo "$release_repo" "$ATTESTATION_PATH#$ATTESTATION_NAME"
+          fi
+      - name: Download and verify the complete immutable provenance set
+        id: attestation-proofs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output_directory="$RUNNER_TEMP/xsec-factory-publication-attestation-proofs"
+          [ ! -e "$output_directory" ] || {
+            echo "Publication attestation proof path already exists." >&2
+            exit 1
+          }
+          python scripts/factory_attestation.py --github-output "$GITHUB_OUTPUT" download \
+            --factory-repository "$GITHUB_REPOSITORY" \
+            --output-directory "$output_directory"
+      - name: Strictly validate the complete immutable provenance set before moving Stable
+        env:
+          ATTESTATION_ROOT: ${{ steps.attestation-proofs.outputs.attestation_root }}
+        run: >-
+          python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
+          --publication-attestation-root "$ATTESTATION_ROOT"
       - name: Commit the stable channel pointer and immutable promotion evidence
         if: ${{ steps.promote.outputs.changed == 'true' }}
         env:

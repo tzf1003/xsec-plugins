@@ -26,9 +26,17 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from build_market import WINDOWS_RESERVED_DEVICE_NAMES
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE_INDEX_SUBJECT = ".agents/plugins/marketplace.json"
+OFFICIAL_PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publications"
+OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-publication-proofs"
+# This document is not consumed by Desktop.  It binds the external source
+# provenance kept by the Factory to the same protected OIDC/KMS publication
+# boundary as the Marketplace index and release records.
+OFFICIAL_PUBLICATION_PROVENANCE_PURPOSE = "xsec.plugin-marketplace.provenance"
 BROKER_AUDIENCE = "xsec-kms-document-signing-v1"
 PRODUCTION_BROKER_URL = "https://api.54321000.xyz/v2/internal/signing/documents"
 GITHUB_ACTIONS_OIDC_HOST_SUFFIX = ".actions.githubusercontent.com"
@@ -41,6 +49,7 @@ MAX_KMS_JWS_SIGNING_INPUT_BYTES = 24 * 1024
 PINNED_KMS_JWKS_URL = f"{OFFICIAL_MARKETPLACE_KMS_ISSUER_URL}/jwks.json"
 GITHUB_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 BASE64URL_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+OFFICIAL_PLUGIN_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$")
 CURRENT_SOURCE_REVISION_ENV = "XSEC_MARKETPLACE_SOURCE_REVISION"
 
 # This is deliberately a fixed built-in-only program.  The Factory already
@@ -81,6 +90,11 @@ class MarketplaceDocument:
     purpose: str
     subject: str
     path: Path
+    # Marketplace release/index sidecars live beside the document because
+    # Desktop knows those locations. Factory provenance is internal metadata,
+    # so its sidecar lives in a separate namespace to avoid filename aliasing
+    # between a valid dotted plugin ID and a ``.sig.jws.json`` suffix.
+    sidecar_path: Path | None = None
 
 
 def fail(message: str) -> None:
@@ -176,6 +190,60 @@ def canonical_plugin_subject(source_path: object) -> str:
     return "/".join(path.parts)
 
 
+def official_publication_provenance_document(root: Path, plugin_id: str) -> MarketplaceDocument:
+    """Return the one KMS document that authenticates Factory provenance.
+
+    Keep the subject and sidecar location fixed independently of untrusted
+    evidence contents.  The Cloud broker has a matching narrow allowlist, and
+    the separate proof directory avoids turning one plugin ID into another
+    plugin's adjacent sidecar filename.
+    """
+
+    if (
+        not isinstance(plugin_id, str)
+        or not OFFICIAL_PLUGIN_ID_PATTERN.fullmatch(plugin_id)
+        or ".." in plugin_id
+        or "--" in plugin_id
+        or plugin_id.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES
+    ):
+        fail("official Factory provenance plugin ID is unsafe")
+    subject = (OFFICIAL_PUBLICATIONS_RELATIVE_PATH / f"{plugin_id}.json").as_posix()
+    proof_subject = (OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").as_posix()
+    return MarketplaceDocument(
+        OFFICIAL_PUBLICATION_PROVENANCE_PURPOSE,
+        subject,
+        safe_document_path(root, subject, must_exist=True),
+        safe_document_path(root, proof_subject, must_exist=False),
+    )
+
+
+def official_publication_provenance_documents(root: Path) -> list[MarketplaceDocument]:
+    """Enumerate only canonical Factory provenance documents for KMS signing."""
+
+    publication_root = root / OFFICIAL_PUBLICATIONS_RELATIVE_PATH
+    if not publication_root.exists():
+        return []
+    if is_link(publication_root) or not publication_root.is_dir():
+        fail("official Factory provenance directory must be a regular directory")
+    proof_root = root / OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH
+    if proof_root.exists() and (is_link(proof_root) or not proof_root.is_dir()):
+        fail("official Factory provenance proof directory must be a regular directory")
+
+    documents: list[MarketplaceDocument] = []
+    for evidence in sorted(publication_root.iterdir(), key=lambda candidate: candidate.name):
+        if is_link(evidence) or not evidence.is_file() or evidence.suffix != ".json":
+            fail(f"official Factory provenance directory has an unsafe entry: {evidence.name}")
+        plugin_id = evidence.name.removesuffix(".json")
+        document = official_publication_provenance_document(root, plugin_id)
+        # `safe_document_path` and the current directory entry must resolve
+        # to the same regular file, otherwise a race or odd filesystem alias
+        # could make KMS sign bytes other than those enumerated above.
+        if document.path != evidence.resolve(strict=True):
+            fail(f"official Factory provenance path does not match its subject: {evidence.name}")
+        documents.append(document)
+    return documents
+
+
 def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     index_path = safe_document_path(root, MARKETPLACE_INDEX_SUBJECT, must_exist=True)
     marketplace = json_object(index_path.read_bytes(), MARKETPLACE_INDEX_SUBJECT)
@@ -202,6 +270,7 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
                 safe_document_path(root, subject, must_exist=True),
             )
         )
+    documents.extend(official_publication_provenance_documents(root))
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
 
 
@@ -508,6 +577,11 @@ def write_sidecars(sidecars: Mapping[Path, bytes]) -> None:
         for destination, payload in sidecars.items():
             if is_link(destination):
                 fail(f"KMS sidecar path must not be a symbolic link: {destination}")
+            if is_link(destination.parent):
+                fail(f"KMS sidecar directory must not be a symbolic link: {destination.parent}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if is_link(destination.parent) or not destination.parent.is_dir():
+                fail(f"KMS sidecar directory is unavailable: {destination.parent}")
             descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
             temporary = Path(temporary_name)
             temporary_paths.append(temporary)
@@ -523,6 +597,12 @@ def write_sidecars(sidecars: Mapping[Path, bytes]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def sidecar_path_for(document: MarketplaceDocument) -> Path:
+    """Resolve a document's fixed output location without trusting callers."""
+
+    return document.sidecar_path if document.sidecar_path is not None else Path(f"{document.path}.sig.jws.json")
+
+
 def publish_sidecars(
     root: Path,
     source_revision: str,
@@ -535,7 +615,7 @@ def publish_sidecars(
     for document in documents:
         response = request_signed_document(document)
         sidecar = sidecar_from_broker_response(response, document, source_revision, now=now)
-        destination = Path(f"{document.path}.sig.jws.json")
+        destination = sidecar_path_for(document)
         sidecars[destination] = sidecar
     write_sidecars(sidecars)
     return list(sidecars)
@@ -544,7 +624,7 @@ def publish_sidecars(
 def validate_published_sidecars(root: Path, source_revision: str, *, now: int | None = None) -> list[Path]:
     validated: list[Path] = []
     for document in marketplace_documents(root):
-        sidecar_path = Path(f"{document.path}.sig.jws.json")
+        sidecar_path = sidecar_path_for(document)
         if is_link(sidecar_path) or not sidecar_path.is_file():
             fail(f"KMS sidecar is unavailable: {sidecar_path}")
         validate_sidecar(sidecar_path.read_bytes(), document, source_revision, now=now)

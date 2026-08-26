@@ -167,35 +167,91 @@ jobs:
             --factory-repository "$GITHUB_REPOSITORY" \
             --artifact-output "$RUNNER_TEMP/xsec-factory-artifacts" \
             --publisher "$GITHUB_ACTOR"
-      - name: Validate generated snapshots and release metadata
-        run: python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
+      - name: Validate generated snapshots and release metadata before attestation upload
+        # A newly recorded evidence event has no immutable GitHub Release
+        # asset until the controlled production job creates it below. Normal
+        # source-gate runs do not receive this bypass.
+        run: >-
+          python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
+          --allow-unsigned-publication-attestations
+      - name: Materialize the exact immutable Beta provenance attestation
+        id: attestation
+        env:
+          PLUGIN_ID: ${{ steps.build.outputs.plugin_id }}
+          RELEASE_ID: ${{ steps.build.outputs.release_id }}
+          SOURCE_SHA: ${{ steps.build.outputs.source_sha }}
+        run: |
+          python scripts/factory_attestation.py --github-output "$GITHUB_OUTPUT" materialize \
+            --plugin-id "$PLUGIN_ID" \
+            --channel beta \
+            --release-id "$RELEASE_ID" \
+            --source-sha "$SOURCE_SHA" \
+            --output-directory "$RUNNER_TEMP/xsec-factory-attestations"
       - name: Create or verify the immutable GitHub Release asset
         env:
           GH_TOKEN: ${{ github.token }}
+          FACTORY_REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ steps.build.outputs.release_tag }}
           ARTIFACT_PATH: ${{ steps.build.outputs.artifact_path }}
           ARTIFACT_NAME: ${{ steps.build.outputs.artifact_name }}
           ARTIFACT_SHA256: ${{ steps.build.outputs.artifact_sha256 }}
+          ATTESTATION_PATH: ${{ steps.attestation.outputs.attestation_path }}
+          ATTESTATION_NAME: ${{ steps.attestation.outputs.attestation_name }}
+          ATTESTATION_SHA256: ${{ steps.attestation.outputs.attestation_sha256 }}
           PLUGIN_ID: ${{ steps.build.outputs.plugin_id }}
           RELEASE_ID: ${{ steps.build.outputs.release_id }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" --json tagName >/dev/null 2>&1; then
-            existing="$RUNNER_TEMP/xsec-factory-existing-release"
-            mkdir -p "$existing"
-            if gh release download "$RELEASE_TAG" --pattern "$ARTIFACT_NAME" --dir "$existing"; then
-              [ "$(sha256sum "$existing/$ARTIFACT_NAME" | awk '{print $1}')" = "$ARTIFACT_SHA256" ] || {
+          release_repo="github.com/$FACTORY_REPOSITORY"
+          verify_or_upload() {
+            asset_path="$1"
+            asset_name="$2"
+            asset_sha256="$3"
+            asset_directory="$RUNNER_TEMP/xsec-factory-existing-release/$asset_name"
+            mkdir -p "$asset_directory"
+            if gh release download "$RELEASE_TAG" --repo "$release_repo" --pattern "$asset_name" --dir "$asset_directory"; then
+              [ -f "$asset_directory/$asset_name" ] || { echo "Expected immutable Factory Release asset is unavailable." >&2; exit 1; }
+              [ "$(sha256sum "$asset_directory/$asset_name" | awk '{print $1}')" = "$asset_sha256" ] || {
                 echo "Existing immutable release asset has different bytes." >&2
                 exit 1
               }
             else
-              gh release upload "$RELEASE_TAG" "$ARTIFACT_PATH#$ARTIFACT_NAME"
+              gh release upload "$RELEASE_TAG" --repo "$release_repo" "$asset_path#$asset_name"
             fi
+          }
+          if gh release view "$RELEASE_TAG" --repo "$release_repo" --json tagName >/dev/null 2>&1; then
+            verify_or_upload "$ARTIFACT_PATH" "$ARTIFACT_NAME" "$ARTIFACT_SHA256"
+            verify_or_upload "$ATTESTATION_PATH" "$ATTESTATION_NAME" "$ATTESTATION_SHA256"
           else
-            gh release create "$RELEASE_TAG" "$ARTIFACT_PATH#$ARTIFACT_NAME" \
+            gh release create "$RELEASE_TAG" --repo "$release_repo" \
+              "$ARTIFACT_PATH#$ARTIFACT_NAME" \
+              "$ATTESTATION_PATH#$ATTESTATION_NAME" \
               --title "${PLUGIN_ID} ${RELEASE_ID}" \
-              --notes "Immutable XSEC Marketplace Factory beta artifact."
+              --notes "Immutable XSEC Marketplace Factory beta artifact and source provenance attestation."
           fi
+      - name: Download and verify the complete immutable provenance set
+        id: attestation-proofs
+        env:
+          # The publishing job needs write access for its Release upload, but
+          # this fetch uses only the repository-scoped token and the fixed
+          # GitHub.com Factory repository selected by the workflow itself.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output_directory="$RUNNER_TEMP/xsec-factory-publication-attestation-proofs"
+          [ ! -e "$output_directory" ] || {
+            echo "Publication attestation proof path already exists." >&2
+            exit 1
+          }
+          python scripts/factory_attestation.py --github-output "$GITHUB_OUTPUT" download \
+            --factory-repository "$GITHUB_REPOSITORY" \
+            --output-directory "$output_directory"
+      - name: Strictly validate the complete immutable provenance set before committing Factory metadata
+        env:
+          ATTESTATION_ROOT: ${{ steps.attestation-proofs.outputs.attestation_root }}
+        run: >-
+          python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
+          --publication-attestation-root "$ATTESTATION_ROOT"
       - name: Commit only generated Factory metadata
         env:
           PLUGIN_ID: ${{ steps.build.outputs.plugin_id }}

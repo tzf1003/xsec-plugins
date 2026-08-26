@@ -11,6 +11,7 @@ import tempfile
 
 from factory_core import (
     FactoryError,
+    MAX_PUBLICATION_ATTESTATION_BYTES,
     MARKETPLACE_RELATIVE_PATH,
     PLUGIN_ROOT_RELATIVE_PATH,
     PUBLICATIONS_RELATIVE_PATH,
@@ -20,6 +21,8 @@ from factory_core import (
     load_registry,
     load_release_document,
     marketplace_document,
+    publication_attestation_bytes,
+    publication_attestation_name,
     plugin_snapshot_dir,
     publication_path,
     read_json,
@@ -38,7 +41,56 @@ from factory_core import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def validate_publication_evidence(root: Path, registration, records: dict[str, dict[str, object]], stable_release_id: str | None) -> None:
+def validate_publication_attestation(
+    attestation_root: Path,
+    registration,
+    event: dict[str, object],
+) -> tuple[str, bytes]:
+    """Verify one locally materialized immutable GitHub Release asset."""
+
+    name = publication_attestation_name(registration, event)
+    expected = publication_attestation_bytes(registration, event)
+    if len(expected) > MAX_PUBLICATION_ATTESTATION_BYTES:
+        raise FactoryError("publication attestation exceeds the size limit")
+    if is_link(attestation_root) or not attestation_root.is_dir():
+        raise FactoryError("publication attestation root must be a regular directory")
+    candidate = attestation_root / name
+    if is_link(candidate) or not candidate.is_file():
+        raise FactoryError(f"publication attestation for {registration.plugin_id} is unavailable")
+    try:
+        candidate.resolve(strict=True).relative_to(attestation_root.resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise FactoryError(f"publication attestation for {registration.plugin_id} escaped its root") from error
+    if candidate.stat().st_size > MAX_PUBLICATION_ATTESTATION_BYTES:
+        raise FactoryError(f"publication attestation for {registration.plugin_id} exceeds the size limit")
+    actual = candidate.read_bytes()
+    if sha256(actual) != sha256(expected) or actual != expected:
+        raise FactoryError(f"publication attestation for {registration.plugin_id} does not match immutable evidence")
+    return name, expected
+
+
+def validate_publication_attestation_root(attestation_root: Path, expected: dict[str, bytes]) -> None:
+    """Reject leftover files so a caller cannot substitute a partial proof set."""
+
+    if is_link(attestation_root) or not attestation_root.is_dir():
+        raise FactoryError("publication attestation root must be a regular directory")
+    actual: dict[str, Path] = {}
+    for candidate in attestation_root.iterdir():
+        if is_link(candidate) or not candidate.is_file() or candidate.name in actual:
+            raise FactoryError("publication attestation root contains an unsafe entry")
+        actual[candidate.name] = candidate
+    if set(actual) != set(expected):
+        raise FactoryError("publication attestation root does not contain the exact immutable evidence set")
+
+
+def validate_publication_evidence(
+    root: Path,
+    registration,
+    records: dict[str, dict[str, object]],
+    stable_release_id: str | None,
+    *,
+    attestation_root: Path | None = None,
+) -> dict[str, bytes]:
     plugin_id = registration.plugin_id
     path = publication_path(root, plugin_id)
     if not path.exists():
@@ -52,6 +104,7 @@ def validate_publication_evidence(root: Path, registration, records: dict[str, d
     seen: set[tuple[str, str, str]] = set()
     beta_evidence: set[str] = set()
     stable_evidence: set[str] = set()
+    attestations: dict[str, bytes] = {}
     for index, raw_event in enumerate(events):
         label = f"publication evidence for {plugin_id} event {index}"
         event = require_object(raw_event, label)
@@ -100,6 +153,12 @@ def validate_publication_evidence(root: Path, registration, records: dict[str, d
         if key in seen:
             raise FactoryError(f"{label} duplicates an immutable publication event")
         seen.add(key)
+        if attestation_root is not None:
+            name, payload = validate_publication_attestation(attestation_root, registration, event)
+            previous = attestations.get(name)
+            if previous is not None and previous != payload:
+                raise FactoryError("publication attestation filename collision")
+            attestations[name] = payload
         if channel == "beta":
             beta_evidence.add(identifier)
         else:
@@ -109,6 +168,7 @@ def validate_publication_evidence(root: Path, registration, records: dict[str, d
         raise FactoryError(f"publication evidence for {plugin_id} is missing Beta source evidence")
     if stable_release_id is not None and stable_release_id not in stable_evidence:
         raise FactoryError(f"publication evidence for {plugin_id} is missing Stable promotion evidence")
+    return attestations
 
 
 def snapshot_artifact_digest(snapshot: Path) -> str:
@@ -270,11 +330,23 @@ def validate_factory(
     factory_repository: str | None = None,
     *,
     baseline_root: Path | None = None,
+    publication_attestation_root: Path | None = None,
+    require_publication_attestations: bool = False,
 ) -> None:
     registry = load_registry(root)
     validate_trusted_baseline_continuity(root, registry, baseline_root)
     if factory_repository is not None:
         factory_repository = safe_repository(factory_repository, "factory repository")
+    if require_publication_attestations and publication_attestation_root is None:
+        raise FactoryError("publication attestation root is required for strict Factory validation")
+    if publication_attestation_root is not None:
+        try:
+            publication_attestation_root = publication_attestation_root.resolve(strict=True)
+        except OSError as error:
+            raise FactoryError("publication attestation root is unavailable") from error
+        if is_link(publication_attestation_root) or not publication_attestation_root.is_dir():
+            raise FactoryError("publication attestation root must be a regular directory")
+    expected_attestations: dict[str, bytes] = {}
     snapshot_root = root / PLUGIN_ROOT_RELATIVE_PATH
     expected_ids = {entry.plugin_id for entry in registry.plugins}
     if snapshot_root.exists():
@@ -375,13 +447,27 @@ def validate_factory(
                         raise FactoryError(f"release artifact for {registration.plugin_id} points outside this Factory repository")
         stable_pointer = require_object(release["channels"], "release metadata channels").get("stable")
         stable_release_id = stable_pointer.get("releaseId") if isinstance(stable_pointer, dict) else None
-        validate_publication_evidence(root, registration, records, stable_release_id)
+        for name, payload in validate_publication_evidence(
+            root,
+            registration,
+            records,
+            stable_release_id,
+            attestation_root=publication_attestation_root if require_publication_attestations else None,
+        ).items():
+            previous = expected_attestations.get(name)
+            if previous is not None and previous != payload:
+                raise FactoryError("publication attestation filename collision")
+            expected_attestations[name] = payload
 
     index_path = root / MARKETPLACE_RELATIVE_PATH
     if not index_path.is_file():
         raise FactoryError("generated marketplace index is unavailable")
     if index_path.read_bytes() != stable_json(marketplace_document(root, registry)):
         raise FactoryError("generated marketplace index does not match the Factory registry and published snapshots")
+    if require_publication_attestations:
+        if publication_attestation_root is None:
+            raise AssertionError("strict publication proof validation lost its root")
+        validate_publication_attestation_root(publication_attestation_root, expected_attestations)
 
 
 def main() -> None:
@@ -393,12 +479,28 @@ def main() -> None:
         type=Path,
         help="trusted pre-change Factory checkout used to prevent publication-history deletion",
     )
+    parser.add_argument(
+        "--publication-attestation-root",
+        type=Path,
+        help="isolated directory of GitHub Release provenance assets materialized by the CI gate",
+    )
+    parser.add_argument(
+        "--allow-unsigned-publication-attestations",
+        action="store_true",
+        help="only for the production publisher before it uploads immutable release assets",
+    )
     args = parser.parse_args()
     try:
         validate_factory(
             args.root.resolve(),
             args.factory_repository,
             baseline_root=args.baseline_root.resolve() if args.baseline_root is not None else None,
+            publication_attestation_root=(
+                args.publication_attestation_root.resolve()
+                if args.publication_attestation_root is not None
+                else None
+            ),
+            require_publication_attestations=not args.allow_unsigned_publication_attestations,
         )
     except FactoryError as error:
         raise SystemExit(f"Factory validation failed: {error}") from error
