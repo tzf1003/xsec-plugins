@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -25,6 +26,41 @@ import promote_release  # noqa: E402
 PLUGIN_ID = "com.example.external"
 BETA_SHA = "a" * 40
 STABLE_SHA = "b" * 40
+TEST_KMS_KID = "external-history-test-key"
+TEST_KMS_PUBLIC_KEY_X = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+TEST_KMS_PRIVATE_KEY_D = "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"
+TEST_KMS_JWKS = json.dumps(
+    {
+        "keys": [
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": TEST_KMS_PUBLIC_KEY_X,
+                "kid": TEST_KMS_KID,
+                "alg": "EdDSA",
+                "use": "sig",
+            }
+        ]
+    },
+    separators=(",", ":"),
+).encode("utf-8")
+
+NODE_ED25519_SIGN_PROGRAM = f"""
+import {{ createPrivateKey, sign }} from "node:crypto";
+import {{ readFileSync }} from "node:fs";
+
+const key = createPrivateKey({{
+  key: {{
+    kty: "OKP",
+    crv: "Ed25519",
+    x: "{TEST_KMS_PUBLIC_KEY_X}",
+    d: "{TEST_KMS_PRIVATE_KEY_D}",
+  }},
+  format: "jwk",
+}});
+const signingInput = Buffer.from(readFileSync(0, "utf8"), "base64");
+process.stdout.write(sign(null, signingInput, key).toString("base64url"));
+"""
 
 
 def write_json(path: Path, value: object) -> None:
@@ -36,8 +72,33 @@ def base64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
+def sign_test_ed25519(signing_input: bytes) -> bytes:
+    node = shutil.which("node")
+    if node is None:
+        raise AssertionError("Node.js is required by the KMS sidecar verifier tests")
+    completed = subprocess.run(
+        [node, "--input-type=module", "--eval", NODE_ED25519_SIGN_PROGRAM],
+        input=base64.b64encode(signing_input),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    return base64.urlsafe_b64decode(completed.stdout + b"=" * (-len(completed.stdout) % 4))
+
+
+def verify_test_historical_sidecar(
+    sidecar_bytes: bytes,
+    document: publisher.MarketplaceDocument,
+) -> str:
+    return publisher.verify_historical_sidecar_signature(
+        sidecar_bytes,
+        document,
+        jwks_bytes=TEST_KMS_JWKS,
+    )
+
+
 def write_historical_release_sidecar(root: Path, plugin_id: str, *, source_revision: str = BETA_SHA) -> Path:
-    """Write a protocol-valid release sidecar without needing a test KMS broker."""
+    """Write a real signed release sidecar without needing a test KMS broker."""
 
     release = factory.release_path(root, plugin_id)
     subject = f"plugins/{plugin_id}/.xsec-market/releases.json"
@@ -52,14 +113,15 @@ def write_historical_release_sidecar(root: Path, plugin_id: str, *, source_revis
     envelope_bytes = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
     protected = base64url(
         json.dumps(
-            {"alg": "EdDSA", "kid": "test-key", "iss": publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL},
+            {"alg": "EdDSA", "kid": TEST_KMS_KID, "iss": publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL},
             separators=(",", ":"),
         ).encode("utf-8")
     )
+    signature = sign_test_ed25519(protected.encode("ascii") + b"." + base64url(envelope_bytes).encode("ascii"))
     sidecar = {
         "schema_version": 1,
         "envelope_b64": base64url(envelope_bytes),
-        "jws": {"protected": protected, "payload": base64url(envelope_bytes), "signature": base64url(b"s" * 64)},
+        "jws": {"protected": protected, "payload": base64url(envelope_bytes), "signature": base64url(signature)},
     }
     destination = release.with_name(release.name + ".sig.jws.json")
     destination.write_text(json.dumps(sidecar, separators=(",", ":")), encoding="utf-8")
@@ -443,6 +505,13 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             (source_plugin / "frontend.js").write_text("export function activate() { return 'v2'; }\n", encoding="utf-8")
             self.stage_and_record_beta(root, source, source_sha="c" * 40)
             sidecar = write_historical_release_sidecar(root, PLUGIN_ID)
+            historical_verifier = patch.object(
+                factory,
+                "verify_historical_sidecar_signature",
+                verify_test_historical_sidecar,
+            )
+            historical_verifier.start()
+            self.addCleanup(historical_verifier.stop)
 
             # Withdrawing an already published plugin removes only discovery;
             # the generated snapshot, releases.json, and provenance remain.
@@ -485,6 +554,13 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             factory.validate_registry_and_snapshots(root)
 
             sidecar.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS release sidecar is invalid"):
+                factory.validate_registry_and_snapshots(root)
+            sidecar = write_historical_release_sidecar(root, PLUGIN_ID)
+
+            forged = json.loads(sidecar.read_text(encoding="utf-8"))
+            forged["jws"]["signature"] = base64url(b"f" * 64)
+            sidecar.write_text(json.dumps(forged, separators=(",", ":")), encoding="utf-8")
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS release sidecar is invalid"):
                 factory.validate_registry_and_snapshots(root)
             sidecar = write_historical_release_sidecar(root, PLUGIN_ID)

@@ -40,7 +40,7 @@ from build_market import (
 from kms_marketplace_publisher import (
     MarketplaceDocument,
     MarketplaceKmsPublisherError,
-    validate_historical_sidecar,
+    verify_historical_sidecar_signature,
 )
 
 
@@ -1121,7 +1121,7 @@ def validate_disabled_release_sidecar(root: Path, registration: Registration) ->
     subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
     document = MarketplaceDocument("xsec.plugin-marketplace.release", subject, release)
     try:
-        validate_historical_sidecar(sidecar.read_bytes(), document)
+        verify_historical_sidecar_signature(sidecar.read_bytes(), document)
     except (OSError, MarketplaceKmsPublisherError) as error:
         raise ExternalSourceFactoryError(
             f"disabled external official plugin {registration.plugin_id} KMS release sidecar is invalid"

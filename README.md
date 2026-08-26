@@ -73,6 +73,9 @@ it while retaining the ownership record, generated snapshot, every immutable
 release artifact and release-history record, publication evidence, and KMS
 release sidecar. The Factory re-packages the retained snapshot against the
 selected Beta digest and re-hashes every retained artifact during validation.
+It also fetches the pinned Vercel KMS issuer JWKS and cryptographically verifies
+the retained EdDSA sidecar, so a structurally valid but forged historical
+signature cannot make a withdrawn release pass validation.
 A never-published authorization can instead be removed from the registry.
 Their archive member paths must also meet Desktop's portable Windows/macOS
 rules: ASCII only; no case-fold, file/directory, trailing-dot/space, NTFS

@@ -52,6 +52,14 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("insteadOf", readme)
         self.assertIn("local verified ref", readme)
 
+    def test_disabled_external_history_requires_cryptographic_sidecar_verification(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("pinned Vercel KMS issuer JWKS", readme)
+        self.assertIn("cryptographically verifies", readme)
+        self.assertIn("Ed25519", document)
+        self.assertIn("密码学验证 sidecar", document)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
@@ -33,13 +35,45 @@ GITHUB_ACTIONS_OIDC_HOST_SUFFIX = ".actions.githubusercontent.com"
 OFFICIAL_MARKETPLACE_KMS_ISSUER_ID = "dc24288e-f77c-4c13-81a7-f649afbe7b73"
 OFFICIAL_MARKETPLACE_KMS_ISSUER_URL = f"https://kms.vercel.com/{OFFICIAL_MARKETPLACE_KMS_ISSUER_ID}"
 MAX_BROKER_RESPONSE_BYTES = 64 * 1024
+MAX_KMS_JWKS_BYTES = 256 * 1024
+MAX_KMS_JWKS_KEYS = 32
+MAX_KMS_JWS_SIGNING_INPUT_BYTES = 24 * 1024
+PINNED_KMS_JWKS_URL = f"{OFFICIAL_MARKETPLACE_KMS_ISSUER_URL}/jwks.json"
 GITHUB_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 BASE64URL_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 CURRENT_SOURCE_REVISION_ENV = "XSEC_MARKETPLACE_SOURCE_REVISION"
 
+# This is deliberately a fixed built-in-only program.  The Factory already
+# requires Node 24 for its source gate; using its platform Ed25519 primitive
+# avoids adding an unpinned Python crypto dependency while keeping KMS key
+# rotation in the issuer JWKS.  Untrusted sidecar values are supplied only as
+# JSON on stdin, never interpolated into code, an argv item, or a shell.
+NODE_ED25519_VERIFY_PROGRAM = r"""
+import { createPublicKey, verify } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+const request = JSON.parse(readFileSync(0, "utf8"));
+const key = createPublicKey({
+  key: { kty: "OKP", crv: "Ed25519", x: request.public_key_x },
+  format: "jwk",
+});
+const valid = verify(
+  null,
+  Buffer.from(request.signing_input_b64, "base64"),
+  key,
+  Buffer.from(request.signature_b64, "base64"),
+);
+process.exitCode = valid ? 0 : 1;
+"""
+
 
 class MarketplaceKmsPublisherError(ValueError):
     """The broker or a generated sidecar violates the Desktop protocol."""
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
 
 
 @dataclass(frozen=True)
@@ -286,6 +320,150 @@ def validate_historical_sidecar(
     return source_revision
 
 
+def download_pinned_issuer_jwks() -> bytes:
+    """Fetch only the fixed official Marketplace issuer JWKS, without redirects."""
+
+    request = Request(PINNED_KMS_JWKS_URL, headers={"Accept": "application/json"})
+    try:
+        with build_opener(NoRedirect()).open(request, timeout=15) as response:
+            if response.status != 200 or response.geturl() != PINNED_KMS_JWKS_URL:
+                fail("pinned KMS issuer JWKS returned an unexpected response")
+            payload = response.read(MAX_KMS_JWKS_BYTES + 1)
+    except HTTPError as error:
+        raise MarketplaceKmsPublisherError("pinned KMS issuer JWKS is unavailable") from error
+    except URLError as error:
+        raise MarketplaceKmsPublisherError("pinned KMS issuer JWKS is unavailable") from error
+    if len(payload) > MAX_KMS_JWKS_BYTES:
+        fail("pinned KMS issuer JWKS exceeds the size limit")
+    if not payload:
+        fail("pinned KMS issuer JWKS is empty")
+    return payload
+
+
+def pinned_issuer_ed25519_key(jwks_bytes: bytes, kid: str) -> str:
+    """Resolve one strict Ed25519 signing key from the pinned issuer JWKS."""
+
+    if not isinstance(kid, str) or not kid or len(kid) > 256:
+        fail("KMS JWS protected header kid is invalid")
+    if not jwks_bytes or len(jwks_bytes) > MAX_KMS_JWKS_BYTES:
+        fail("pinned KMS issuer JWKS is empty or exceeds the size limit")
+    jwks = json_object(jwks_bytes, "pinned KMS issuer JWKS")
+    keys = jwks.get("keys")
+    if not isinstance(keys, list) or not 1 <= len(keys) <= MAX_KMS_JWKS_KEYS:
+        fail("pinned KMS issuer JWKS has an invalid key set")
+    selected: Mapping[str, object] | None = None
+    seen_kids: set[str] = set()
+    for index, value in enumerate(keys):
+        if not isinstance(value, dict):
+            fail(f"pinned KMS issuer JWKS key {index} is invalid")
+        key_id = value.get("kid")
+        if not isinstance(key_id, str) or not key_id or len(key_id) > 256 or key_id in seen_kids:
+            fail("pinned KMS issuer JWKS contains an invalid or duplicate key id")
+        seen_kids.add(key_id)
+        if key_id == kid:
+            selected = value
+    if selected is None:
+        fail("KMS JWS key id is not published by the pinned issuer")
+    if (
+        selected.get("kty") != "OKP"
+        or selected.get("crv") != "Ed25519"
+        or selected.get("alg") != "EdDSA"
+        or selected.get("use") != "sig"
+    ):
+        fail("KMS JWS key does not meet the pinned EdDSA signing-key requirements")
+    key_x = selected.get("x")
+    if not isinstance(key_x, str) or len(canonical_base64url_decode(key_x, "KMS JWK public key")) != 32:
+        fail("KMS JWK public key must be a 32-byte Ed25519 key")
+    return key_x
+
+
+def historical_jws_verification_material(sidecar_bytes: bytes) -> tuple[str, bytes, bytes]:
+    """Return the trusted-key selector and RFC 7515/7797 signing input."""
+
+    sidecar = json_object(sidecar_bytes, "KMS sidecar")
+    jws = sidecar.get("jws")
+    if not isinstance(jws, dict):
+        fail("KMS sidecar jws must be an object")
+    protected = required_string(jws, "protected", "KMS sidecar jws")
+    header = json_object(canonical_base64url_decode(protected, "KMS JWS protected header"), "KMS JWS protected header")
+    kid = required_string(header, "kid", "KMS JWS protected header")
+    envelope_bytes = canonical_base64url_decode(sidecar.get("envelope_b64"), "KMS sidecar envelope_b64")
+    if header.get("b64") is False and header.get("crit") == ["b64"]:
+        signing_payload = envelope_bytes
+    else:
+        signing_payload = required_string(jws, "payload", "KMS sidecar jws").encode("ascii")
+    signature = canonical_base64url_decode(jws.get("signature"), "KMS JWS signature")
+    signing_input = protected.encode("ascii") + b"." + signing_payload
+    if len(signing_input) > MAX_KMS_JWS_SIGNING_INPUT_BYTES:
+        fail("KMS JWS signing input exceeds the size limit")
+    return kid, signing_input, signature
+
+
+def verify_ed25519_signature_with_node(public_key_x: str, signing_input: bytes, signature: bytes) -> None:
+    """Verify a bounded JWS input using Node's built-in Ed25519 implementation."""
+
+    node = shutil.which("node")
+    if node is None:
+        fail("Node.js is required to verify the pinned KMS JWS signature")
+    request = stable_json(
+        {
+            "public_key_x": public_key_x,
+            "signing_input_b64": base64.b64encode(signing_input).decode("ascii"),
+            "signature_b64": base64.b64encode(signature).decode("ascii"),
+        }
+    )
+    # Do not allow a caller-controlled NODE_OPTIONS/NODE_PATH preload to change
+    # the result of this trust decision. The verifier imports only Node core
+    # modules and accepts all untrusted values through stdin.
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"NODE_OPTIONS", "NODE_PATH", "NODE_REPL_HISTORY", "NODE_V8_COVERAGE"}
+    }
+    try:
+        completed = subprocess.run(
+            [node, "--input-type=module", "--eval", NODE_ED25519_VERIFY_PROGRAM],
+            input=request,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=ROOT,
+            env=environment,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise MarketplaceKmsPublisherError("pinned KMS JWS signature verification is unavailable") from error
+    if completed.returncode != 0:
+        fail("pinned KMS JWS signature verification failed")
+
+
+def verify_historical_sidecar_signature(
+    sidecar_bytes: bytes,
+    document: MarketplaceDocument,
+    *,
+    now: int | None = None,
+    jwks_bytes: bytes | None = None,
+) -> str:
+    """Validate and cryptographically verify a retained KMS document sidecar.
+
+    Disabled plugins are deliberately absent from the active marketplace index,
+    so Desktop does not reach their release sidecars during normal smoke tests.
+    This helper therefore performs the same pinned-issuer key selection and
+    Ed25519 verification before a retained release history can pass Factory
+    validation. `jwks_bytes` exists only for deterministic unit tests; normal
+    callers always download the fixed issuer endpoint.
+    """
+
+    source_revision = validate_historical_sidecar(sidecar_bytes, document, now=now)
+    kid, signing_input, signature = historical_jws_verification_material(sidecar_bytes)
+    public_key_x = pinned_issuer_ed25519_key(
+        download_pinned_issuer_jwks() if jwks_bytes is None else jwks_bytes,
+        kid,
+    )
+    verify_ed25519_signature_with_node(public_key_x, signing_input, signature)
+    return source_revision
+
+
 def sidecar_from_broker_response(
     response_bytes: bytes,
     document: MarketplaceDocument,
@@ -372,11 +550,6 @@ def validate_published_sidecars(root: Path, source_revision: str, *, now: int | 
         validate_sidecar(sidecar_path.read_bytes(), document, source_revision, now=now)
         validated.append(sidecar_path)
     return validated
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        return None
 
 
 def request_json(request: Request) -> bytes:
