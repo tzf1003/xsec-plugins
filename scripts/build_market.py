@@ -27,6 +27,11 @@ PLUGIN_ROOT = ROOT / "plugins"
 ARTIFACT_DIR_NAME = "artifacts"
 EXCLUDED_PARTS = {"__pycache__", ".git", ".xsec-market"}
 RELEASE_ID_PATTERN = re.compile(r"^sha256-[0-9a-f]{64}$")
+TEXT_ARCHIVE_SUFFIXES = frozenset({
+    ".cjs", ".css", ".html", ".htm", ".js", ".json", ".jsx", ".md",
+    ".mjs", ".ps1", ".sh", ".svg", ".toml", ".ts", ".tsx", ".txt",
+    ".xml", ".yaml", ".yml",
+})
 
 
 def is_link(path: Path) -> bool:
@@ -81,18 +86,19 @@ def archive_bytes(path: Path) -> bytes:
     explicit line-ending representation; otherwise an unchanged source commit
     produces a different immutable artifact SHA-256 locally and in CI.
 
-    Binary members stay byte-for-byte intact.  A NUL byte is treated as binary
-    before UTF-8 decoding so an accidental CRLF sequence in an asset is never
-    rewritten.
+    Only an explicit set of source-text filename suffixes participates in this
+    rule. Every other member is an arbitrary binary payload and remains
+    byte-for-byte intact, even when it happens to be valid UTF-8 (for example,
+    a PDF with CRLF line endings).
     """
 
     value = path.read_bytes()
-    if b"\r\n" not in value or b"\x00" in value:
+    if path.suffix.lower() not in TEXT_ARCHIVE_SUFFIXES or b"\r\n" not in value:
         return value
     try:
         value.decode("utf-8")
-    except UnicodeDecodeError:
-        return value
+    except UnicodeDecodeError as error:
+        raise ValueError(f"text package member must be UTF-8: {path}") from error
     return value.replace(b"\r\n", b"\n")
 
 

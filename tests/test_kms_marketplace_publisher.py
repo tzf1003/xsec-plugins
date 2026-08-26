@@ -257,13 +257,14 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
             document = self.make_marketplace(Path(directory))[0]
             with patch.object(publisher, "request_json", return_value=b'{"ok":true,"data":{}}') as request_json:
-                publisher.request_cloud_signature(document, "oidc-token")
+                publisher.request_cloud_signature(document, "oidc-token", REVISION)
             request = request_json.call_args.args[0]
             self.assertEqual(request.full_url, publisher.PRODUCTION_BROKER_URL)
             self.assertEqual(request.get_header("Authorization"), "Bearer oidc-token")
             payload = json.loads(request.data.decode("utf-8"))
             self.assertEqual(payload["purpose"], document.purpose)
             self.assertEqual(payload["subject"], document.subject)
+            self.assertEqual(payload["source_revision"], REVISION)
             self.assertEqual(base64.b64decode(payload["content_b64"], validate=True), document.path.read_bytes())
             self.assertEqual(base64.b64encode(document.path.read_bytes()).decode("ascii"), payload["content_b64"])
 

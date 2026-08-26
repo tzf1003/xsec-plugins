@@ -389,12 +389,15 @@ def github_oidc_token(environment: Mapping[str, str]) -> str:
     return required_string(value, "value", "GitHub Actions OIDC response")
 
 
-def request_cloud_signature(document: MarketplaceDocument, oidc_token: str) -> bytes:
+def request_cloud_signature(document: MarketplaceDocument, oidc_token: str, source_revision: str) -> bytes:
+    if not GITHUB_SHA_PATTERN.fullmatch(source_revision):
+        fail("source revision must be a lowercase 40-character Git SHA")
     payload = stable_json(
         {
             "purpose": document.purpose,
             "subject": document.subject,
             "content_b64": base64.b64encode(document.path.read_bytes()).decode("ascii"),
+            "source_revision": source_revision,
         }
     )
     return request_json(
@@ -440,7 +443,7 @@ def main() -> None:
             print(f"validated {len(validated)} KMS marketplace sidecars")
             return
         token = github_oidc_token(os.environ)
-        written = publish_sidecars(root, source_revision, lambda document: request_cloud_signature(document, token))
+        written = publish_sidecars(root, source_revision, lambda document: request_cloud_signature(document, token, source_revision))
         print(f"published {len(written)} KMS marketplace sidecars")
     except MarketplaceKmsPublisherError as error:
         raise SystemExit(f"KMS marketplace publishing failed: {error}") from error

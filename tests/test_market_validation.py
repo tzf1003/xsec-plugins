@@ -874,7 +874,7 @@ export function renderPlaceholder() {}
                     (json.dumps({"name": "com.xsec.test", "version": "1.0.0"}) + line_ending).encode("utf-8")
                 )
                 entrypoint.write_bytes(f"export const platform = 'test';{line_ending}".encode("utf-8"))
-                (plugin_dir / "asset.bin").write_bytes(b"\x00binary\r\nbytes")
+                (plugin_dir / "asset.pdf").write_bytes(b"%PDF-1.7\r\nstream\r\n%%EOF\r\n")
 
             windows_artifact = root / "windows.xsec-plugin"
             unix_artifact = root / "unix.xsec-plugin"
@@ -884,7 +884,7 @@ export function renderPlaceholder() {}
             self.assertEqual(windows_artifact.read_bytes(), unix_artifact.read_bytes())
             with zipfile.ZipFile(windows_artifact) as archive:
                 self.assertEqual(archive.read("com.xsec.desktop/frontend/index.js"), b"export const platform = 'test';\n")
-                self.assertEqual(archive.read("asset.bin"), b"\x00binary\r\nbytes")
+                self.assertEqual(archive.read("asset.pdf"), b"%PDF-1.7\r\nstream\r\n%%EOF\r\n")
 
     def test_manual_publish_is_rejected_outside_main_before_signing(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")

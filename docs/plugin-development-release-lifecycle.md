@@ -60,8 +60,9 @@ artifact、历史 release record 和 `stable` 指针都不可由常规 Beta 构�
    内容、engine 范围或任一 artifact 会变化，先将 `plugin.json.version` 提高到
    新 SemVer。
 3. 在临时输出目录执行构建和校验，确认将要写入的 releaseId 与 artifact
-   SHA-256 是由当前源代码确定性生成的。打包器会将 UTF-8 文本中的 CRLF
-   规范成 LF（例如 Windows 工作区），二进制文件保持原字节；因此本地校验的
+   SHA-256 是由当前源代码确定性生成的。打包器会将指定的 UTF-8 源码文本扩展名
+   （如 `.json`、`.js`、`.md`）中的 CRLF 规范成 LF（例如 Windows 工作区），其他
+   任意二进制成员保持原字节；因此本地校验的
    artifact SHA-256 与云端 Linux 发布器一致：
 
    ```powershell

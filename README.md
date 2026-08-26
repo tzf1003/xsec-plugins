@@ -106,11 +106,12 @@ workflow, where the Cloud broker accepts GitHub Actions OIDC and signs through
 the non-exportable Vercel KMS key. A missing or invalid sidecar is rejected by
 the pinned official Desktop source.
 
-The package builder canonicalizes CRLF to LF for UTF-8 text members before it
-hashes an artifact, while preserving binary members byte-for-byte. A Windows
-developer can therefore verify the same artifact SHA-256 that the Linux
-publisher will sign; an unchanged local package never needs a cloud upload
-just to discover a line-ending mismatch.
+The package builder canonicalizes CRLF to LF before hashing only for explicitly
+textual UTF-8 source suffixes (including `.json`, `.js`, and `.md`); arbitrary
+binary members remain byte-for-byte intact. A Windows developer can therefore
+verify the same artifact SHA-256 that the Linux publisher will sign; an
+unchanged local package never needs a cloud upload just to discover a
+line-ending mismatch.
 
 See [the remote Desktop smoke-test contract](docs/desktop-remote-marketplace-smoke-contract.md)
 for the cross-platform release hand-off.
