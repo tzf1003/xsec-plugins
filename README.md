@@ -36,11 +36,21 @@ retain its identity if its URL moves; the signed release record still binds the
 URL itself. Artifact filenames include a digest prefix, so a source change
 without a version bump cannot overwrite an existing package.
 
+The detailed developer and Agent operating rules are in the Chinese
+[plugin development and release lifecycle](docs/plugin-development-release-lifecycle.md).
+In particular, a marketplace publication canonically recomputes `releaseId`;
+one plugin `plugin.json.version` (SemVer) can name exactly one immutable
+release record and its artifact set. Different packaged content, engines, or
+artifact SHA-256 values require a version bump before publication. A local
+Desktop `dev_revision` is intentionally separate: it permits same-version hot
+reload while debugging a private workspace, but never creates a marketplace
+release, artifact, channel update, or cloud upload.
+
 The protected `Publish immutable marketplace beta release` workflow runs after a normal main
 change. It preserves every existing record and artifact, appends a new record
 only when the current deterministic package is new, and moves **only** the
 `beta` pointer. This includes a newly added plugin: its first Beta release
-leaves `channels.stable.releaseId` as `null`, so it cannot reach Stable without
+leaves `channels.stable` as `null`, so it cannot reach Stable without
 an explicit promotion. It then requests sidecars from the production Cloud KMS broker
 using a short-lived GitHub OIDC token, validates every broker response, and
 publishes the generated metadata through a protected PR. The broker accepts

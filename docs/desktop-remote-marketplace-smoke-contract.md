@@ -32,15 +32,22 @@ supplies a URL, a public key, or a plugin list.
 `channel` is exactly `beta` or `stable`. A normal protected-main publication
 appends immutable release records as needed and dispatches `beta`; the separate
 manual stable-promotion workflow changes only a v2 release index's
-`channels.stable.releaseId` and dispatches `stable`. Desktop must select the
+`channels.stable` pointer and dispatches `stable`. Desktop must select the
 matching channel pointer after verifying the release-index sidecar. Its normal
 user update policy remains stable; beta installation/update requires explicit
 user opt-in. For a stable promotion or rollback, Desktop must download the
 already-published artifact whose SHA-256 is in the selected immutable record;
 it must never expect a newly rebuilt package.
 
+The dispatched Marketplace contract never represents a local Desktop
+`dev_revision`: local same-version hot reload is private and is not uploaded or
+published. For cloud records, a plugin `plugin.json.version` identifies exactly
+one immutable release/artifact set; different content requires a version bump
+and a canonically recomputed `releaseId`. The developer and Agent procedure is
+documented in the [plugin development and release lifecycle](plugin-development-release-lifecycle.md).
+
 A newly added plugin is Beta-only: its first automatic publication leaves
-`channels.stable.releaseId` as `null` and never dispatches `stable`. Desktop
+`channels.stable` as `null` and never dispatches `stable`. Desktop
 must treat that absent Stable pointer as no Stable release, rather than falling
 back to Beta; only the protected manual promotion may make it installable from
 the Stable channel.

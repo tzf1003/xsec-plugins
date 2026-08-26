@@ -26,6 +26,7 @@ from build_market import (
     RELEASE_ID_PATTERN,
     ROOT,
     is_link,
+    require_release_engines,
     release_id,
     sha256,
     write_zip,
@@ -1343,8 +1344,12 @@ def validate_artifacts(
     result: list[tuple[Path, str, dict[str, object]]] = []
     seen_targets: set[tuple[str, str]] = set()
     for artifact in artifacts:
-        if not isinstance(artifact, dict):
-            fail(f"release metadata for {plugin_id} contains a non-object artifact")
+        if (
+            not isinstance(artifact, dict)
+            or not {"os", "arch", "url", "sha256"} <= set(artifact)
+            or set(artifact) - {"os", "arch", "url", "sha256", "signature"}
+        ):
+            fail(f"release metadata for {plugin_id} contains an unsupported artifact schema")
         os_name, arch = artifact.get("os"), artifact.get("arch")
         if not isinstance(os_name, str) or not os_name or not isinstance(arch, str) or not arch:
             fail(f"release metadata for {plugin_id} artifact must have non-empty os and arch")
@@ -1354,6 +1359,8 @@ def validate_artifacts(
         digest = artifact.get("sha256")
         if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             fail(f"release metadata for {plugin_id} has a non-canonical SHA-256 digest")
+        if "signature" in artifact and (not isinstance(artifact["signature"], str) or not artifact["signature"]):
+            fail(f"release metadata for {plugin_id} has an invalid artifact signature")
         relative = safe_relative_path(artifact.get("url"), f"artifact URL for {plugin_id}")
         artifact_path = resolve_below(release_path.parent, relative, f"artifact URL for {plugin_id}")
         if sha256(artifact_path) != digest:
@@ -1399,9 +1406,10 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
             if (version, channel) in seen_release_keys:
                 fail(f"release metadata for {plugin_id} duplicates {version}/{channel}")
             seen_release_keys.add((version, channel))
-            engines = item.get("engines")
-            if not isinstance(engines, dict) or not engines:
-                fail(f"{label} has invalid engines")
+            try:
+                engines = require_release_engines(item.get("engines"), label)
+            except ValueError as error:
+                fail(str(error))
             artifacts = item.get("artifacts")
             validate_artifacts(plugin_id, release_path, version, artifacts, label)
             if not isinstance(artifacts, list):  # already guarded, helps type narrowing
@@ -1417,6 +1425,7 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
 
     if schema_version != 2 or set(release) != {"schemaVersion", "pluginId", "releases", "channels"}:
         fail(f"release metadata for {plugin_id} has an unsupported schema")
+    versions: set[str] = set()
     for index, item in enumerate(releases):
         label = f"release metadata for {plugin_id} release {index}"
         if not isinstance(item, dict) or set(item) != {"releaseId", "version", "engines", "artifacts"}:
@@ -1429,8 +1438,12 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
         )
         if not isinstance(identifier, str) or not RELEASE_ID_PATTERN.fullmatch(identifier):
             fail(f"{label} has an invalid releaseId")
-        if not isinstance(version, str) or not version or not isinstance(engines, dict) or not engines:
-            fail(f"{label} has an invalid version or engines")
+        if not isinstance(version, str) or not version:
+            fail(f"{label} has an invalid version")
+        try:
+            engines = require_release_engines(engines, label)
+        except ValueError as error:
+            fail(str(error))
         validate_artifacts(plugin_id, release_path, version, artifacts, label)
         if not isinstance(artifacts, list):
             raise AssertionError("artifacts unexpectedly absent")
@@ -1438,19 +1451,22 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
             fail(f"{label} releaseId does not match immutable release content")
         if identifier in records:
             fail(f"release metadata for {plugin_id} contains duplicate releaseIds")
+        if version in versions:
+            fail(f"release metadata for {plugin_id} contains multiple immutable releases for version {version}")
+        versions.add(version)
         records[identifier] = item
     channels = release.get("channels")
     if not isinstance(channels, dict) or set(channels) != {"beta", "stable"}:
         fail(f"release metadata for {plugin_id} must contain beta and stable channel pointers")
-    for channel in ("beta", "stable"):
-        pointer = channels.get(channel)
-        target = pointer.get("releaseId") if isinstance(pointer, dict) and set(pointer) == {"releaseId"} else None
-        if channel == "stable" and target is None:
-            # A new plugin is beta-only until an operator explicitly promotes
-            # an immutable release to Stable.
-            continue
-        if not isinstance(target, str) or target not in records:
-            fail(f"release metadata for {plugin_id} {channel} pointer must reference an immutable release")
+    beta = channels.get("beta")
+    beta_target = beta.get("releaseId") if isinstance(beta, dict) and set(beta) == {"releaseId"} else None
+    if not isinstance(beta_target, str) or beta_target not in records:
+        fail(f"release metadata for {plugin_id} beta pointer must reference an immutable release")
+    stable = channels.get("stable")
+    if stable is not None:
+        stable_target = stable.get("releaseId") if isinstance(stable, dict) and set(stable) == {"releaseId"} else None
+        if not isinstance(stable_target, str) or stable_target not in records:
+            fail(f"release metadata for {plugin_id} stable pointer must be null or reference an immutable release")
     return release, records
 
 
@@ -1481,8 +1497,10 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
         engines = manifest["extensions"]["com.xsec.desktop"]["engines"]
     except (KeyError, TypeError):
         fail(f"plugin manifest {plugin_id} lacks XSEC Desktop engine metadata")
-    if not isinstance(engines, dict):
-        fail(f"plugin manifest {plugin_id} has invalid XSEC Desktop engine metadata")
+    try:
+        require_release_engines(engines, f"plugin manifest {plugin_id}")
+    except ValueError as error:
+        fail(str(error))
     entrypoints = desktop_entrypoints(manifest, f"plugin manifest {plugin_id}")
     resolved_entrypoints: dict[str, Path] = {}
     for entrypoint_name, entrypoint_path in entrypoints:

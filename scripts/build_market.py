@@ -121,7 +121,7 @@ def require_release_artifacts(value: object, label: str) -> list[dict[str, objec
     artifacts: list[dict[str, object]] = []
     seen_targets: set[tuple[str, str]] = set()
     for artifact in value:
-        if not isinstance(artifact, dict):
+        if not isinstance(artifact, dict) or not {"os", "arch", "url", "sha256"} <= set(artifact) or set(artifact) - {"os", "arch", "url", "sha256", "signature"}:
             raise ValueError(f"{label}.artifacts must contain objects")
         os_name, arch = artifact.get("os"), artifact.get("arch")
         digest, url = artifact.get("sha256"), artifact.get("url")
@@ -134,17 +134,38 @@ def require_release_artifacts(value: object, label: str) -> list[dict[str, objec
             raise ValueError(f"{label}.artifacts must contain canonical SHA-256 values")
         if not isinstance(url, str) or not url:
             raise ValueError(f"{label}.artifacts must contain non-empty URLs")
-        artifacts.append({"os": os_name, "arch": arch, "url": url, "sha256": digest})
+        normalized: dict[str, object] = {"os": os_name, "arch": arch, "url": url, "sha256": digest}
+        if "signature" in artifact:
+            signature = artifact["signature"]
+            if not isinstance(signature, str) or not signature:
+                raise ValueError(f"{label}.artifacts signature must be a non-empty string")
+            normalized["signature"] = signature
+        artifacts.append(normalized)
     return artifacts
+
+
+def require_release_engines(value: object, label: str) -> dict[str, str]:
+    """Accept the exact engine contract understood by every Desktop client.
+
+    ``releaseId`` is recomputed by Desktop, so allowing publisher-only engine
+    keys would make a signed release index that Desktop necessarily rejects.
+    Keep the published schema deliberately small until both sides support an
+    explicit schema evolution.
+    """
+
+    if not isinstance(value, dict) or set(value) != {"xsec", "pluginApi"}:
+        raise ValueError(f"{label}.engines must contain only xsec and pluginApi")
+    xsec, plugin_api = value.get("xsec"), value.get("pluginApi")
+    if not isinstance(xsec, str) or not xsec or not isinstance(plugin_api, str) or not plugin_api:
+        raise ValueError(f"{label}.engines must contain non-empty xsec and pluginApi strings")
+    return {"xsec": xsec, "pluginApi": plugin_api}
 
 
 def require_release_record(value: object, plugin_id: str, label: str) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != {"releaseId", "version", "engines", "artifacts"}:
         raise ValueError(f"{label} must contain only releaseId, version, engines and artifacts")
     version = safe_artifact_component(value.get("version"), f"{label}.version")
-    engines = value.get("engines")
-    if not isinstance(engines, dict) or not engines:
-        raise ValueError(f"{label}.engines must be a non-empty object")
+    engines = require_release_engines(value.get("engines"), label)
     artifacts = require_release_artifacts(value.get("artifacts"), label)
     calculated = release_id(version, engines, artifacts)
     supplied = require_release_id(value.get("releaseId"), label)
@@ -168,6 +189,7 @@ def migrate_v1_release_document(value: dict[str, object], plugin_id: str) -> dic
         raise ValueError(f"release metadata for {plugin_id} must have at least one legacy release")
     releases: list[dict[str, object]] = []
     release_ids: set[str] = set()
+    release_versions: dict[str, str] = {}
     channel_targets: dict[str, str] = {}
     for index, legacy in enumerate(legacy_releases):
         label = f"legacy release metadata for {plugin_id} at index {index}"
@@ -178,10 +200,15 @@ def migrate_v1_release_document(value: dict[str, object], plugin_id: str) -> dic
         engines = legacy.get("engines")
         if not isinstance(channel, str) or channel not in {"beta", "stable"}:
             raise ValueError(f"{label}.channel must be beta or stable")
-        if not isinstance(engines, dict) or not engines:
-            raise ValueError(f"{label}.engines must be a non-empty object")
+        engines = require_release_engines(engines, label)
         artifacts = require_release_artifacts(legacy.get("artifacts"), label)
         identifier = release_id(version, engines, artifacts)
+        prior_release_id = release_versions.get(version)
+        if prior_release_id is not None and prior_release_id != identifier:
+            raise ValueError(
+                f"legacy release metadata for {plugin_id} has multiple immutable releases for version {version}"
+            )
+        release_versions[version] = identifier
         if identifier not in release_ids:
             release_ids.add(identifier)
             releases.append(
@@ -219,7 +246,7 @@ def load_release_document(release_path: Path, plugin_id: str) -> dict[str, objec
             "schemaVersion": 2,
             "pluginId": plugin_id,
             "releases": [],
-            "channels": {"beta": {"releaseId": None}, "stable": {"releaseId": None}},
+            "channels": {"beta": {"releaseId": None}, "stable": None},
         }
     try:
         value = json.loads(release_path.read_text(encoding="utf-8"))
@@ -240,20 +267,37 @@ def load_release_document(release_path: Path, plugin_id: str) -> dict[str, objec
     identifiers = [item["releaseId"] for item in releases]
     if len(identifiers) != len(set(identifiers)):
         raise ValueError(f"release metadata for {plugin_id} contains duplicate releaseIds")
+    versions = [item["version"] for item in releases]
+    if len(versions) != len(set(versions)):
+        raise ValueError(f"release metadata for {plugin_id} contains multiple immutable releases for one version")
     channels = value.get("channels")
     if not isinstance(channels, dict) or set(channels) != {"beta", "stable"}:
         raise ValueError(f"release metadata for {plugin_id}.channels must contain beta and stable pointers")
-    normalized_channels: dict[str, dict[str, str | None]] = {}
-    for channel in ("beta", "stable"):
-        pointer = channels.get(channel)
+    normalized_channels: dict[str, object] = {}
+    beta = channels.get("beta")
+    if not isinstance(beta, dict) or set(beta) != {"releaseId"}:
+        raise ValueError(f"release metadata for {plugin_id}.beta must contain only releaseId")
+    beta_target = beta.get("releaseId")
+    if beta_target is not None:
+        beta_target = require_release_id(beta_target, f"release metadata for {plugin_id}.beta")
+        if beta_target not in identifiers:
+            raise ValueError(f"release metadata for {plugin_id}.beta points at an unknown release")
+    normalized_channels["beta"] = {"releaseId": beta_target}
+
+    stable = channels.get("stable")
+    if stable is None:
+        normalized_channels["stable"] = None
+    else:
+        pointer = stable
         if not isinstance(pointer, dict) or set(pointer) != {"releaseId"}:
-            raise ValueError(f"release metadata for {plugin_id}.{channel} must contain only releaseId")
+            raise ValueError(f"release metadata for {plugin_id}.stable must be null or contain only releaseId")
         target = pointer.get("releaseId")
-        if target is not None:
-            target = require_release_id(target, f"release metadata for {plugin_id}.{channel}")
-            if target not in identifiers:
-                raise ValueError(f"release metadata for {plugin_id}.{channel} points at an unknown release")
-        normalized_channels[channel] = {"releaseId": target}
+        if target is None:
+            raise ValueError(f"release metadata for {plugin_id}.stable must use null, not a null releaseId object")
+        target = require_release_id(target, f"release metadata for {plugin_id}.stable")
+        if target not in identifiers:
+            raise ValueError(f"release metadata for {plugin_id}.stable points at an unknown release")
+        normalized_channels["stable"] = {"releaseId": target}
     return {"schemaVersion": 2, "pluginId": plugin_id, "releases": releases, "channels": normalized_channels}
 
 
@@ -393,9 +437,10 @@ def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path) -> None:
     artifact_dir = release_root / ARTIFACT_DIR_NAME
     release_path = release_root / "releases.json"
     release = load_release_document(release_path, plugin_id)
-    engines = manifest["extensions"]["com.xsec.desktop"]["engines"]
-    if not isinstance(engines, dict) or not engines:
-        raise ValueError(f"plugin manifest {plugin_id} must have non-empty XSEC Desktop engines")
+    engines = require_release_engines(
+        manifest["extensions"]["com.xsec.desktop"]["engines"],
+        f"plugin manifest {plugin_id}",
+    )
 
     # Hash the deterministic archive before deriving the filename.  The digest
     # is part of the filename so two code revisions with the same manifest
@@ -426,6 +471,10 @@ def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path) -> None:
             existing[str(item["releaseId"])] = item
         target = existing.get(candidate_release_id)
         if target is None:
+            if any(item.get("version") == version for item in existing.values()):
+                raise ValueError(
+                    f"release metadata for {plugin_id} already contains immutable content for version {version}; bump plugin.json before publishing different content"
+                )
             artifact_dir.mkdir(parents=True, exist_ok=True)
             if artifact.exists():
                 if sha256(artifact) != candidate_digest:

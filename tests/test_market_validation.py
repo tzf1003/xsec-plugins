@@ -50,7 +50,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         legacy = {
             "schemaVersion": 1,
             "pluginId": "com.example.test",
-            "releases": [{"version": "1.0.0", "channel": "stable", "engines": {"xsec": ">=1"}, "artifacts": artifacts}],
+            "releases": [{"version": "1.0.0", "channel": "stable", "engines": {"xsec": ">=1", "pluginApi": "^1"}, "artifacts": artifacts}],
         }
 
         migrated = build_market.migrate_v1_release_document(legacy, "com.example.test")
@@ -59,7 +59,44 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertEqual(migrated["channels"]["beta"], migrated["channels"]["stable"])
         self.assertEqual(migrated["channels"]["stable"]["releaseId"], migrated["releases"][0]["releaseId"])
 
-    def test_beta_build_appends_an_immutable_release_and_preserves_stable(self) -> None:
+    def test_release_id_canonicalization_is_cross_client_deterministic(self) -> None:
+        artifacts = [
+            {"os": "windows", "arch": "x86_64", "url": "windows.xsec-plugin", "sha256": "a" * 64},
+            {"os": "linux", "arch": "aarch64", "url": "linux.xsec-plugin", "sha256": "b" * 64},
+            {"os": "darwin", "arch": "x86_64", "url": "darwin.xsec-plugin", "sha256": "c" * 64},
+        ]
+        self.assertEqual(
+            build_market.release_id("1.2.3", {"xsec": ">=0.1.0", "pluginApi": "^1.2.0"}, artifacts),
+            "sha256-ec6330f7e2dd37747576d26c5597dcc25cd68797d19f113ff357805b2e1ceb54",
+        )
+        self.assertEqual(
+            build_market.release_id("1.2.3", {"pluginApi": "^1.2.0", "xsec": ">=0.1.0"}, list(reversed(artifacts))),
+            "sha256-ec6330f7e2dd37747576d26c5597dcc25cd68797d19f113ff357805b2e1ceb54",
+        )
+
+    def test_release_engine_and_beta_only_pointer_contract_is_strict(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only xsec and pluginApi"):
+            build_market.require_release_engines(
+                {"xsec": ">=0.1.0", "pluginApi": "^1.2.0", "feature": "preview"},
+                "test release",
+            )
+        with tempfile.TemporaryDirectory(prefix="xsec-market-stable-pointer-") as directory:
+            release_path = Path(directory) / "releases.json"
+            release_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "pluginId": "com.example.test",
+                        "releases": [],
+                        "channels": {"beta": {"releaseId": None}, "stable": {"releaseId": None}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "use null"):
+                build_market.load_release_document(release_path, "com.example.test")
+
+    def test_beta_build_requires_a_version_bump_for_new_immutable_content(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-v2-build-") as directory:
             root = Path(directory)
             plugin_dir = root / "source"
@@ -69,7 +106,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             manifest = {
                 "name": "com.example.test",
                 "version": "1.0.0",
-                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1"}, "entrypoints": {"frontend": "./frontend/index.js"}}},
+                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1", "pluginApi": "^1"}, "entrypoints": {"frontend": "./frontend/index.js"}}},
             }
             (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
             entrypoint.write_text("export const value = 1;\n", encoding="utf-8")
@@ -77,19 +114,25 @@ class MarketplaceValidationTests(unittest.TestCase):
             build_market.build_plugin(plugin_dir, output_dir)
             first = build_market.load_release_document(output_dir / ".xsec-market" / "releases.json", "com.example.test")
             first_id = first["channels"]["beta"]["releaseId"]
-            self.assertIsNone(first["channels"]["stable"]["releaseId"])
+            self.assertIsNone(first["channels"]["stable"])
             validated_first, validated_records = validate_market.validate_release_index("com.example.test", output_dir)
             self.assertEqual(validated_first, first)
             self.assertIn(first_id, validated_records)
 
-            # A source edit without a version bump is a new beta release, not
-            # an overwrite of the old artifact or the stable selection.
+            # A cloud release must use a new SemVer. Desktop can hot-reload a
+            # same-version local dev revision, but the installer and rollback
+            # records use a version path and cannot safely represent two
+            # Marketplace artifacts at one version.
             entrypoint.write_text("export const value = 2;\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "bump plugin.json"):
+                build_market.build_plugin(plugin_dir, output_dir)
+            manifest["version"] = "1.0.1"
+            (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
             build_market.build_plugin(plugin_dir, output_dir)
             second = build_market.load_release_document(output_dir / ".xsec-market" / "releases.json", "com.example.test")
             second_id = second["channels"]["beta"]["releaseId"]
             self.assertNotEqual(first_id, second_id)
-            self.assertIsNone(second["channels"]["stable"]["releaseId"])
+            self.assertIsNone(second["channels"]["stable"])
             self.assertEqual(len(second["releases"]), 2)
             artifacts = sorted((output_dir / ".xsec-market" / "artifacts").glob("*.xsec-plugin"))
             self.assertEqual(len(artifacts), 2)
@@ -136,17 +179,19 @@ class MarketplaceValidationTests(unittest.TestCase):
             manifest = {
                 "name": "com.example.test",
                 "version": "1.0.0",
-                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1"}, "entrypoints": {"frontend": "./frontend/index.js"}}},
+                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1", "pluginApi": "^1"}, "entrypoints": {"frontend": "./frontend/index.js"}}},
             }
             (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
             entrypoint.write_text("export const value = 1;\n", encoding="utf-8")
             build_market.build_plugin(plugin_dir, plugin_dir)
             entrypoint.write_text("export const value = 2;\n", encoding="utf-8")
+            manifest["version"] = "1.0.1"
+            (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
             build_market.build_plugin(plugin_dir, plugin_dir)
             release_path = plugin_dir / ".xsec-market" / "releases.json"
             before = build_market.load_release_document(release_path, "com.example.test")
             beta_id = before["channels"]["beta"]["releaseId"]
-            stable_id = before["channels"]["stable"]["releaseId"]
+            stable_id = before["channels"]["stable"]
             artifact_bytes = {path.name: path.read_bytes() for path in (plugin_dir / ".xsec-market" / "artifacts").glob("*.xsec-plugin")}
 
             self.assertTrue(promote_release.promote_stable(root, "com.example.test", str(beta_id)))
@@ -165,7 +210,7 @@ class MarketplaceValidationTests(unittest.TestCase):
                 "schemaVersion": 2,
                 "pluginId": "com.example.test",
                 "releases": [],
-                "channels": {"beta": {"releaseId": None}, "stable": {"releaseId": None}},
+                "channels": {"beta": {"releaseId": None}, "stable": None},
             }
             (plugin_dir / "releases.json").write_text(json.dumps(release), encoding="utf-8")
             with self.assertRaisesRegex(promote_release.PromotionError, "target is not an existing immutable release"):
@@ -237,7 +282,7 @@ class MarketplaceValidationTests(unittest.TestCase):
                 archive.writestr("plugin.json", json.dumps(manifest))
                 archive.writestr(entrypoint, source + "\n")
             with self.assertRaisesRegex(MarketplaceValidationError, "approved official approvals frontend structure"):
-                validate_archive(artifact, plugin_id, "1.2.0")
+                validate_archive(artifact, plugin_id, manifest["version"])
 
     def test_approvals_frontend_contract_rejects_placeholder_archive(self) -> None:
         plugin_id = "com.xsec.workspace.approvals"
@@ -635,7 +680,7 @@ export function renderPlaceholder() {}
                     archive.writestr("plugin.json", json.dumps(candidate))
                     archive.writestr(entrypoint, archive_source)
                 with self.assertRaises(MarketplaceValidationError) as raised:
-                    validate_archive(artifact, plugin_id, "1.2.0")
+                    validate_archive(artifact, plugin_id, manifest["version"])
                 self.assertTrue(
                     message in str(raised.exception)
                     or "approved official approvals frontend structure" in str(raised.exception),
@@ -731,7 +776,7 @@ export function renderPlaceholder() {}
                 "version": "1.0.0",
                 "extensions": {
                     "com.xsec.desktop": {
-                        "engines": {"xsec": ">=1"},
+                        "engines": {"xsec": ">=1", "pluginApi": "^1"},
                         "entrypoints": {"frontend": "./com.xsec.desktop/frontend/index.js"},
                     },
                 },
@@ -919,7 +964,7 @@ export function renderPlaceholder() {}
             base_manifest = {
                 "name": "com.xsec.test",
                 "version": "1.0.0",
-                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1"}}},
+                "extensions": {"com.xsec.desktop": {"engines": {"xsec": ">=1", "pluginApi": "^1"}}},
             }
             for field, invalid_value in (("name", "C:\\runner"), ("version", "../outside")):
                 with self.subTest(field=field, invalid_value=invalid_value):
