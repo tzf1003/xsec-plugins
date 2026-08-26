@@ -347,6 +347,30 @@ class MarketplaceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(FactoryError, "cannot change its registered source identity"):
                 validate_factory(factory, "example/factory", baseline_root=baseline)
 
+    def test_trusted_baseline_rejects_rewriting_published_evidence_events(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-baseline-evidence-test-") as directory:
+            root = Path(directory)
+            factory = root / "current"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            baseline = root / "trusted-baseline"
+            shutil.copytree(factory, baseline)
+            evidence_path = factory / ".xsec-factory" / "publications" / "com.example.sample.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["events"][0]["source"]["sha"] = "b" * 40
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+            with self.assertRaisesRegex(FactoryError, "must retain every immutable publication evidence event"):
+                validate_factory(factory, "example/factory", baseline_root=baseline)
+
+            evidence["events"][0]["source"]["sha"] = "a" * 40
+            evidence["events"][0]["publisher"] = "rewritten-publisher"
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+            with self.assertRaisesRegex(FactoryError, "must retain every immutable publication evidence event"):
+                validate_factory(factory, "example/factory", baseline_root=baseline)
+
     def test_trusted_baseline_without_a_factory_allows_its_first_published_registration(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-factory-first-publication-test-") as directory:
             root = Path(directory)

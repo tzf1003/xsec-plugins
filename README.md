@@ -80,6 +80,8 @@ The protected source gate additionally materializes the trusted pre-change
 Factory revision: after publication, deleting the registry entry together with
 its snapshot and evidence is rejected rather than being mistaken for a
 never-published authorization.
+Each retained publication-evidence event is also append-only: its source SHA,
+artifact binding, and recorded publisher cannot be rewritten in a later PR.
 A never-published authorization can instead be removed from the registry.
 Their archive member paths must also meet Desktop's portable Windows/macOS
 rules: ASCII only; no case-fold, file/directory, trailing-dot/space, NTFS

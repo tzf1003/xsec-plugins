@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import re
 import tempfile
@@ -142,6 +143,34 @@ def published_release_history(root: Path, registry, *, state_label: str) -> dict
     return histories
 
 
+def publication_evidence_history(root: Path, registration, *, state_label: str) -> frozenset[str]:
+    """Return whole publication events whose source provenance is immutable."""
+
+    path = publication_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        raise FactoryError(f"{state_label} publication evidence for {registration.plugin_id} is unavailable")
+    evidence = read_json(path, f"{state_label} publication evidence for {registration.plugin_id}")
+    if set(evidence) != {"schemaVersion", "pluginId", "events"} or evidence.get("schemaVersion") != 1:
+        raise FactoryError(f"{state_label} publication evidence for {registration.plugin_id} has an unsupported schema")
+    if evidence.get("pluginId") != registration.plugin_id:
+        raise FactoryError(f"{state_label} publication evidence for {registration.plugin_id} has an invalid identity")
+    events = evidence.get("events")
+    if not isinstance(events, list):
+        raise FactoryError(f"{state_label} publication evidence for {registration.plugin_id} has an invalid event list")
+    canonical_events = frozenset(
+        json.dumps(
+            require_object(event, f"{state_label} publication evidence event {index}"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for index, event in enumerate(events)
+    )
+    if len(canonical_events) != len(events):
+        raise FactoryError(f"{state_label} publication evidence for {registration.plugin_id} duplicates an immutable event")
+    return canonical_events
+
+
 def validate_trusted_baseline_continuity(root: Path, registry, baseline_root: Path | None) -> None:
     """Require published registry entries and release history to remain append-only.
 
@@ -214,6 +243,21 @@ def validate_trusted_baseline_continuity(root: Path, registry, baseline_root: Pa
         if missing_ids:
             raise FactoryError(
                 f"published plugin {plugin_id} must retain every immutable release recorded in the trusted baseline"
+            )
+        baseline_events = publication_evidence_history(
+            baseline,
+            baseline_registration,
+            state_label="trusted Factory baseline",
+        )
+        current_events = publication_evidence_history(
+            root,
+            registration,
+            state_label="current Factory",
+        )
+        if not baseline_events.issubset(current_events):
+            raise FactoryError(
+                f"published plugin {plugin_id} must retain every immutable publication evidence event "
+                "recorded in the trusted baseline"
             )
 
 

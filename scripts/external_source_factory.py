@@ -1251,6 +1251,43 @@ def published_release_history(
     return histories
 
 
+def publication_evidence_history(root: Path, registration: Registration, *, state_label: str) -> frozenset[str]:
+    """Return canonical immutable evidence events for one published plugin.
+
+    Publication evidence binds a release to the source commit and publisher,
+    neither of which is represented by the release ID. Preserve whole events
+    rather than just the evidence file so an attacker cannot rewrite an old
+    source SHA or publisher while retaining a syntactically valid document.
+    """
+
+    path = publication_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail(f"{state_label} publication evidence for {registration.plugin_id} is unavailable")
+    evidence = read_json(path, f"{state_label} publication evidence for {registration.plugin_id}")
+    require_exact_keys(
+        evidence,
+        {"schemaVersion", "pluginId", "events"},
+        f"{state_label} publication evidence for {registration.plugin_id}",
+    )
+    if evidence.get("schemaVersion") != 1 or evidence.get("pluginId") != registration.plugin_id:
+        fail(f"{state_label} publication evidence for {registration.plugin_id} has an invalid identity")
+    events = evidence.get("events")
+    if not isinstance(events, list):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} has an invalid event list")
+    canonical_events = frozenset(
+        json.dumps(
+            require_object(event, f"{state_label} publication evidence event {index}"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for index, event in enumerate(events)
+    )
+    if len(canonical_events) != len(events):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} duplicates an immutable event")
+    return canonical_events
+
+
 def validate_trusted_baseline_continuity(
     root: Path,
     registrations: tuple[Registration, ...],
@@ -1332,6 +1369,21 @@ def validate_trusted_baseline_continuity(
             fail(
                 f"published external official plugin {plugin_id} must retain every immutable release "
                 "recorded in the trusted baseline"
+            )
+        baseline_events = publication_evidence_history(
+            baseline,
+            baseline_registration,
+            state_label="trusted Factory baseline",
+        )
+        current_events = publication_evidence_history(
+            root,
+            registration,
+            state_label="current Factory",
+        )
+        if not baseline_events.issubset(current_events):
+            fail(
+                f"published external official plugin {plugin_id} must retain every immutable publication "
+                "evidence event recorded in the trusted baseline"
             )
 
 

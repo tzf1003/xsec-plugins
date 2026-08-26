@@ -47,7 +47,8 @@ Factory 只保存经过审批的发布快照、不可变 artifact、release hist
   的伪造历史签名也会被拒绝。受保护的 source gate 会读取可信的变更前 Factory
   revision，因此即使同一 PR 同时删除 registry、快照和证据，也不能把已发布插件
   伪装成从未发布的授权；只能保留条目并设为 `disabled`。从未发布的授权可直接从
-  allowlist 移除。
+  allowlist 移除。证据中的每个发布事件同样只能追加，既有事件的来源 SHA、artifact
+  绑定和发布者均不可改写。
 
 外部 Factory 包也不是 Desktop 内置包的替身：不得占用已编译的 Desktop package
 ID，或官方保留的 workspace contribution、Agent/MCP tool（包括 host 的 `xsec_`

@@ -83,7 +83,8 @@ must retain its complete package snapshot, release history, and publication
 evidence. The included protected validation workflow compares against a trusted
 pre-change checkout, so deleting a published registry entry together with its
 snapshot/evidence is rejected; retain it as `disabled`. Remove a never-published
-authorization instead. User Factories are
+authorization instead. Individual publication-evidence events are append-only:
+their source SHA, artifact binding, and publisher cannot be rewritten. User Factories are
 intentionally limited to `AVAILABLE` installation; registry changes cannot
 silently install a plugin on every Desktop.
 `pluginId` must match Desktop's lowercase catalog grammar: 1–64 ASCII
