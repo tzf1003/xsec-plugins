@@ -8,7 +8,7 @@
     "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
     "activationEvents": ["onWorkspaceTool:attack-path", "onAgentTool:xsec_tree_node_create"],
     "permissions": { "workspace.session.read": {}, "workspace.tool.open": {}, "workspace.project.write": {}, "agent.tools.register": {} },
-    "dependencies": { "required": { "com.xsec.workspace.sub-agent": "^1.2.1" } },
+    "dependencies": { "required": { "com.xsec.workspace.sub-agent": "^1.2.3" } },
     "frontendApi": { "version": 2, "module": "single-esm", "methods": {
       "xsec.attack-path.tree.list": { "capability": "workspace.session.read", "binding": "context" },
       "xsec.attack-path.subagents.list": { "capability": "workspace.session.read", "binding": "context" },

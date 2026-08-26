@@ -93,7 +93,7 @@ test("manifests express the attack-path to subagent plugin relationship", async 
   const attackExtension = attackPath.extensions["com.xsec.desktop"];
   const subagentExtension = subagent.extensions["com.xsec.desktop"];
 
-  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], "^1.2.1");
+  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], "^1.2.3");
   assert.equal(attackExtension.engines.pluginApi, "^1.3.0");
   assert.equal(subagentExtension.engines.pluginApi, "^1.3.0");
   assert.ok(attackExtension.permissions["workspace.tool.open"]);
