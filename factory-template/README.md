@@ -151,6 +151,15 @@ available only to the Factory workflow and only yields source-read tokens; the
 default `GITHUB_TOKEN` writes only this Factory's generated metadata and
 Release assets.
 
+For that source-reader token, the workflow accepts GitHub.com only. It pins
+the checkout to `https://github.com`, rejects a non-canonical or plain-HTTP
+`origin` plus local `insteadOf`, remote-helper, proxy, and include overrides,
+then fetches a URL derived solely from the reviewed registry slug. The fetch
+ignores system/global Git configuration, follows no redirects, permits HTTPS
+only, and records a local verified ref rather than using the checkout's remote
+alias. These controls prevent Git transport redirection; they do not execute
+or otherwise trust the checked-out plugin code.
+
 Desktop still verifies the package SHA-256 and asks the user to trust/install
 custom marketplace content. An unsigned Factory must never be presented as the
 official KMS-signed XSEC marketplace or as a default-install source.

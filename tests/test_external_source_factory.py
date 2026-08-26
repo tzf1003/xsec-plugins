@@ -300,6 +300,59 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "reserved Desktop MCP tool"):
                 factory.stage_beta(root, PLUGIN_ID, source)
 
+    def test_external_source_rejects_every_desktop_owned_route_navigation_and_settings_surface(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-reserved-surfaces-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            manifest_path = source / "package" / "plugin.json"
+            base = json.loads(manifest_path.read_text(encoding="utf-8"))
+            cases = (
+                (
+                    {"navigation": {"items": {"asset-discovery": {"route": "external"}}}},
+                    [],
+                ),
+                (
+                    {"navigation": {"items": {"external-navigation": {"route": "asset-discovery"}}}},
+                    [],
+                ),
+                (
+                    {"navigation": {"items": {"external-navigation": {"route": "new-session"}}}},
+                    [],
+                ),
+                (
+                    {"navigation": {"items": {"external-navigation": {"route": "external", "parent": "project.assets"}}}},
+                    [],
+                ),
+                (
+                    {"routes": {"external-route": {"path": "/asset-discovery", "page": "external"}}},
+                    [],
+                ),
+                (
+                    {"routes": {"external-route": {"path": "external", "page": "project-overview"}}},
+                    [],
+                ),
+                (
+                    {"settingsPages": {"asset-discovery": {"page": "external"}}},
+                    [],
+                ),
+                (
+                    {"settingsPages": {"external-settings": {"page": "settings-system"}}},
+                    [],
+                ),
+                ({}, ["onRoute:asset-discovery"]),
+                ({}, ["onSettingsPage:settings-system"]),
+            )
+            for contributes, activation_events in cases:
+                with self.subTest(contributes=contributes, activation_events=activation_events):
+                    manifest = json.loads(json.dumps(base))
+                    desktop = manifest["extensions"]["com.xsec.desktop"]
+                    desktop["contributes"] = contributes
+                    desktop["activationEvents"] = activation_events
+                    write_json(manifest_path, manifest)
+                    with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "reserved official Desktop surface"):
+                        factory.stage_beta(root, PLUGIN_ID, source)
+
     def test_external_source_cannot_turn_official_marketplace_trust_into_high_privileges(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-capability-") as directory:
             root = Path(directory)
@@ -344,6 +397,32 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 factory.reject_legacy_stable_promotion(root, "com.example.unregistered"),
                 {"plugin_id": "com.example.unregistered", "legacy_stable_allowed": "true"},
             )
+
+    def test_official_external_source_workflow_pins_git_transport_to_canonical_github_https(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertIn("github-server-url: https://github.com", workflow)
+        self.assertIn("SOURCE_REPOSITORY: ${{ steps.external-request.outputs.source_repository }}", workflow)
+        self.assertIn('source_git_url="https://github.com/${SOURCE_REPOSITORY}.git"', workflow)
+        self.assertIn("remote.origin.url", workflow)
+        self.assertIn("canonical GitHub HTTPS origin", workflow)
+        self.assertIn("GIT_CONFIG_NOSYSTEM=1", workflow)
+        self.assertIn("GIT_CONFIG_GLOBAL=/dev/null", workflow)
+        self.assertIn("GIT_ALLOW_PROTOCOL=https", workflow)
+        self.assertIn("GIT_TERMINAL_PROMPT=0", workflow)
+        self.assertIn("http.sslVerify=true", workflow)
+        self.assertIn("http.followRedirects=false", workflow)
+        self.assertIn("credential.helper=", workflow)
+        self.assertIn("protocol.allow=never", workflow)
+        self.assertIn("protocol.https.allow=always", workflow)
+        self.assertIn("refs/remotes/xsec-factory-source/verified", workflow)
+        self.assertIn("--no-includes", workflow)
+        self.assertIn("insteadof", workflow)
+        self.assertIn("uploadpack|receivepack|vcs|proxy", workflow)
+        self.assertIn("^http\\..*\\.extraheader$", workflow)
+        self.assertNotIn("http://github.com", workflow)
+        self.assertNotIn("fetch --no-tags origin", workflow)
+        self.assertNotIn("ls-remote origin", workflow)
+        self.assertLess(workflow.index("unset SOURCE_TOKEN"), workflow.index('fetch --no-tags "$source_git_url"'))
 
     def test_tampered_provenance_is_rejected_before_signing(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-provenance-") as directory:

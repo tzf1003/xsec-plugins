@@ -101,6 +101,71 @@ RESERVED_OFFICIAL_WORKSPACE_CONTRIBUTIONS = frozenset(
         "traffic-replay",
     }
 )
+# External Factory packages inherit the official marketplace delivery trust but
+# are not Desktop-owned code. Keep them out of *all* identifiers that the
+# Desktop shell has already bound to built-in navigation, routes, pages or
+# settings surfaces. This is intentionally a static mirror of the current
+# Desktop-owned manifests plus its legacy shell contributions, rather than a
+# set derived from the checked-out `plugins/` tree: an unreviewed registry or
+# source change must not be able to shrink the ownership boundary first.
+RESERVED_DESKTOP_ROUTE_AND_PAGE_SURFACES = frozenset(
+    {
+        # Current official plugin route/navigation/settings identities.
+        "asset-discovery",
+        "project.overview",
+        "project.files",
+        "project.assets",
+        "project.batch",
+        "project.passive-findings",
+        "project.findings",
+        "project.reports",
+        "project-workspace",
+        "project-overview",
+        "project-files",
+        "overview",
+        "assets",
+        "files",
+        "batch",
+        "runs",
+        "passive-findings",
+        "findings",
+        "reports",
+        "project/:projectId/overview",
+        "project/:projectId/files",
+        "project/:projectId/assets",
+        "project/:projectId/batch",
+        "project/:projectId/passive-findings",
+        "project/:projectId/findings",
+        "project/:projectId/reports",
+        # Desktop's legacy main-page routes.
+        "main.overview",
+        "main.quick-start",
+        "main.task-center",
+        "main.projects",
+        "main.plugins",
+        "quick-start",
+        "new-session",
+        "task-center",
+        "projects",
+        "plugins",
+        # Desktop's legacy and current built-in settings pages.
+        "account",
+        "cloud",
+        "execution-history",
+        "approval-history",
+        "token-usage",
+        "archived-sessions",
+        "appearance",
+        "settings-system",
+        "settings-proxy",
+        "settings-verification",
+        "settings-prompts",
+        "product-issues",
+    }
+)
+RESERVED_DESKTOP_SURFACES = (
+    RESERVED_OFFICIAL_WORKSPACE_CONTRIBUTIONS | RESERVED_DESKTOP_ROUTE_AND_PAGE_SURFACES
+)
 RESERVED_OFFICIAL_AGENT_TOOLS = frozenset(
     {
         "plugin.attack-path.tree_list",
@@ -503,6 +568,43 @@ def reserved_external_agent_tool(name: str) -> bool:
     )
 
 
+def reserved_external_desktop_surface(name: str) -> bool:
+    """Return whether an ID/path claims a Desktop-owned UI surface.
+
+    Route paths may be written with a leading/trailing slash while Desktop's
+    built-in contributions omit it. Treat that spelling as the same surface;
+    other contribution identifiers remain exact, stable Desktop identities.
+    """
+
+    return name in RESERVED_DESKTOP_SURFACES or name.strip("/") in RESERVED_DESKTOP_SURFACES
+
+
+def reject_reserved_external_surface(value: object, plugin_id: str, label: str) -> str:
+    name = require_text(value, label, maximum=512)
+    if reserved_external_desktop_surface(name):
+        fail(f"external plugin {plugin_id} cannot claim reserved official Desktop surface {name}")
+    return name
+
+
+def require_external_contribution_map(
+    value: object,
+    plugin_id: str,
+    label: str,
+    *,
+    reject_surface_identifiers: bool = True,
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        fail(f"external plugin manifest {label} must be an object")
+    for identifier, definition in value.items():
+        if reject_surface_identifiers:
+            reject_reserved_external_surface(identifier, plugin_id, f"external plugin manifest {label} ID")
+        elif not isinstance(identifier, str):
+            fail(f"external plugin manifest {label} IDs must be strings")
+        if not isinstance(definition, dict):
+            fail(f"external plugin manifest {label} entries must be objects")
+    return value
+
+
 def reject_reserved_external_contributions(desktop: object, plugin_id: str) -> None:
     """Keep optional external Factory packages out of Desktop-owned routes.
 
@@ -520,24 +622,72 @@ def reject_reserved_external_contributions(desktop: object, plugin_id: str) -> N
             fail("external plugin manifest contributions must be an object")
         workspace_tools = contributes.get("workspaceTools")
         if workspace_tools is not None:
-            if not isinstance(workspace_tools, dict):
-                fail("external plugin manifest workspaceTools must be an object")
+            workspace_tools = require_external_contribution_map(
+                workspace_tools,
+                plugin_id,
+                "workspaceTools",
+                reject_surface_identifiers=False,
+            )
             for name in workspace_tools:
-                if not isinstance(name, str):
-                    fail("external plugin manifest workspace tool IDs must be strings")
                 if name in RESERVED_OFFICIAL_WORKSPACE_CONTRIBUTIONS:
                     fail(
                         f"external plugin {plugin_id} cannot claim reserved official workspace contribution {name}"
                     )
         agent_tools = contributes.get("agentTools")
         if agent_tools is not None:
-            if not isinstance(agent_tools, dict):
-                fail("external plugin manifest agentTools must be an object")
-            for name in agent_tools:
-                if not isinstance(name, str):
-                    fail("external plugin manifest agent tool IDs must be strings")
+            agent_tools = require_external_contribution_map(
+                agent_tools,
+                plugin_id,
+                "agentTools",
+                reject_surface_identifiers=False,
+            )
+            for name, definition in agent_tools.items():
                 if reserved_external_agent_tool(name):
                     fail(f"external plugin {plugin_id} cannot claim reserved Desktop MCP tool {name}")
+                workspace_tool_id = definition.get("workspaceToolId")
+                if workspace_tool_id is not None:
+                    reject_reserved_external_surface(
+                        workspace_tool_id,
+                        plugin_id,
+                        "external plugin manifest agentTools.workspaceToolId",
+                    )
+
+        navigation = contributes.get("navigation")
+        if navigation is not None:
+            if not isinstance(navigation, dict) or set(navigation) != {"items"}:
+                fail("external plugin manifest navigation must contain only items")
+            navigation_items = require_external_contribution_map(navigation.get("items"), plugin_id, "navigation.items")
+            for definition in navigation_items.values():
+                for field in ("route", "parent"):
+                    if field in definition:
+                        reject_reserved_external_surface(
+                            definition[field],
+                            plugin_id,
+                            f"external plugin manifest navigation.items.{field}",
+                        )
+
+        routes = contributes.get("routes")
+        if routes is not None:
+            routes = require_external_contribution_map(routes, plugin_id, "routes")
+            for definition in routes.values():
+                for field in ("path", "page"):
+                    if field in definition:
+                        reject_reserved_external_surface(
+                            definition[field],
+                            plugin_id,
+                            f"external plugin manifest routes.{field}",
+                        )
+
+        settings_pages = contributes.get("settingsPages")
+        if settings_pages is not None:
+            settings_pages = require_external_contribution_map(settings_pages, plugin_id, "settingsPages")
+            for definition in settings_pages.values():
+                if "page" in definition:
+                    reject_reserved_external_surface(
+                        definition["page"],
+                        plugin_id,
+                        "external plugin manifest settingsPages.page",
+                    )
 
     activation_events = desktop.get("activationEvents")
     if activation_events is not None:
@@ -546,12 +696,24 @@ def reject_reserved_external_contributions(desktop: object, plugin_id: str) -> N
         for event in activation_events:
             if event.startswith("onWorkspaceTool:"):
                 name = event.removeprefix("onWorkspaceTool:")
-                if name in RESERVED_OFFICIAL_WORKSPACE_CONTRIBUTIONS:
+                if reserved_external_desktop_surface(name):
                     fail(f"external plugin {plugin_id} cannot activate reserved workspace contribution {name}")
             if event.startswith("onAgentTool:"):
                 name = event.removeprefix("onAgentTool:")
                 if reserved_external_agent_tool(name):
                     fail(f"external plugin {plugin_id} cannot activate reserved Desktop MCP tool {name}")
+            if event.startswith("onRoute:"):
+                reject_reserved_external_surface(
+                    event.removeprefix("onRoute:"),
+                    plugin_id,
+                    "external plugin manifest onRoute activation",
+                )
+            if event.startswith("onSettingsPage:"):
+                reject_reserved_external_surface(
+                    event.removeprefix("onSettingsPage:"),
+                    plugin_id,
+                    "external plugin manifest onSettingsPage activation",
+                )
 
 
 def reject_unapproved_external_permissions(desktop: object, plugin_id: str) -> None:

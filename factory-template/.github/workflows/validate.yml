@@ -18,6 +18,6 @@ jobs:
         with:
           python-version: "3.13"
       - name: Validate registry and generated Desktop snapshots
-        run: python scripts/factory_validate.py --root .
+        run: python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
       - name: Run Factory unit tests
         run: python -m unittest discover -s tests -p "test_*.py" -v

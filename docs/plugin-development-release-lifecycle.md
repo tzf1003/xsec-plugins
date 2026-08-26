@@ -80,6 +80,13 @@ SHA 仍可从注册的 `beta` 分支到达，清除 checkout 凭据，并且只�
 打包：不会执行插件代码、Git hook、`npm`/`pnpm` 脚本或外部 build script。Factory
 随后将快照放入 `plugins/<id>/`，由原有不可变发布器构建并记录 Beta 来源证据。
 
+外部源码可达性校验的 Git transport 也有独立信任边界：checkout 固定为
+`https://github.com`，先拒绝非规范/明文 HTTP `origin`、`insteadOf` URL 重写、remote
+helper、proxy 与 include 覆盖；再只由 allowlist 的 `owner/repository` 组装 HTTPS
+fetch URL，忽略 system/global Git config、禁止重定向和非 HTTPS 协议，并写入本地
+verified ref。工作流绝不会用外部 checkout 的 `origin` URL 或 remote alias 访问网络；
+这只防止临时只读 token 被 Git transport 重定向，绝不表示外部插件代码可被执行或信任。
+
 Stable 请求同样只接受可从外部 `main` 到达的精确 SHA。它重新确定性打包并要求得到
 的 `releaseId` 与指定的已有 Beta `releaseId` 完全一致；通过后只移动
 `channels.stable.releaseId`，并追加对应 main 证据。它不重传、不替换 artifact。若

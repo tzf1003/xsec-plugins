@@ -102,6 +102,17 @@ selected Beta `releaseId`, and changes only `channels.stable.releaseId` plus
 auditable main-source evidence. A different byte at the same SemVer fails; a
 byte-identical Stable retry makes no KMS request, PR, or Desktop dispatch.
 
+The external reachability fetch has its own transport boundary. The checkout
+is pinned to `https://github.com`; the workflow rejects a non-canonical or
+plain-HTTP `origin` and local Git URL rewrites (`insteadOf`), remote helper
+settings, proxy settings, and config includes. It then derives the only fetch
+URL from the allowlisted `owner/repository`, disables system/global Git config
+and redirects, permits HTTPS only, and writes a local verified ref. It never
+uses an external checkout's `origin` URL or remote alias to contact the
+source repository. This protects the short-lived reader token from Git
+transport redirection; it does not make external source code trusted or
+executable.
+
 Configure the read-only source App only in the protected production
 environment as `XSEC_MARKETPLACE_SOURCE_APP_ID` and
 `XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY`. It needs source repository metadata

@@ -305,6 +305,8 @@ class MarketplaceFactoryTests(unittest.TestCase):
     def test_release_workflows_require_reviewer_gated_production_and_clear_source_reader_credentials(self) -> None:
         workflows = TEMPLATE / ".github" / "workflows"
         readme = (TEMPLATE / "README.md").read_text(encoding="utf-8")
+        validate_workflow = (workflows / "validate.yml").read_text(encoding="utf-8")
+        self.assertIn('factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"', validate_workflow)
         self.assertIn("`production` with **required reviewers limited to release maintainers**", readme)
         self.assertIn("prevent self-review", readme)
         self.assertIn("Do not treat protected-branch status as dispatcher\n   authorization", readme)
@@ -324,9 +326,30 @@ class MarketplaceFactoryTests(unittest.TestCase):
                 self.assertIn("submodules: false", source)
                 self.assertIn("lfs: false", source)
                 self.assertIn('SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}', source)
+                self.assertIn("github-server-url: https://github.com", source)
+                self.assertIn('SOURCE_REPOSITORY: ${{ steps.prepare.outputs.source_repository }}', source)
+                self.assertIn('source_git_url="https://github.com/${SOURCE_REPOSITORY}.git"', source)
+                self.assertIn("canonical GitHub HTTPS origin", source)
+                self.assertIn("GIT_CONFIG_NOSYSTEM=1", source)
+                self.assertIn("GIT_CONFIG_GLOBAL=/dev/null", source)
+                self.assertIn("GIT_ALLOW_PROTOCOL=https", source)
+                self.assertIn("GIT_TERMINAL_PROMPT=0", source)
+                self.assertIn("http.sslVerify=true", source)
+                self.assertIn("http.followRedirects=false", source)
+                self.assertIn("credential.helper=", source)
+                self.assertIn("protocol.allow=never", source)
+                self.assertIn("protocol.https.allow=always", source)
+                self.assertIn("refs/remotes/xsec-factory-source/verified", source)
+                self.assertIn("--no-includes", source)
+                self.assertIn("insteadof", source)
+                self.assertIn("uploadpack|receivepack|vcs|proxy", source)
+                self.assertIn("^http\\..*\\.extraheader$", source)
                 self.assertIn('-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header"', source)
-                self.assertIn("unset token_header SOURCE_TOKEN", source)
-                self.assertIn("config --local --get-all http.https://github.com/.extraheader", source)
+                self.assertIn("unset token_header", source)
+                self.assertLess(source.index("unset SOURCE_TOKEN"), source.index('fetch --no-tags "$source_git_url"'))
+                self.assertNotIn("http://github.com", source)
+                self.assertNotIn("fetch --no-tags origin", source)
+                self.assertNotIn("ls-remote origin", source)
                 self.assertIn(f"--channel {channel}", source)
                 if name == "promote-stable.yml":
                     self.assertIn("Verify selected immutable GitHub Release asset before moving Stable", source)
@@ -336,6 +359,8 @@ class MarketplaceFactoryTests(unittest.TestCase):
                         source.index("Verify selected immutable GitHub Release asset before moving Stable"),
                         source.index("Commit the stable channel pointer and immutable promotion evidence"),
                     )
+        self.assertIn("GitHub.com only", readme)
+        self.assertIn("Git transport redirection", readme)
 
 
 if __name__ == "__main__":

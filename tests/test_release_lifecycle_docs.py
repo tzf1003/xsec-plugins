@@ -43,6 +43,15 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("Publication queue and Agent evidence", readme)
         self.assertIn("event SHA", readme)
 
+    def test_external_source_transport_boundary_is_documented(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("Git transport", document)
+        self.assertIn("verified ref", document)
+        self.assertIn("https://github.com", readme)
+        self.assertIn("insteadOf", readme)
+        self.assertIn("local verified ref", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

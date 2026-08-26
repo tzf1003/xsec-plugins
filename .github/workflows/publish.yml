@@ -186,6 +186,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.external-request.outputs.source_repository }}
+          # The official Factory intentionally supports GitHub.com only. Do
+          # not inherit a self-hosted or caller-provided GitHub server URL.
+          github-server-url: https://github.com
           ref: ${{ steps.external-request.outputs.source_sha }}
           token: ${{ steps.source-token.outputs.token }}
           path: .xsec-factory-source
@@ -198,18 +201,63 @@ jobs:
         env:
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
           SOURCE_REF: ${{ steps.external-request.outputs.source_ref }}
+          SOURCE_REPOSITORY: ${{ steps.external-request.outputs.source_repository }}
           SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
           set -euo pipefail
           token_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
-          git -C .xsec-factory-source \
-            -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
-            fetch --no-tags origin "$SOURCE_REF:refs/remotes/origin/xsec-factory-source"
-          unset token_header SOURCE_TOKEN
+          # Keep the raw source-reader token out of every Git child process,
+          # including the local-config inspection below.
+          unset SOURCE_TOKEN
+          # `SOURCE_REPOSITORY` is emitted by the trusted allowlist parser,
+          # not copied from the dispatch input.  Do not fetch through the
+          # checkout's `origin`: Git URL rewrites and remote helpers can make
+          # a local remote name point somewhere other than the approved repo.
+          source_git_url="https://github.com/${SOURCE_REPOSITORY}.git"
+          if ! origin_url="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            git -C .xsec-factory-source config --local --no-includes --get-all remote.origin.url)"; then
+            echo "The isolated external checkout has no readable origin URL." >&2
+            exit 1
+          fi
+          case "$origin_url" in
+            "https://github.com/${SOURCE_REPOSITORY}"|"$source_git_url") ;;
+            *)
+              echo "The isolated external checkout did not retain the canonical GitHub HTTPS origin." >&2
+              exit 1
+              ;;
+          esac
+          source_config_keys="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            git -C .xsec-factory-source config --local --no-includes --name-only --list)"
+          unsafe_source_config="$(printf '%s\n' "$source_config_keys" | LC_ALL=C grep -E -i '^(url\..*\.(insteadof|pushinsteadof)|remote\..*\.(uploadpack|receivepack|vcs|proxy)|core\.gitproxy|http\..*|credential(\..*)?\.helper|protocol\..*|include(\..*)?\.path|includeif\..*\.path)$' || true)"
+          if [ -n "$unsafe_source_config" ]; then
+            echo "The isolated external checkout contains a forbidden Git transport override: $unsafe_source_config" >&2
+            exit 1
+          fi
+          # Do not place the token in a child environment.  The direct fetch
+          # uses only a fixed HTTPS URL, ignores system/global Git config,
+          # refuses redirects and all protocols except HTTPS, and writes to a
+          # local verified ref rather than a source-controlled remote name.
+          env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+            -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
+            -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 \
+            git -C .xsec-factory-source \
+              -c credential.helper= \
+              -c core.hooksPath=/dev/null \
+              -c http.sslVerify=true \
+              -c http.followRedirects=false \
+              -c protocol.allow=never \
+              -c protocol.https.allow=always \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
+              fetch --no-tags "$source_git_url" "$SOURCE_REF:refs/remotes/xsec-factory-source/verified"
+          unset token_header
           [ "$(git -C .xsec-factory-source rev-parse HEAD)" = "$SOURCE_SHA" ]
           git -C .xsec-factory-source cat-file -e "$SOURCE_SHA^{commit}"
-          git -C .xsec-factory-source merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/xsec-factory-source
-          if git -C .xsec-factory-source config --local --get-all http.https://github.com/.extraheader >/dev/null; then
+          git -C .xsec-factory-source merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/xsec-factory-source/verified
+          if git -C .xsec-factory-source config --local --no-includes --get-regexp '^http\..*\.extraheader$' >/dev/null; then
             echo "The isolated external checkout retained an HTTP credential." >&2
             exit 1
           fi
