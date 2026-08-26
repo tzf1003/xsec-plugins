@@ -1,10 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "pluginId": "com.xsec.workspace.files",
   "releases": [
     {
+      "releaseId": "sha256-554b8a763752b72ae2fd52a0defc2b21d2a7e7bf5f55a322d421435b6429e78a",
       "version": "1.2.0",
-      "channel": "stable",
       "engines": {
         "xsec": ">=0.1.0",
         "pluginApi": "^1.2.0"
@@ -17,6 +17,30 @@
           "sha256": "27dd01bf5cc8e626a5aa6966f35d9962f77b34b8f0a955d23d03040f6b3025b2"
         }
       ]
+    },
+    {
+      "releaseId": "sha256-b057362c712e4cb5307a4c24f36ef6e1a51ccaf7ddd5ede148852925998c97a0",
+      "version": "1.2.1",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.2.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.workspace.files-1.2.1-sha256-e9758111ede473fb-any-any.xsec-plugin",
+          "sha256": "e9758111ede473fb649ac607d73d516e9d5da538dc47bb5fe223ff8dc7a98330"
+        }
+      ]
     }
-  ]
+  ],
+  "channels": {
+    "beta": {
+      "releaseId": "sha256-b057362c712e4cb5307a4c24f36ef6e1a51ccaf7ddd5ede148852925998c97a0"
+    },
+    "stable": {
+      "releaseId": "sha256-554b8a763752b72ae2fd52a0defc2b21d2a7e7bf5f55a322d421435b6429e78a"
+    }
+  }
 }
