@@ -4,7 +4,7 @@
   "description": "XSEC attack-path workspace and Agent tools", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "攻击路径", "publisher": "XSEC", "icon": "git-branch",
-    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.2.0" },
+    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.3.0" },
     "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
     "activationEvents": ["onWorkspaceTool:attack-path", "onAgentTool:xsec_tree_node_create"],
     "permissions": { "workspace.session.read": {}, "workspace.tool.open": {}, "workspace.project.write": {}, "agent.tools.register": {} },

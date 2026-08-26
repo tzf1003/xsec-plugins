@@ -60,6 +60,17 @@ test("attack-path graph connects a node to its subagent plugin entity", async ()
   assert.match(source, /toolId:\s*"subagent-detail"/);
 });
 
+test("attack-path graph prefers a node's explicit subagent over retry fallbacks", async () => {
+  const { module } = await loadFrontend("com.xsec.attack-path");
+  const node = treeNode("node-1", "root", { subagent_id: "attempt-2" });
+  const model = module.graphModel([treeNode("root", null), node], [
+    { id: "attempt-1", node_id: "node-1", status: "failed" },
+    { id: "attempt-2", node_id: "node-1", status: "running" },
+  ]);
+
+  assert.equal(model.subagentsByNode.get("node-1").id, "attempt-2");
+});
+
 test("subagent frontend owns observer ordering and duration formatting", async () => {
   const { module, source } = await loadFrontend("com.xsec.workspace.sub-agent");
   const sorted = module.sortObservers([
@@ -70,6 +81,8 @@ test("subagent frontend owns observer ordering and duration formatting", async (
 
   assert.deepEqual(sorted.map((row) => row.id), ["running", "failed", "done"]);
   assert.equal(module.formatDuration(1_000, 1_125), "2 分 5 秒");
+  assert.equal(module.isTerminalStatus("dispatched"), false);
+  assert.equal(module.isTerminalStatus("done"), true);
   assert.match(source, /xsec\.subagents\.get/);
   assert.doesNotMatch(source, /compatibility bridge|兼容渲染器/);
 });
@@ -81,6 +94,8 @@ test("manifests express the attack-path to subagent plugin relationship", async 
   const subagentExtension = subagent.extensions["com.xsec.desktop"];
 
   assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], "^1.2.1");
+  assert.equal(attackExtension.engines.pluginApi, "^1.3.0");
+  assert.equal(subagentExtension.engines.pluginApi, "^1.3.0");
   assert.ok(attackExtension.permissions["workspace.tool.open"]);
   assert.equal(attackExtension.frontendApi.methods["xsec.workspace.tool.open"].capability, "workspace.tool.open");
   assert.equal(attackExtension.frontendApi.methods["xsec.workspace.tool.open"].binding, "context");

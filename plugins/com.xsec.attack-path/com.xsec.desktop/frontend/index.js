@@ -70,13 +70,13 @@ export function graphModel(nodes, subagents) {
   }));
   const positions = new Map(positioned.map((position) => [position.node.id, position]));
   const subagentsByNode = new Map();
-  for (const subagent of subagents) {
-    if (subagent.node_id) subagentsByNode.set(subagent.node_id, subagent);
-  }
   for (const node of nodes) {
-    if (!node.subagent_id || subagentsByNode.has(node.id)) continue;
+    if (!node.subagent_id) continue;
     const subagent = subagents.find((candidate) => candidate.id === node.subagent_id);
     if (subagent) subagentsByNode.set(node.id, subagent);
+  }
+  for (const subagent of subagents) {
+    if (subagent.node_id && !subagentsByNode.has(subagent.node_id)) subagentsByNode.set(subagent.node_id, subagent);
   }
   const counts = { task: 0, action: 0, finding: 0 };
   for (const node of nodes) {

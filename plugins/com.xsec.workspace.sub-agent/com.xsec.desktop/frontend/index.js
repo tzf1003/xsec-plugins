@@ -19,6 +19,10 @@ export function statusMeta(status) {
   return STATUS[status] ?? [status || "未知", "default", 4];
 }
 
+export function isTerminalStatus(status) {
+  return ["vuln", "failed", "done", "completed", "cancelled"].includes(status);
+}
+
 export function sortObservers(rows) {
   return [...rows].sort((left, right) => {
     const rank = statusMeta(left.status)[2] - statusMeta(right.status)[2];
@@ -117,9 +121,9 @@ function createController(host) {
       body.append(empty("暂无子 Agent", "主 Agent 派发子任务后会出现在这里。"));
       return;
     }
-    const active = rows.filter((row) => statusMeta(row.status)[2] === 0).length;
+    const inFlight = rows.filter((row) => !isTerminalStatus(row.status)).length;
     const summary = element("div", "sa-summary");
-    for (const [value, label] of [[rows.length, "全部"], [active, "运行中"], [rows.length - active, "已结束"]]) {
+    for (const [value, label] of [[rows.length, "全部"], [inFlight, "进行中"], [rows.length - inFlight, "已结束"]]) {
       const item = element("div");
       item.append(element("strong", "", String(value)), element("span", "", label));
       summary.append(item);
@@ -131,7 +135,12 @@ function createController(host) {
       button.type = "button";
       button.setAttribute("aria-label", `查看子 Agent ${row.node_title || row.role || row.id}`);
       const copy = element("span", "sa-row-copy");
-      copy.append(element("strong", "", row.node_title || row.role || row.id.slice(0, 10)), element("small", "", `${row.role || "sub"}${row.attempt > 1 ? ` · attempt ${row.attempt}` : ""}`), element("small", "", statusMeta(row.status)[2] === 0 ? `已运行 ${formatDuration(row.started_at, null)}` : `结束于 ${formatTime(row.completed_at)}`));
+      const timing = isTerminalStatus(row.status)
+        ? `结束于 ${formatTime(row.completed_at)}`
+        : row.status === "dispatched"
+          ? "等待调度"
+          : `已运行 ${formatDuration(row.started_at, null)}`;
+      copy.append(element("strong", "", row.node_title || row.role || row.id.slice(0, 10)), element("small", "", `${row.role || "sub"}${row.attempt > 1 ? ` · attempt ${row.attempt}` : ""}`), element("small", "", timing));
       const meta = statusMeta(row.status);
       button.append(copy, element("span", `sa-tag ${meta[1]}`, meta[0]));
       button.addEventListener("click", () => void open("subagent-detail", row.node_title || row.role || "子 Agent 详情", row.id));
