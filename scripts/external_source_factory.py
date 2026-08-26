@@ -1128,6 +1128,95 @@ def validate_disabled_release_sidecar(root: Path, registration: Registration) ->
         ) from error
 
 
+def beta_snapshot_artifact_digest(registration: Registration, beta: dict[str, object]) -> str:
+    """Return the one portable artifact digest that binds a retained snapshot.
+
+    The external bridge deliberately publishes exactly one portable package per
+    release.  Keeping that rule here makes the retained-source comparison
+    unambiguous and prevents a withdrawal from relaxing the active Factory
+    publication contract.
+    """
+
+    artifacts = beta.get("artifacts")
+    if (
+        not isinstance(artifacts, list)
+        or len(artifacts) != 1
+        or not isinstance(artifacts[0], dict)
+        or artifacts[0].get("os") != "any"
+        or artifacts[0].get("arch") != "any"
+    ):
+        fail(f"external official plugin {registration.plugin_id} has an invalid Beta artifact")
+    digest = artifacts[0].get("sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        fail(f"external official plugin {registration.plugin_id} has an invalid Beta artifact digest")
+    return digest
+
+
+def validate_disabled_snapshot_artifacts(
+    root: Path,
+    registration: Registration,
+    snapshot: Path,
+    document: dict[str, object],
+    beta: dict[str, object],
+) -> None:
+    """Keep a withdrawn snapshot and every archived release byte-addressable.
+
+    A disabled package is intentionally absent from the generated marketplace,
+    so the ordinary marketplace source gate no longer walks it.  Validate the
+    retained source against its selected Beta record here, then independently
+    validate each immutable artifact path and digest retained in its complete
+    release history.  This prevents withdrawal from becoming an unpublication
+    or a way to erase an append-only release record before a later re-enable.
+    """
+
+    require_link_free_tree(snapshot, f"disabled external official plugin {registration.plugin_id} snapshot")
+    expected_beta_digest = beta_snapshot_artifact_digest(registration, beta)
+    with tempfile.TemporaryDirectory(prefix="xsec-disabled-external-snapshot-") as directory:
+        candidate = Path(directory) / "candidate.xsec-plugin"
+        try:
+            write_zip(snapshot, candidate)
+        except ValueError as error:
+            raise ExternalSourceFactoryError(str(error)) from error
+        if sha256(candidate) != expected_beta_digest:
+            fail(
+                f"disabled external official plugin {registration.plugin_id} snapshot does not reproduce "
+                "its immutable Beta artifact"
+            )
+
+    releases = document.get("releases")
+    if not isinstance(releases, list) or not releases:
+        fail(f"disabled external official plugin {registration.plugin_id} has no immutable release history")
+    release_root = release_path(root, registration.plugin_id).parent
+    for record_index, record in enumerate(releases):
+        if not isinstance(record, dict):
+            fail(f"disabled external official plugin {registration.plugin_id} has an invalid immutable release")
+        artifacts = record.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            fail(f"disabled external official plugin {registration.plugin_id} has an invalid immutable artifact list")
+        for artifact_index, artifact in enumerate(artifacts):
+            if not isinstance(artifact, dict):
+                fail(f"disabled external official plugin {registration.plugin_id} has an invalid immutable artifact")
+            label = (
+                f"disabled external official plugin {registration.plugin_id} release {record_index} "
+                f"artifact {artifact_index}"
+            )
+            relative = safe_source_path(artifact.get("url"), f"{label} path")
+            candidate = release_root.joinpath(*relative.parts)
+            current = release_root
+            for part in relative.parts:
+                current = current / part
+                if is_link(current):
+                    fail(f"{label} must not traverse symbolic links")
+            if not candidate.is_file():
+                fail(f"{label} is unavailable")
+            artifact_path = require_below(release_root, candidate, label)
+            expected_digest = artifact.get("sha256")
+            if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+                fail(f"{label} has an invalid SHA-256 digest")
+            if sha256(artifact_path) != expected_digest:
+                fail(f"{label} SHA-256 does not match its immutable release record")
+
+
 def validate_registry_and_snapshots(root: Path) -> None:
     """Validate external records in addition to the existing generic market gate."""
 
@@ -1230,6 +1319,7 @@ def validate_registry_and_snapshots(root: Path) -> None:
             fail(f"external official plugin {registration.plugin_id} snapshot engines do not match its Beta release")
         validate_evidence(root, registration, document)
         if registration.status == "disabled":
+            validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
             validate_disabled_release_sidecar(root, registration)
 
 

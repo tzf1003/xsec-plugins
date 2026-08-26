@@ -432,6 +432,16 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             source = self.make_source(root / "source")
             self.make_factory(root, self.registry_entry())
             self.stage_and_record_beta(root, source)
+
+            # Retain more than the selected Beta release to prove withdrawal
+            # checks every archived artifact, not just the current package.
+            source_plugin = source / "package"
+            manifest_path = source_plugin / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.1.0"
+            write_json(manifest_path, manifest)
+            (source_plugin / "frontend.js").write_text("export function activate() { return 'v2'; }\n", encoding="utf-8")
+            self.stage_and_record_beta(root, source, source_sha="c" * 40)
             sidecar = write_historical_release_sidecar(root, PLUGIN_ID)
 
             # Withdrawing an already published plugin removes only discovery;
@@ -444,6 +454,34 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             factory.validate_registry_and_snapshots(root)
             build_market.clean_generated_output(root)
             self.assertTrue(sidecar.is_file())
+            factory.validate_registry_and_snapshots(root)
+
+            snapshot = root / "plugins" / PLUGIN_ID
+            artifacts = sorted((snapshot / ".xsec-market" / "artifacts").glob("*.xsec-plugin"))
+            self.assertEqual(len(artifacts), 2)
+
+            # A withdrawn package is no longer in marketplace.json, so the
+            # external bridge itself must reject missing historical artifacts.
+            historical = artifacts[0]
+            historical_bytes = historical.read_bytes()
+            historical.unlink()
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "artifact 0 is unavailable"):
+                factory.validate_registry_and_snapshots(root)
+            historical.write_bytes(historical_bytes)
+
+            current = artifacts[-1]
+            current_bytes = current.read_bytes()
+            current.write_bytes(current_bytes + b"tampered")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "SHA-256 does not match"):
+                factory.validate_registry_and_snapshots(root)
+            current.write_bytes(current_bytes)
+
+            frontend = snapshot / "frontend.js"
+            frontend_bytes = frontend.read_bytes()
+            frontend.write_bytes(frontend_bytes + b"// retained snapshot drift\n")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not reproduce its immutable Beta artifact"):
+                factory.validate_registry_and_snapshots(root)
+            frontend.write_bytes(frontend_bytes)
             factory.validate_registry_and_snapshots(root)
 
             sidecar.write_text("{}", encoding="utf-8")
