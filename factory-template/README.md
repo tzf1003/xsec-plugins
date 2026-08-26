@@ -12,10 +12,12 @@ source, and Desktop treats it as a confirmation-driven custom marketplace.
 - `.xsec-factory/registry.json` is the auditable allowlist of source GitHub
   repositories. Adding a registry entry authorizes a repository; it does not
   publish any source code or make a plugin visible in Desktop.
-- `plugins/<plugin-id>/plugin.json` and
-  `plugins/<plugin-id>/.xsec-market/releases.json` are generated snapshots.
-  Their local paths intentionally match the Desktop marketplace discovery
-  contract. Do not hand-edit them.
+- `plugins/<plugin-id>/` is the generated, complete package-input snapshot;
+  `plugin.json` plus every archived source file are retained alongside
+  `plugins/<plugin-id>/.xsec-market/releases.json`. The Factory rebuilds this
+  snapshot and compares it to the selected immutable artifact digest during
+  validation. Its local path intentionally matches the Desktop marketplace
+  discovery contract. Do not hand-edit it.
 - GitHub Release assets hold immutable `.xsec-plugin` archives. Release records
   bind their SHA-256 and URL; a `releaseId` binds the version, engine range,
   target and SHA-256.
@@ -75,10 +77,12 @@ source, and Desktop treats it as a confirmation-driven custom marketplace.
 ```
 
 `path` may name a plugin directory inside a monorepo. The Factory accepts only
-the exact `beta` and `main` mappings above. `disabled` retains audit history but
-blocks new publication and hides the plugin from the generated marketplace
-index. User Factories are intentionally limited to `AVAILABLE` installation;
-registry changes cannot silently install a plugin on every Desktop.
+the exact `beta` and `main` mappings above. `disabled` blocks new publication
+and hides an already published plugin from the generated marketplace index, but
+must retain its complete package snapshot, release history, and publication
+evidence. Remove a never-published authorization instead. User Factories are
+intentionally limited to `AVAILABLE` installation; registry changes cannot
+silently install a plugin on every Desktop.
 `pluginId` must match Desktop's lowercase catalog grammar: 1–64 ASCII
 lowercase letters/digits/dots/hyphens, no leading/trailing separator, and no
 `..` or `--`. This keeps the generated artifact ID portable and avoids
@@ -130,9 +134,10 @@ this template does not expose an automatic rollback command.
 
 Every generated release must retain Beta source evidence (registered
 repository, path, branch, exact SHA, publisher, artifact URL and SHA-256).
-Promoting Stable adds corresponding `main` evidence. Factory validation rejects
-release metadata that lacks this provenance or whose evidence no longer binds
-the immutable artifact record.
+Promoting Stable adds corresponding `main` evidence. Factory validation rebuilds
+the complete generated snapshot and rejects any snapshot whose package bytes no
+longer match its immutable Beta artifact, as well as metadata that lacks the
+required provenance.
 
 ## Verification and trust boundary
 

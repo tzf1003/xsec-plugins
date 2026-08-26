@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import tempfile
 import zipfile
 
@@ -492,6 +493,84 @@ def write_zip(plugin_dir: Path, destination: Path) -> None:
             info.create_system = 3
             info.external_attr = 0o100644 << 16
             archive.writestr(info, archive_bytes(path))
+
+
+def require_link_free_snapshot_tree(root: Path, label: str) -> None:
+    """Reject links anywhere in a generated snapshot, including its history."""
+
+    if is_link(root):
+        fail(f"{label} must not be a symbolic link")
+    for current, directories, names in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for name in [*directories, *names]:
+            path = current_path / name
+            if is_link(path):
+                fail(f"{label} must not contain symbolic links: {path.relative_to(root).as_posix()}")
+
+
+def sync_plugin_snapshot(root: Path, plugin_id: str, source_dir: Path) -> Path:
+    """Atomically replace package inputs while retaining Factory release history.
+
+    A discoverable ``plugins/<id>`` snapshot must contain the exact package
+    inputs, not only ``plugin.json``: validation rebuilds it and compares the
+    result to the selected immutable artifact digest.  The generated
+    ``.xsec-market`` directory is copied from the prior snapshot rather than
+    from external source so a source checkout cannot replace release history.
+    """
+
+    destination = plugin_snapshot_dir(root, plugin_id)
+    plugin_root = root / PLUGIN_ROOT_RELATIVE_PATH
+    require_write_path_below(root, destination, "plugin snapshot")
+    if is_link(plugin_root):
+        fail("plugins snapshot root must not be a symbolic link")
+    plugin_root.mkdir(parents=True, exist_ok=True)
+    try:
+        plugin_root.resolve(strict=True).relative_to(root.resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise FactoryError("plugins snapshot root escaped the Factory root") from error
+    if is_link(destination):
+        fail("existing plugin snapshot must not be a symbolic link")
+    if destination.exists() and not destination.is_dir():
+        fail("existing plugin snapshot must be a directory")
+    if destination.exists():
+        require_link_free_snapshot_tree(destination, "existing plugin snapshot")
+
+    with tempfile.TemporaryDirectory(prefix=f".{destination.name}.stage-", dir=plugin_root) as staging_parent:
+        staging = Path(staging_parent) / destination.name
+        # Copy the exact archive member set rather than the whole checkout.
+        # This excludes checkout metadata, generated Factory state, dependencies
+        # and non-regular files that `write_zip` intentionally does not package.
+        staging.mkdir()
+        for source_file in iter_plugin_files(source_dir):
+            target = staging / source_file.relative_to(source_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, target)
+        if destination.exists():
+            history = destination / ".xsec-market"
+            if history.exists():
+                if is_link(history) or not history.is_dir():
+                    fail("existing plugin release history must be a regular directory")
+                require_link_free_snapshot_tree(history, "existing plugin release history")
+                shutil.copytree(history, staging / ".xsec-market", copy_function=shutil.copy2)
+        require_link_free_snapshot_tree(staging, "staged plugin snapshot")
+
+        backup = plugin_root / f".{destination.name}.backup-{os.getpid()}"
+        if backup.exists() or is_link(backup):
+            fail("unexpected plugin snapshot backup path already exists")
+        moved_old = False
+        try:
+            if destination.exists():
+                os.replace(destination, backup)
+                moved_old = True
+            os.replace(staging, destination)
+        except OSError as error:
+            if moved_old and not destination.exists() and backup.exists():
+                os.replace(backup, destination)
+            raise FactoryError(f"replace plugin snapshot: {error}") from error
+        finally:
+            if backup.exists():
+                shutil.rmtree(backup)
+    return destination
 
 
 def release_id(version: str, engines: dict[str, str], artifacts: list[dict[str, object]]) -> str:

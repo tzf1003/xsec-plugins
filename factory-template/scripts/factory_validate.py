@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import re
+import tempfile
 
 from factory_core import (
     FactoryError,
@@ -22,8 +23,10 @@ from factory_core import (
     require_object,
     safe_git_sha,
     safe_repository,
+    sha256,
     source_engines,
     stable_json,
+    write_zip,
 )
 
 
@@ -103,6 +106,15 @@ def validate_publication_evidence(root: Path, registration, records: dict[str, d
         raise FactoryError(f"publication evidence for {plugin_id} is missing Stable promotion evidence")
 
 
+def snapshot_artifact_digest(snapshot: Path) -> str:
+    """Return the deterministic package bytes represented by a local snapshot."""
+
+    with tempfile.TemporaryDirectory(prefix="xsec-factory-validate-snapshot-") as directory:
+        candidate = Path(directory) / "candidate.xsec-plugin"
+        write_zip(snapshot, candidate)
+        return sha256(candidate)
+
+
 def validate_factory(root: Path, factory_repository: str | None = None) -> None:
     registry = load_registry(root)
     if factory_repository is not None:
@@ -120,7 +132,17 @@ def validate_factory(root: Path, factory_repository: str | None = None) -> None:
         snapshot = plugin_snapshot_dir(root, registration.plugin_id)
         manifest_path = snapshot / "plugin.json"
         release_path = snapshot / ".xsec-market" / "releases.json"
-        if not manifest_path.exists() and not release_path.exists():
+        evidence_path = publication_path(root, registration.plugin_id)
+        if registration.status == "disabled":
+            # Withdrawal removes discovery only. A published disabled package
+            # must retain the package snapshot, release history and provenance
+            # so re-enabling cannot publish new bytes under an old SemVer.
+            if not manifest_path.is_file() or not release_path.is_file() or not evidence_path.is_file():
+                raise FactoryError(
+                    f"disabled plugin {registration.plugin_id} must retain its immutable snapshot, "
+                    "release history, and publication evidence"
+                )
+        elif not manifest_path.exists() and not release_path.exists():
             continue
         if not manifest_path.is_file() or not release_path.is_file():
             raise FactoryError(f"published plugin snapshot for {registration.plugin_id} is incomplete")
@@ -142,6 +164,22 @@ def validate_factory(root: Path, factory_repository: str | None = None) -> None:
         if source_engines(manifest) != current.get("engines"):
             raise FactoryError(
                 f"plugin snapshot manifest for {registration.plugin_id} does not describe its beta release engines"
+            )
+        artifacts = current.get("artifacts")
+        expected_snapshot_digest = (
+            artifacts[0].get("sha256")
+            if isinstance(artifacts, list)
+            and len(artifacts) == 1
+            and isinstance(artifacts[0], dict)
+            and artifacts[0].get("os") == "any"
+            and artifacts[0].get("arch") == "any"
+            else None
+        )
+        if not isinstance(expected_snapshot_digest, str):
+            raise FactoryError(f"published plugin snapshot for {registration.plugin_id} has an invalid beta artifact")
+        if snapshot_artifact_digest(snapshot) != expected_snapshot_digest:
+            raise FactoryError(
+                f"plugin snapshot for {registration.plugin_id} does not reproduce its immutable beta release artifact"
             )
         if factory_repository is not None:
             for record in records.values():

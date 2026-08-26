@@ -12,8 +12,9 @@ Desktop 的官方信任锚。
 - `stable` 渠道：来源提交可从 `refs/heads/main` 到达，且重新确定性打包后必须
   等于已经验证的 Beta `releaseId`。
 
-模板会在 `plugins/<id>/` 写入 `plugin.json` 快照和
-`.xsec-market/releases.json`。`.agents/plugins/marketplace.json` 继续以
+模板会在 `plugins/<id>/` 写入完整 package-input 快照（`plugin.json` 和所有
+会进入 archive 的源文件）以及 `.xsec-market/releases.json`。校验器会重新打包
+该快照并比对已选 Beta artifact 的 SHA-256。`.agents/plugins/marketplace.json` 继续以
 `source.path: "./plugins/<id>"` 引用这些快照，因此现有 Desktop 的本地市场
 发现逻辑不必把外部 Git 仓库 URL 当作安装来源。实际 `.xsec-plugin` 是 Factory
 GitHub Release 的不可变 asset，release index 绑定其 SHA-256 和 URL。
@@ -32,7 +33,9 @@ Factory 的 `main` 必须由 GitHub branch protection/ruleset 保护；模板工
 若团队允许其生成 metadata，则只给 GitHub Actions bot 一个最小化的 bypass，或将
 最终 metadata 提交改为受审 PR；不能以去掉分支保护或 Environment 审批作为发布故障
 的修复方式。每个 Beta release 都带有不可变来源证据，Stable 还记录对应 `main`
-证据，Factory validator 会验证这些证据仍对应 release record。
+证据，Factory validator 会验证这些证据仍对应 release record。已发布条目改为
+`disabled` 时，仅从市场索引移除，必须保留完整快照、release history 和证据；从未
+发布的 allowlist 条目可直接移除。
 
 Factory 生成的 metadata、artifact、release index 与 Beta 发布证据可追溯；同一
 `plugin.json.version` 不得对应不同 package bytes。Stable 推广只移动现有

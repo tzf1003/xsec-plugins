@@ -21,11 +21,11 @@ from factory_core import (
     REGISTRY_RELATIVE_PATH,
     RELEASE_ID_PATTERN,
     append_publication,
-    archive_bytes,
     atomic_write,
     candidate_release,
     load_registry,
     load_release_document,
+    plugin_snapshot_dir,
     publication_path,
     read_source_plugin,
     registration_for,
@@ -36,6 +36,7 @@ from factory_core import (
     safe_repository,
     sha256,
     stable_json,
+    sync_plugin_snapshot,
     write_marketplace_index,
     write_zip,
 )
@@ -109,6 +110,15 @@ def copy_or_verify_artifact(source: Path, destination: Path, digest: str) -> Non
         temporary.unlink(missing_ok=True)
 
 
+def packaged_digest(plugin_dir: Path) -> str:
+    """Rebuild a snapshot to prove it still represents its immutable archive."""
+
+    with tempfile.TemporaryDirectory(prefix="xsec-factory-snapshot-verify-") as directory:
+        candidate = Path(directory) / "candidate.xsec-plugin"
+        write_zip(plugin_dir, candidate)
+        return sha256(candidate)
+
+
 def record_for_release(document: dict[str, object], release_id: str) -> dict[str, object] | None:
     releases = document.get("releases")
     if not isinstance(releases, list):
@@ -165,16 +175,17 @@ def beta_publish(
     channels = require_object(document.get("channels"), "release metadata channels")
     channels["beta"] = {"releaseId": selected["releaseId"]}
 
-    snapshot_path = root / "plugins" / registration.plugin_id / "plugin.json"
-    require_write_path_below(root, snapshot_path, "plugin snapshot")
-    normalized_manifest = archive_bytes(plugin_dir / "plugin.json")
-    if snapshot_path.exists() and str(selected["releaseId"]) == str(release["releaseId"]):
-        # A retry never silently changes the discoverable snapshot. The
-        # candidate ZIP has already proved its normalized manifest bytes.
-        existing_snapshot = snapshot_path.read_bytes()
-        if existing is not None and existing_snapshot != normalized_manifest:
-            raise FactoryError("published plugin snapshot differs from the immutable source manifest")
-    atomic_write(snapshot_path, normalized_manifest)
+    snapshot = plugin_snapshot_dir(root, registration.plugin_id)
+    if existing is not None:
+        # A retry never silently changes the discoverable snapshot. Rebuild the
+        # complete package, not merely plugin.json: every snapshot member must
+        # remain bound to the immutable artifact selected by this releaseId.
+        if not snapshot.is_dir() or packaged_digest(snapshot) != digest:
+            raise FactoryError("published plugin snapshot does not reproduce the immutable source package")
+    else:
+        snapshot = sync_plugin_snapshot(root, registration.plugin_id, plugin_dir)
+        if packaged_digest(snapshot) != digest:
+            raise FactoryError("staged plugin snapshot does not reproduce the immutable source package")
     atomic_write(release_path, stable_json(document))
     append_publication(root, registration, selected, source_sha, "beta", publisher)
     write_marketplace_index(root, registry)

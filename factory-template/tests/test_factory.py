@@ -14,10 +14,12 @@ sys.path.insert(0, str(TEMPLATE / "scripts"))
 from factory_core import (  # noqa: E402
     FactoryError,
     load_release_document,
+    load_registry,
     portable_target_filesystem_path,
     require_portable_package_paths,
     safe_plugin_id,
     safe_repository,
+    write_marketplace_index,
 )
 from factory_publish import beta_publish, registry_prepare, stable_promote  # noqa: E402
 from factory_validate import validate_factory  # noqa: E402
@@ -92,6 +94,7 @@ class MarketplaceFactoryTests(unittest.TestCase):
             )
             snapshot = factory / "plugins" / "com.example.sample"
             self.assertTrue((snapshot / "plugin.json").is_file())
+            self.assertTrue((snapshot / "frontend" / "index.js").is_file())
             self.assertTrue((snapshot / ".xsec-market" / "releases.json").is_file())
             index = json.loads((factory / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
             self.assertEqual(index["plugins"][0]["source"], {"source": "local", "path": "./plugins/com.example.sample"})
@@ -158,6 +161,25 @@ class MarketplaceFactoryTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
             with self.assertRaisesRegex(FactoryError, "does not describe its beta release engines"):
+                validate_factory(factory, "example/factory")
+
+    def test_factory_validation_rejects_full_snapshot_manifest_drift(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-manifest-drift-test-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            manifest_path = factory / "plugins" / "com.example.sample" / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # This leaves the name, SemVer, and engines untouched, but changes
+            # discovery/runtime metadata that is also inside the archive.
+            manifest["extensions"]["com.xsec.desktop"]["permissions"] = {"network.request": {}}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(FactoryError, "does not reproduce its immutable beta release artifact"):
                 validate_factory(factory, "example/factory")
 
     def test_factory_rejects_entrypoints_excluded_from_the_published_archive(self) -> None:
@@ -261,6 +283,26 @@ class MarketplaceFactoryTests(unittest.TestCase):
             self.configure_registry(factory, status="disabled")
             with self.assertRaisesRegex(FactoryError, "disabled"):
                 beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+    def test_disabled_published_plugin_must_retain_snapshot_history_and_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-disabled-history-test-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            # Withdrawal hides discovery only; generated package state and
+            # provenance stay append-only so re-enable cannot reuse SemVer.
+            self.configure_registry(factory, status="disabled")
+            write_marketplace_index(factory, load_registry(factory))
+            validate_factory(factory, "example/factory")
+
+            shutil.rmtree(factory / "plugins" / "com.example.sample")
+            (factory / ".xsec-factory" / "publications" / "com.example.sample.json").unlink()
+            with self.assertRaisesRegex(FactoryError, "disabled plugin com.example.sample must retain"):
+                validate_factory(factory, "example/factory")
 
     def test_registry_repository_slug_rejects_path_like_components(self) -> None:
         for repository in ("../plugin", "team/..", ".team/plugin", "team/plugin..backup"):
