@@ -45,6 +45,161 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.build_marketplace(output)
             validate_source(ROOT, output)
 
+    def test_official_plugin_settings_pages_and_plugin_bound_rpcs_are_declared(self) -> None:
+        """The six reviewed settings surfaces remain field-renderable packages."""
+
+        contracts = validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT
+        self.assertEqual(set(contracts), {
+            "com.xsec.asset-discovery",
+            "com.xsec.project-workspace",
+            "com.xsec.system-terminal",
+            "com.xsec.workspace.approvals",
+            "com.xsec.workspace.browser",
+            "com.xsec.workspace.traffic",
+        })
+        for plugin_id, contract in contracts.items():
+            with self.subTest(plugin_id=plugin_id):
+                plugin_dir = ROOT / "plugins" / plugin_id
+                manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+                source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+                validate_market.validate_official_settings_contract(manifest, plugin_id)
+                self.assertIn("host.context?.kind", source)
+                self.assertIn("settings-page", source)
+                self.assertIn(
+                    f"onSettingsPage:{contract['page']}",
+                    manifest["extensions"]["com.xsec.desktop"]["activationEvents"],
+                )
+                for method, (capability, binding) in contract["methods"].items():
+                    self.assertIn(method, source)
+                    descriptor = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"][method]
+                    self.assertEqual(descriptor, {"capability": capability, "binding": binding})
+
+    def test_official_plugin_settings_rejects_session_bound_read(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        manifest = json.loads((ROOT / "plugins" / plugin_id / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]["xsec.terminal.settings.get"]["binding"] = "session"
+        with self.assertRaisesRegex(MarketplaceValidationError, "canonical plugin settings permission"):
+            validate_market.validate_official_settings_contract(manifest, plugin_id)
+
+    def test_official_plugin_settings_rejects_missing_settings_activation(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        manifest = json.loads((ROOT / "plugins" / plugin_id / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["activationEvents"] = ["onWorkspaceTool:system-terminal"]
+        with self.assertRaisesRegex(MarketplaceValidationError, "activate for its canonical plugin settings page"):
+            validate_market.validate_official_settings_contract(manifest, plugin_id)
+
+    def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
+        source = (
+            ROOT / "plugins" / "com.xsec.system-terminal" / "com.xsec.desktop" / "frontend" / "index.js"
+        ).read_text(encoding="utf-8")
+        settings_source, main_source = source.split("export function activate(host)", 1)
+
+        # Profile selection is a persistent default, so it may only appear in
+        # the isolated settings-page renderer. The terminal surface must never
+        # reintroduce the old selector/restart/clear toolbar.
+        self.assertIn("function terminalSettings(host)", settings_source)
+        self.assertIn('profile=e("select")', settings_source)
+        self.assertIn("xsec.terminal.settings.set", settings_source)
+        self.assertIn('catch(error){status(`读取终端设置失败：${error instanceof Error?error.message:String(error)}`,true);throw error}', settings_source)
+        self.assertIn('host.context?.kind==="settings-page"', main_source)
+        self.assertIn('retry=e("button","settings-link","重试启动终端")', main_source)
+        self.assertIn('retry.onclick=()=>void open()', main_source)
+        for forbidden in (
+            'e("select")',
+            '"重新启动"',
+            '"清屏"',
+            "xsec.terminal.profiles",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, main_source)
+
+    def test_settings_read_failures_do_not_discard_workspace_data_or_clear_the_notice(self) -> None:
+        """Auxiliary plugin settings reads must not hide the useful failure state."""
+
+        asset_source = (
+            ROOT / "plugins" / "com.xsec.asset-discovery" / "com.xsec.desktop" / "frontend" / "index.js"
+        ).read_text(encoding="utf-8")
+        # Runs and assets are the main workspace data.  The settings read is
+        # intentionally converted to a value-or-error result before the
+        # Promise.all so a failed settings RPC cannot enter the branch that
+        # clears those two rendered lists.
+        self.assertIn(
+            'Promise.resolve().then(()=>host.request("xsec.asset-discovery.settings.get",{})).then(value=>({value}),error=>({error}))',
+            asset_source,
+        )
+        self.assertIn('const [runsData,assetsData,settings]=await Promise.all', asset_source)
+        self.assertIn('if("error" in settings)', asset_source)
+        self.assertIn('renderRuns(runsData);renderAssets(assetsData);if("error" in settings)', asset_source)
+        # The recovery affordance must describe the credential required by the
+        # selected default provider, rather than treating a different
+        # provider's configured credential as sufficient.
+        self.assertIn(
+            'const provider=settings.value?.provider==="fofa"?"fofa":"hunter";const missing=provider==="fofa"?!settings.value?.fofaApiKeyConfigured:!settings.value?.hunterApiKeyConfigured;',
+            asset_source,
+        )
+        # Credentials stay out of the generic plugin KV store. The settings
+        # page offers only write/clear actions; its settings read still
+        # receives the configured booleans rather than secret values.
+        self.assertIn('xsec.asset-discovery.credentials.set', asset_source)
+        self.assertIn('xsec.asset-discovery.credentials.clear', asset_source)
+        self.assertIn('type="password"', asset_source)
+        self.assertIn('async function load(preserveDraft=false)', asset_source)
+        self.assertIn("await load(true);note(", asset_source)
+        asset_manifest = json.loads(
+            (ROOT / "plugins" / "com.xsec.asset-discovery" / "plugin.json").read_text(encoding="utf-8")
+        )
+        asset_methods = asset_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
+        self.assertEqual(asset_methods["xsec.asset-discovery.credentials.set"]["binding"], "plugin")
+        self.assertEqual(asset_methods["xsec.asset-discovery.credentials.clear"]["binding"], "plugin")
+        self.assertEqual(
+            validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT["com.xsec.asset-discovery"]["methods"],
+            {
+                "xsec.asset-discovery.settings.get": ("pluginData.read", "plugin"),
+                "xsec.asset-discovery.settings.set": ("pluginData.write", "plugin"),
+                "xsec.asset-discovery.credentials.set": ("pluginData.write", "plugin"),
+                "xsec.asset-discovery.credentials.clear": ("pluginData.write", "plugin"),
+                "xsec.plugin.settings.open": ("pluginData.read", "plugin"),
+            },
+        )
+
+        approval_source = (
+            ROOT / "plugins" / "com.xsec.workspace.approvals" / "com.xsec.desktop" / "frontend" / "index.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("let settingsReady = false;", approval_source)
+        self.assertIn("settingsReady = false;", approval_source)
+        self.assertIn("if (!settingsReady)", approval_source)
+        self.assertIn('saveButton.disabled = true;', approval_source)
+
+        traffic_source = (
+            ROOT / "plugins" / "com.xsec.workspace.traffic" / "com.xsec.desktop" / "frontend" / "index.js"
+        ).read_text(encoding="utf-8")
+        # The helpers deliberately propagate to load().  Its single outer
+        # catch writes the error after the rejected Promise.all, so it cannot
+        # be overwritten by the success-only note("") below it.
+        self.assertIn(
+            'async function loadRules(){renderRules(await host.request("xsec.traffic.passive-rules.list",{}))}',
+            traffic_source,
+        )
+        self.assertIn(
+            'async function loadCa(){const view=await host.request("xsec.traffic.ca.status",{});',
+            traffic_source,
+        )
+        self.assertIn('settingsReady=true;controls.save.disabled=false;await Promise.all', traffic_source)
+        self.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`', traffic_source)
+        self.assertIn('enabled.onchange=()=>void toggle(rule.rule_id,enabled.checked,enabled);', traffic_source)
+        self.assertIn('control.checked=!enabled;note(`更新被动规则失败：', traffic_source)
+        self.assertIn('CA 已导入，但刷新 CA 状态失败', traffic_source)
+        self.assertIn('规则已保存，但刷新规则列表失败', traffic_source)
+        self.assertIn('规则已删除，但刷新规则列表失败', traffic_source)
+
+        for plugin_id in validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT:
+            frontend = ROOT / "plugins" / plugin_id / "com.xsec.desktop" / "frontend" / "index.js"
+            settings_source = frontend.read_text(encoding="utf-8")
+            self.assertRegex(settings_source, r"settingsReady\s*=\s*false", plugin_id)
+            self.assertRegex(settings_source, r"if\s*\(!settingsReady\)", plugin_id)
+            self.assertRegex(settings_source, r"\bretry(?:Button)?\.onclick", plugin_id)
+            self.assertRegex(settings_source, r"\.disabled\s*=\s*true", plugin_id)
+
     def test_v1_migration_initially_points_beta_and_stable_to_the_same_release(self) -> None:
         artifacts = [{"os": "any", "arch": "any", "url": "artifacts/test.xsec-plugin", "sha256": "a" * 64}]
         legacy = {

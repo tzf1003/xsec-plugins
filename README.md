@@ -38,6 +38,8 @@ without a version bump cannot overwrite an existing package.
 
 The detailed developer and Agent operating rules are in the Chinese
 [plugin development and release lifecycle](docs/plugin-development-release-lifecycle.md).
+The authoritative UI, sandbox RPC, security, and lifecycle rules for plugin
+configuration are in the Chinese [plugin settings specification](docs/plugin-settings.md).
 In particular, a marketplace publication canonically recomputes `releaseId`;
 one plugin `plugin.json.version` (SemVer) can name exactly one immutable
 release record and its artifact set. Different packaged content, engines, or

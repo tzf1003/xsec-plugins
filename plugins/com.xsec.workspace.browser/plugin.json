@@ -1,18 +1,22 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "com.xsec.workspace.browser", "version": "1.2.1", "description": "XSEC browser workspace tool", "author": { "name": "XSEC" }, "license": "MIT",
+  "name": "com.xsec.workspace.browser", "version": "1.2.2", "description": "XSEC browser workspace tool", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "浏览器会话", "publisher": "XSEC", "icon": "globe",
     "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.2.0" }, "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
-    "activationEvents": ["onWorkspaceTool:browser"], "permissions": { "workspace.project.read": {}, "workspace.session.read": {}, "browser.control": {} },
+    "activationEvents": ["onWorkspaceTool:browser", "onSettingsPage:browser"], "permissions": { "workspace.project.read": {}, "workspace.session.read": {}, "browser.control": {}, "pluginData.read": {}, "pluginData.write": {} },
     "frontendApi": { "version": 2, "module": "single-esm", "methods": {
       "xsec.browser.sessions.list": { "capability": "browser.control", "binding": "session" },
       "xsec.browser.pages.list": { "capability": "browser.control", "binding": "session" },
       "xsec.browser.page.create": { "capability": "browser.control", "binding": "session" },
       "xsec.browser.page.close": { "capability": "browser.control", "binding": "session" },
       "xsec.browser.page.navigate": { "capability": "browser.control", "binding": "session" },
-      "xsec.browser.page.action": { "capability": "browser.control", "binding": "session" }
+      "xsec.browser.page.action": { "capability": "browser.control", "binding": "session" },
+      "xsec.browser.settings.get": { "capability": "pluginData.read", "binding": "plugin" },
+      "xsec.browser.settings.set": { "capability": "pluginData.write", "binding": "plugin" }
     } },
-    "contributes": { "workspaceTools": { "browser": { "title": "浏览器会话", "icon": "globe", "scope": "session", "launchable": true, "policy": "singleton", "surface": "edge-to-edge", "retain": "always", "preferredSideWidth": 880, "preferredBottomHeight": 480, "surfaces": ["interactive-dock", "batch-observe"] } } }
+    "contributes": { "workspaceTools": { "browser": { "title": "浏览器会话", "icon": "globe", "scope": "session", "launchable": true, "policy": "singleton", "surface": "edge-to-edge", "retain": "always", "preferredSideWidth": 880, "preferredBottomHeight": 480, "surfaces": ["interactive-dock", "batch-observe"] } }, "settingsPages": {
+      "browser": { "title": "浏览器会话", "group": "plugins", "page": "browser", "icon": "globe", "order": 140 }
+    } }
   } }
 }

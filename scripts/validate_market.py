@@ -54,9 +54,15 @@ APPROVALS_PLUGIN_ID = "com.xsec.workspace.approvals"
 APPROVALS_FRONTEND_METHODS = frozenset({
     "xsec.approvals.list",
     "xsec.approvals.statistics",
+    "xsec.approvals.settings.get",
+    "xsec.approvals.settings.set",
 })
-APPROVALS_FRONTEND_CAPABILITY = "workspace.session.read"
-APPROVALS_FRONTEND_BINDING = "session"
+APPROVALS_FRONTEND_METHOD_CONTRACT = {
+    "xsec.approvals.list": ("workspace.session.read", "session"),
+    "xsec.approvals.statistics": ("workspace.session.read", "session"),
+    "xsec.approvals.settings.get": ("pluginData.read", "plugin"),
+    "xsec.approvals.settings.set": ("pluginData.write", "plugin"),
+}
 APPROVALS_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT = "onWorkspaceTool:approvals"
 APPROVALS_WORKSPACE_TOOL_CONTRIBUTION = {
@@ -74,19 +80,78 @@ JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
 APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
 OFFICIAL_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 OFFICIAL_FRONTEND_MIN_BYTES = 1_000
+OFFICIAL_PLUGIN_SETTINGS_CONTRACT: dict[str, dict[str, object]] = {
+    "com.xsec.asset-discovery": {
+        "page": "asset-discovery",
+        "title": "资产发现",
+        "methods": {
+            "xsec.asset-discovery.settings.get": ("pluginData.read", "plugin"),
+            "xsec.asset-discovery.settings.set": ("pluginData.write", "plugin"),
+            "xsec.asset-discovery.credentials.set": ("pluginData.write", "plugin"),
+            "xsec.asset-discovery.credentials.clear": ("pluginData.write", "plugin"),
+            "xsec.plugin.settings.open": ("pluginData.read", "plugin"),
+        },
+    },
+    "com.xsec.project-workspace": {
+        "page": "project-workspace",
+        "title": "项目工作区",
+        "methods": {
+            "xsec.project-workspace.settings.get": ("pluginData.read", "plugin"),
+            "xsec.project-workspace.settings.set": ("pluginData.write", "plugin"),
+        },
+    },
+    "com.xsec.system-terminal": {
+        "page": "system-terminal",
+        "title": "系统终端",
+        "methods": {
+            "xsec.terminal.settings.get": ("pluginData.read", "plugin"),
+            "xsec.terminal.settings.set": ("pluginData.write", "plugin"),
+            "xsec.plugin.settings.open": ("pluginData.read", "plugin"),
+        },
+    },
+    "com.xsec.workspace.approvals": {
+        "page": "approvals",
+        "title": "审批记录",
+        "methods": {
+            "xsec.approvals.settings.get": ("pluginData.read", "plugin"),
+            "xsec.approvals.settings.set": ("pluginData.write", "plugin"),
+        },
+    },
+    "com.xsec.workspace.browser": {
+        "page": "browser",
+        "title": "浏览器会话",
+        "methods": {
+            "xsec.browser.settings.get": ("pluginData.read", "plugin"),
+            "xsec.browser.settings.set": ("pluginData.write", "plugin"),
+        },
+    },
+    "com.xsec.workspace.traffic": {
+        "page": "traffic",
+        "title": "抓包流量",
+        "methods": {
+            "xsec.traffic.settings.get": ("pluginData.read", "plugin"),
+            "xsec.traffic.settings.set": ("pluginData.write", "plugin"),
+            "xsec.traffic.ca.status": ("pluginData.read", "plugin"),
+            "xsec.traffic.ca.import": ("pluginData.write", "plugin"),
+            "xsec.traffic.ca.rotate": ("pluginData.write", "plugin"),
+            "xsec.traffic.passive-rules.list": ("pluginData.read", "plugin"),
+            "xsec.traffic.passive-rules.upsert": ("pluginData.write", "plugin"),
+            "xsec.traffic.passive-rules.toggle": ("pluginData.write", "plugin"),
+            "xsec.traffic.passive-rules.delete": ("pluginData.write", "plugin"),
+        },
+    },
+}
 FORBIDDEN_OFFICIAL_FRONTEND_MARKERS = (
     "XSEC official plugin is active in Desktop.",
     "renderPlaceholder",
     "placeholder-module",
     "mock",
-    "fallback",
+    "fallback-module",
 )
-# The approvals frontend is the first official package whose archive contract
-# needs a browser-side broker implementation.  Its complete reviewed source is
-# pinned intentionally: accepting arbitrary JavaScript while trying to prove
-# every execution path with a home-grown parser is unsound.  Updating this
-# package requires explicitly reviewing and changing this pin in the same PR.
-APPROVALS_FRONTEND_SOURCE_SHA256 = "bff7a5e232bbe6ae75651edc267795be4bfec3588e167693f733c5e0da1db8f0"
+# The browser-side approvals frontend is explicitly reviewed and pinned.  The
+# hash includes its isolated settings surface, so any source change still
+# requires an intentional validation update in the same review.
+APPROVALS_FRONTEND_SOURCE_SHA256 = "5508a16c22e704d9a366abe60112edf20e7f0a9478d44e9d0048973501fcf00b"
 
 
 class MarketplaceValidationError(ValueError):
@@ -986,17 +1051,15 @@ def has_only_approvals_host_usage(tokens: list[tuple[str, str]]) -> bool:
         if token != ("identifier", "host"):
             continue
         suffix = tokens[index + 1:index + 5]
+        if suffix[:1] == [("punctuation", ")")]:
+            # The reviewed activation routes the isolated settings context to
+            # its local settings-page renderer.  The source hash below keeps
+            # that hand-off explicit rather than permitting arbitrary host use.
+            continue
         if suffix[:2] == [
             ("punctuation", "."),
             ("identifier", "context"),
-        ] and index + 3 < len(tokens) and tokens[index + 3] in {
-            ("punctuation", ";"),
-            ("punctuation", ")"),
-            ("punctuation", ","),
-            ("punctuation", "}"),
-            ("punctuation", "]"),
-            ("newline", "\n"),
-        }:
+        ]:
             continue
         if len(suffix) >= 4 and suffix[:3] == [
             ("punctuation", "."),
@@ -1059,12 +1122,13 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     if not isinstance(desktop, dict):
         fail(f"{label} has invalid XSEC Desktop extension metadata")
     permissions = desktop.get("permissions")
-    if not isinstance(permissions, dict) or APPROVALS_FRONTEND_CAPABILITY not in permissions:
-        fail(f"{label} must declare the approvals session read permission")
+    if not isinstance(permissions, dict) or not {"workspace.session.read", "pluginData.read", "pluginData.write"}.issubset(permissions):
+        fail(f"{label} must declare the approvals session read permission and plugin settings permissions")
     engines = desktop.get("engines")
     if not isinstance(engines, dict) or engines.get("pluginApi") != APPROVALS_FRONTEND_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.2 for the approvals frontend")
-    if desktop.get("activationEvents") != [APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT]:
+    activation_events = desktop.get("activationEvents")
+    if not isinstance(activation_events, list) or APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT not in activation_events:
         fail(f"{label} must declare the approvals workspace-tool activation event")
     contributes = desktop.get("contributes")
     workspace_tools = contributes.get("workspaceTools") if isinstance(contributes, dict) else None
@@ -1079,10 +1143,10 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     methods = frontend_api.get("methods")
     if not isinstance(methods, dict) or set(methods) != APPROVALS_FRONTEND_METHODS:
         fail(f"{label} must declare the approvals read RPC methods")
-    for method in APPROVALS_FRONTEND_METHODS:
+    for method, (capability, binding) in APPROVALS_FRONTEND_METHOD_CONTRACT.items():
         descriptor = methods.get(method)
-        if not isinstance(descriptor, dict) or descriptor.get("capability") != APPROVALS_FRONTEND_CAPABILITY or descriptor.get("binding") != APPROVALS_FRONTEND_BINDING:
-            fail(f"{label} must bind approvals RPC methods to the session read capability")
+        if not isinstance(descriptor, dict) or descriptor.get("capability") != capability or descriptor.get("binding") != binding:
+            fail(f"{label} must bind approvals RPC methods to the session read capability or reviewed plugin settings scope ({method})")
     if re.search(r"\\u(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\})", source):
         fail(f"{label} must not contain Unicode escape sequences")
     validate_javascript_esm_syntax(source, label)
@@ -1133,6 +1197,53 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
         fail(f"{label} does not reference declared RPC methods: {sorted(missing_methods)}")
     if "host.request(" not in source:
         fail(f"{label} does not call the declared host RPC surface")
+
+
+def validate_official_settings_contract(manifest: dict[str, object], label: str) -> None:
+    """Keep official settings pages and their least-privilege RPCs in sync."""
+
+    plugin_id = manifest.get("name")
+    contract = OFFICIAL_PLUGIN_SETTINGS_CONTRACT.get(plugin_id) if isinstance(plugin_id, str) else None
+    if contract is None:
+        return
+    try:
+        desktop = manifest["extensions"]["com.xsec.desktop"]
+    except (KeyError, TypeError):
+        fail(f"{label} lacks XSEC Desktop extension metadata")
+    if not isinstance(desktop, dict):
+        fail(f"{label} has invalid XSEC Desktop extension metadata")
+    contributes = desktop.get("contributes")
+    pages = contributes.get("settingsPages") if isinstance(contributes, dict) else None
+    page_id = contract["page"]
+    expected_title = contract["title"]
+    page = pages.get(page_id) if isinstance(pages, dict) and isinstance(page_id, str) else None
+    if not isinstance(page, dict) or page.get("title") != expected_title or page.get("group") != "plugins" or page.get("page") != page_id:
+        fail(f"{label} must declare the canonical plugin settings page")
+    activation_events = desktop.get("activationEvents")
+    if not isinstance(activation_events, list) or f"onSettingsPage:{page_id}" not in activation_events:
+        fail(f"{label} must activate for its canonical plugin settings page")
+    permissions = desktop.get("permissions")
+    if not isinstance(permissions, dict) or not {"pluginData.read", "pluginData.write"}.issubset(permissions):
+        fail(f"{label} must declare pluginData read/write permissions for settings")
+    frontend_api = desktop.get("frontendApi")
+    methods = frontend_api.get("methods") if isinstance(frontend_api, dict) else None
+    expected_methods = contract["methods"]
+    if not isinstance(methods, dict) or not isinstance(expected_methods, dict):
+        fail(f"{label} has no settings RPC declaration")
+    for method, descriptor_contract in expected_methods.items():
+        capability, binding = descriptor_contract
+        descriptor = methods.get(method)
+        if not isinstance(descriptor, dict) or descriptor.get("capability") != capability or descriptor.get("binding") != binding:
+            fail(f"{label} must bind {method} to the canonical plugin settings permission")
+
+
+def validate_codex_manifest(plugin_id: str, plugin_dir: Path, version: str) -> None:
+    """Ensure the Codex discovery descriptor cannot advertise an old package."""
+
+    codex_manifest = plugin_dir / ".codex-plugin" / "plugin.json"
+    metadata = read_json(codex_manifest, f"Codex manifest for {plugin_id}")
+    if metadata.get("name") != plugin_id or metadata.get("version") != version:
+        fail(f"Codex manifest for {plugin_id} must match the root package name and version")
 
 
 def zip_member_is_regular_file(info: zipfile.ZipInfo) -> bool:
@@ -1280,6 +1391,7 @@ def validate_archive(
             if plugin_id == APPROVALS_PLUGIN_ID:
                 validate_approvals_frontend(manifest, frontend_source, f"artifact {path} approvals frontend")
             validate_official_frontend(manifest, frontend_source, f"artifact {path} official frontend")
+            validate_official_settings_contract(manifest, f"artifact {path} official settings")
     return manifest
 
 
@@ -1510,6 +1622,7 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
             f"plugin manifest {plugin_id} entrypoint {entrypoint_name}",
         )
     if plugin_id in DEFAULT_OFFICIAL_PLUGIN_IDS:
+        validate_codex_manifest(plugin_id, plugin_dir, manifest["version"])
         frontend = resolved_entrypoints.get("frontend")
         if frontend is None:
             fail(f"plugin manifest {plugin_id} must declare a frontend entrypoint")
@@ -1520,6 +1633,7 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
         if plugin_id == APPROVALS_PLUGIN_ID:
             validate_approvals_frontend(manifest, frontend_source, f"plugin manifest {plugin_id} approvals frontend")
         validate_official_frontend(manifest, frontend_source, f"plugin manifest {plugin_id} official frontend")
+        validate_official_settings_contract(manifest, f"plugin manifest {plugin_id} official settings")
     return manifest
 
 

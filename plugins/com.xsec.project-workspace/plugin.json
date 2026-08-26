@@ -1,19 +1,21 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "com.xsec.project-workspace", "version": "1.2.1",
+  "name": "com.xsec.project-workspace", "version": "1.2.2",
   "description": "XSEC project assets, findings, reports and execution workspace", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "项目工作区", "publisher": "XSEC", "icon": "folder-kanban",
     "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.2.0" },
     "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
-    "activationEvents": ["onWorkspaceOpen", "onRoute:project.assets", "onRoute:project.findings", "onRoute:project.reports"],
-    "permissions": { "workspace.project.read": {}, "workspace.project.write": {} },
+    "activationEvents": ["onWorkspaceOpen", "onRoute:project.assets", "onRoute:project.findings", "onRoute:project.reports", "onSettingsPage:project-workspace"],
+    "permissions": { "workspace.project.read": {}, "workspace.project.write": {}, "pluginData.read": {}, "pluginData.write": {} },
     "frontendApi": { "version": 2, "module": "single-esm", "methods": {
       "xsec.project.assets.list": { "capability": "workspace.project.read", "binding": "context" },
       "xsec.project.files.list": { "capability": "workspace.project.read", "binding": "context" },
       "xsec.project.findings.list": { "capability": "workspace.project.read", "binding": "context" },
       "xsec.project.reports.list": { "capability": "workspace.project.read", "binding": "context" },
-      "xsec.project.runs.list": { "capability": "workspace.project.read", "binding": "context" }
+      "xsec.project.runs.list": { "capability": "workspace.project.read", "binding": "context" },
+      "xsec.project-workspace.settings.get": { "capability": "pluginData.read", "binding": "plugin" },
+      "xsec.project-workspace.settings.set": { "capability": "pluginData.write", "binding": "plugin" }
     } },
     "contributes": {
       "navigation": { "items": {
@@ -32,6 +34,9 @@
         "project.passive-findings": { "path": "project/:projectId/passive-findings", "page": "passive-findings" },
         "project.findings": { "path": "project/:projectId/findings", "page": "findings" },
         "project.reports": { "path": "project/:projectId/reports", "page": "reports" }
+      },
+      "settingsPages": {
+        "project-workspace": { "title": "项目工作区", "group": "plugins", "page": "project-workspace", "icon": "folder-kanban", "order": 110 }
       }
     }
   } }
