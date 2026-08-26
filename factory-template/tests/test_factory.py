@@ -374,6 +374,35 @@ class MarketplaceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(FactoryError, "must retain every immutable release"):
                 validate_factory(factory, "example/factory", baseline_root=baseline)
 
+    def test_unpublished_registration_rejects_preseeded_or_unregistered_publication_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-unpublished-evidence-test-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            shutil.copytree(TEMPLATE, factory)
+            self.configure_registry(factory)
+
+            publication_root = factory / ".xsec-factory" / "publications"
+            publication_root.mkdir(parents=True)
+            unregistered = publication_root / "com.example.other.json"
+            unregistered.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(FactoryError, "publication evidence directory has an unregistered entry"):
+                validate_factory(factory, "example/factory")
+
+            unregistered.unlink()
+            preseeded = publication_root / "com.example.sample.json"
+            preseeded.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "pluginId": "com.example.sample",
+                        "events": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FactoryError, "unpublished plugin com.example.sample must not have publication evidence"):
+                validate_factory(factory, "example/factory")
+
     def test_trusted_baseline_rejects_rewriting_published_evidence_events(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-factory-baseline-evidence-test-") as directory:
             root = Path(directory)

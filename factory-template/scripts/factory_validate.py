@@ -13,6 +13,7 @@ from factory_core import (
     FactoryError,
     MARKETPLACE_RELATIVE_PATH,
     PLUGIN_ROOT_RELATIVE_PATH,
+    PUBLICATIONS_RELATIVE_PATH,
     REGISTRY_RELATIVE_PATH,
     artifact_url,
     is_link,
@@ -283,6 +284,15 @@ def validate_factory(
             if candidate.is_symlink() or not candidate.is_dir() or candidate.name not in expected_ids:
                 raise FactoryError(f"plugins snapshot root contains an unregistered entry: {candidate.name}")
 
+    publication_root = root / PUBLICATIONS_RELATIVE_PATH
+    if publication_root.exists():
+        if is_link(publication_root) or not publication_root.is_dir():
+            raise FactoryError("Factory publication evidence directory must be a regular directory")
+        expected_files = {f"{plugin_id}.json" for plugin_id in expected_ids}
+        for candidate in publication_root.iterdir():
+            if is_link(candidate) or not candidate.is_file() or candidate.name not in expected_files:
+                raise FactoryError(f"Factory publication evidence directory has an unregistered entry: {candidate.name}")
+
     for registration in registry.plugins:
         snapshot = plugin_snapshot_dir(root, registration.plugin_id)
         manifest_path = snapshot / "plugin.json"
@@ -298,6 +308,13 @@ def validate_factory(
                     "release history, and publication evidence"
                 )
         elif not manifest_path.exists() and not release_path.exists():
+            # An authorization becomes published only after its deterministic
+            # Beta snapshot and release metadata exist.  Do not allow a PR to
+            # pre-seed provenance before that point: append_publication() may
+            # treat a matching identity as an idempotent retry and retain the
+            # forged event rather than replacing it during first publication.
+            if evidence_path.exists() or is_link(evidence_path):
+                raise FactoryError(f"unpublished plugin {registration.plugin_id} must not have publication evidence")
             continue
         if not manifest_path.is_file() or not release_path.is_file():
             raise FactoryError(f"published plugin snapshot for {registration.plugin_id} is incomplete")
