@@ -45,6 +45,71 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.build_marketplace(output)
             validate_source(ROOT, output)
 
+    def test_official_plugin_settings_pages_and_plugin_bound_rpcs_are_declared(self) -> None:
+        """The six reviewed settings surfaces remain field-renderable packages."""
+
+        contracts = validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT
+        self.assertEqual(set(contracts), {
+            "com.xsec.asset-discovery",
+            "com.xsec.project-workspace",
+            "com.xsec.system-terminal",
+            "com.xsec.workspace.approvals",
+            "com.xsec.workspace.browser",
+            "com.xsec.workspace.traffic",
+        })
+        for plugin_id, contract in contracts.items():
+            with self.subTest(plugin_id=plugin_id):
+                plugin_dir = ROOT / "plugins" / plugin_id
+                manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+                source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+                validate_market.validate_official_settings_contract(manifest, plugin_id)
+                self.assertIn("host.context?.kind", source)
+                self.assertIn("settings-page", source)
+                self.assertIn(
+                    f"onSettingsPage:{contract['page']}",
+                    manifest["extensions"]["com.xsec.desktop"]["activationEvents"],
+                )
+                for method, (capability, binding) in contract["methods"].items():
+                    self.assertIn(method, source)
+                    descriptor = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"][method]
+                    self.assertEqual(descriptor, {"capability": capability, "binding": binding})
+
+    def test_official_plugin_settings_rejects_session_bound_read(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        manifest = json.loads((ROOT / "plugins" / plugin_id / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]["xsec.terminal.settings.get"]["binding"] = "session"
+        with self.assertRaisesRegex(MarketplaceValidationError, "canonical plugin settings permission"):
+            validate_market.validate_official_settings_contract(manifest, plugin_id)
+
+    def test_official_plugin_settings_rejects_missing_settings_activation(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        manifest = json.loads((ROOT / "plugins" / plugin_id / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["activationEvents"] = ["onWorkspaceTool:system-terminal"]
+        with self.assertRaisesRegex(MarketplaceValidationError, "activate for its canonical plugin settings page"):
+            validate_market.validate_official_settings_contract(manifest, plugin_id)
+
+    def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
+        source = (
+            ROOT / "plugins" / "com.xsec.system-terminal" / "com.xsec.desktop" / "frontend" / "index.js"
+        ).read_text(encoding="utf-8")
+        settings_source, main_source = source.split("export function activate(host)", 1)
+
+        # Profile selection is a persistent default, so it may only appear in
+        # the isolated settings-page renderer. The terminal surface must never
+        # reintroduce the old selector/restart/clear toolbar.
+        self.assertIn("function terminalSettings(host)", settings_source)
+        self.assertIn('profile=e("select")', settings_source)
+        self.assertIn("xsec.terminal.settings.set", settings_source)
+        self.assertIn('host.context?.kind==="settings-page"', main_source)
+        for forbidden in (
+            'e("select")',
+            '"重新启动"',
+            '"清屏"',
+            "xsec.terminal.profiles",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, main_source)
+
     def test_v1_migration_initially_points_beta_and_stable_to_the_same_release(self) -> None:
         artifacts = [{"os": "any", "arch": "any", "url": "artifacts/test.xsec-plugin", "sha256": "a" * 64}]
         legacy = {
