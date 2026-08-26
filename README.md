@@ -76,6 +76,10 @@ selected Beta digest and re-hashes every retained artifact during validation.
 It also fetches the pinned Vercel KMS issuer JWKS and cryptographically verifies
 the retained EdDSA sidecar, so a structurally valid but forged historical
 signature cannot make a withdrawn release pass validation.
+The protected source gate additionally materializes the trusted pre-change
+Factory revision: after publication, deleting the registry entry together with
+its snapshot and evidence is rejected rather than being mistaken for a
+never-published authorization.
 A never-published authorization can instead be removed from the registry.
 Their archive member paths must also meet Desktop's portable Windows/macOS
 rules: ASCII only; no case-fold, file/directory, trailing-dot/space, NTFS

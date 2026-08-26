@@ -13,12 +13,14 @@ from factory_core import (
     MARKETPLACE_RELATIVE_PATH,
     PLUGIN_ROOT_RELATIVE_PATH,
     artifact_url,
+    is_link,
     load_registry,
     load_release_document,
     marketplace_document,
     plugin_snapshot_dir,
     publication_path,
     read_json,
+    release_document_path,
     release_tag,
     require_object,
     safe_git_sha,
@@ -115,8 +117,99 @@ def snapshot_artifact_digest(snapshot: Path) -> str:
         return sha256(candidate)
 
 
-def validate_factory(root: Path, factory_repository: str | None = None) -> None:
+def published_release_history(root: Path, registry, *, state_label: str) -> dict[str, frozenset[str]]:
+    """Return immutable release IDs present in one trusted Factory state."""
+
+    histories: dict[str, frozenset[str]] = {}
+    for registration in registry.plugins:
+        path = release_document_path(root, registration.plugin_id)
+        if is_link(path):
+            raise FactoryError(f"{state_label} release metadata for {registration.plugin_id} must not use symbolic links")
+        if not path.is_file():
+            continue
+        document = load_release_document(path, registration.plugin_id)
+        releases = document.get("releases")
+        if not isinstance(releases, list):
+            raise FactoryError(f"{state_label} release metadata for {registration.plugin_id} has an invalid release list")
+        identifiers = frozenset(
+            record.get("releaseId")
+            for record in releases
+            if isinstance(record, dict) and isinstance(record.get("releaseId"), str)
+        )
+        if identifiers:
+            histories[registration.plugin_id] = identifiers
+    return histories
+
+
+def validate_trusted_baseline_continuity(root: Path, registry, baseline_root: Path | None) -> None:
+    """Require published registry entries and release history to remain append-only.
+
+    A checkout with all current references removed cannot distinguish an erased
+    publication from a never-published authorization. The CI gate therefore
+    passes a separately materialized protected base revision; a released
+    package can only be withdrawn by retaining its registry entry as disabled.
+    """
+
+    if baseline_root is None:
+        return
+    try:
+        baseline = baseline_root.resolve(strict=True)
+        current = root.resolve(strict=True)
+    except OSError as error:
+        raise FactoryError("trusted Factory baseline is unavailable") from error
+    if baseline == current or is_link(baseline) or not baseline.is_dir():
+        raise FactoryError("trusted Factory baseline must be a distinct regular directory")
+
+    baseline_registry = load_registry(baseline)
+    baseline_histories = published_release_history(
+        baseline,
+        baseline_registry,
+        state_label="trusted Factory baseline",
+    )
+    if not baseline_histories:
+        return
+
+    current_by_id = {registration.plugin_id: registration for registration in registry.plugins}
+    baseline_by_id = {registration.plugin_id: registration for registration in baseline_registry.plugins}
+    current_histories = published_release_history(root, registry, state_label="current Factory")
+    for plugin_id, baseline_ids in baseline_histories.items():
+        registration = current_by_id.get(plugin_id)
+        if registration is None:
+            raise FactoryError(
+                f"published plugin {plugin_id} cannot be removed from the registry; retain it with status=disabled"
+            )
+        baseline_registration = baseline_by_id[plugin_id]
+        if (
+            registration.repository != baseline_registration.repository
+            or registration.source_path != baseline_registration.source_path
+            or registration.beta_ref != baseline_registration.beta_ref
+            or registration.stable_ref != baseline_registration.stable_ref
+        ):
+            raise FactoryError(
+                f"published plugin {plugin_id} cannot change its registered source identity from the trusted baseline"
+            )
+        snapshot = plugin_snapshot_dir(root, plugin_id)
+        evidence = publication_path(root, plugin_id)
+        if is_link(snapshot) or not snapshot.is_dir() or is_link(evidence) or not evidence.is_file():
+            raise FactoryError(
+                f"published plugin {plugin_id} must retain its immutable snapshot, release history, "
+                "and publication evidence recorded in the trusted baseline"
+            )
+        missing_ids = baseline_ids.difference(current_histories.get(plugin_id, frozenset()))
+        if missing_ids:
+            raise FactoryError(
+                f"published plugin {plugin_id} must retain every immutable release recorded in the trusted baseline"
+            )
+
+
+def validate_factory(
+    root: Path,
+    factory_repository: str | None = None,
+    *,
+    baseline_root: Path | None = None,
+) -> None:
     registry = load_registry(root)
+    validate_trusted_baseline_continuity(root, registry, baseline_root)
     if factory_repository is not None:
         factory_repository = safe_repository(factory_repository, "factory repository")
     snapshot_root = root / PLUGIN_ROOT_RELATIVE_PATH
@@ -216,9 +309,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--factory-repository", help="optional owner/repository URL binding")
+    parser.add_argument(
+        "--baseline-root",
+        type=Path,
+        help="trusted pre-change Factory checkout used to prevent publication-history deletion",
+    )
     args = parser.parse_args()
     try:
-        validate_factory(args.root.resolve(), args.factory_repository)
+        validate_factory(
+            args.root.resolve(),
+            args.factory_repository,
+            baseline_root=args.baseline_root.resolve() if args.baseline_root is not None else None,
+        )
     except FactoryError as error:
         raise SystemExit(f"Factory validation failed: {error}") from error
     print("Marketplace Factory validation passed")

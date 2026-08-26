@@ -597,6 +597,55 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "neither Desktop-owned nor registered"):
                 factory.validate_registry_and_snapshots(root)
 
+    def test_trusted_baseline_rejects_complete_deletion_of_a_published_external_plugin(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-baseline-history-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+
+            # The protected CI base has a complete immutable publication. A
+            # PR can otherwise delete all four current-tree references and
+            # make a later same-SemVer publication look brand new.
+            baseline = workspace / "trusted-baseline"
+            shutil.copytree(root, baseline)
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 1, "plugins": []})
+            write_json(
+                root / ".agents" / "plugins" / "marketplace.json",
+                {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []},
+            )
+            shutil.rmtree(root / "plugins" / PLUGIN_ID)
+            factory.publication_path(root, PLUGIN_ID).unlink()
+
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "cannot be removed from the registry",
+            ):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_trusted_baseline_rejects_source_identity_rewrite_for_published_external_plugin(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-baseline-source-identity-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+
+            baseline = workspace / "trusted-baseline"
+            shutil.copytree(root, baseline)
+            rewritten = self.registry_entry(repository="acme/replacement-plugin", path="replacement")
+            write_json(
+                root / ".xsec-factory" / "official-registry.json",
+                {"schemaVersion": 1, "plugins": [rewritten]},
+            )
+
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "cannot change its registered source identity",
+            ):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_snapshot_root_rejects_symlink_entries_before_ownership_checks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-snapshot-link-") as directory:
             root = Path(directory)

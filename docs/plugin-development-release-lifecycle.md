@@ -44,7 +44,10 @@ Factory 只保存经过审批的发布快照、不可变 artifact、release hist
   和来源证据，且拒绝新的发布；Factory 会重新打包该快照并对照当前 Beta SHA-256，
   同时逐一重算所有历史 artifact 的 SHA-256。验证归档时还会从固定的 Vercel KMS
   issuer JWKS 选择 `kid` 对应的 Ed25519 公钥并密码学验证 sidecar，因此仅格式正确
-  的伪造历史签名也会被拒绝。从未发布的授权可直接从 allowlist 移除。
+  的伪造历史签名也会被拒绝。受保护的 source gate 会读取可信的变更前 Factory
+  revision，因此即使同一 PR 同时删除 registry、快照和证据，也不能把已发布插件
+  伪装成从未发布的授权；只能保留条目并设为 `disabled`。从未发布的授权可直接从
+  allowlist 移除。
 
 外部 Factory 包也不是 Desktop 内置包的替身：不得占用已编译的 Desktop package
 ID，或官方保留的 workspace contribution、Agent/MCP tool（包括 host 的 `xsec_`

@@ -14,6 +14,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Materialize trusted pre-change Factory baseline
+        id: baseline
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request) baseline_sha="$PULL_REQUEST_BASE_SHA" ;;
+            push) baseline_sha="$PUSH_BEFORE_SHA" ;;
+            workflow_dispatch) baseline_sha="$(git rev-parse HEAD^ 2>/dev/null || true)" ;;
+            *) baseline_sha="" ;;
+          esac
+          if [ -z "$baseline_sha" ] || [ "$baseline_sha" = "0000000000000000000000000000000000000000" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git cat-file -e "${baseline_sha}^{commit}"
+          baseline_root="$RUNNER_TEMP/xsec-marketplace-trusted-baseline"
+          [ ! -e "$baseline_root" ] || { echo "Trusted Factory baseline path already exists." >&2; exit 1; }
+          env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \
+            git worktree add --detach "$baseline_root" "$baseline_sha"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "root=$baseline_root" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -25,6 +52,15 @@ jobs:
       - name: Validate source manifests, deterministic artifacts and package safety
         run: python scripts/validate_market.py source --source-root . --built-root "$RUNNER_TEMP/xsec-marketplace-build"
       - name: Validate official external Factory registry, snapshots and provenance
-        run: python scripts/external_source_factory.py validate
+        env:
+          BASELINE_AVAILABLE: ${{ steps.baseline.outputs.available }}
+          BASELINE_ROOT: ${{ steps.baseline.outputs.root }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$BASELINE_AVAILABLE" = "true" ]; then
+            args=(--baseline-root "$BASELINE_ROOT")
+          fi
+          python scripts/external_source_factory.py validate "${args[@]}"
       - name: Run marketplace gate tests
         run: python -m unittest discover -s tests -p "test_*.py" -v

@@ -304,6 +304,49 @@ class MarketplaceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(FactoryError, "disabled plugin com.example.sample must retain"):
                 validate_factory(factory, "example/factory")
 
+    def test_trusted_baseline_rejects_complete_deletion_of_a_published_registration(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-baseline-history-test-") as directory:
+            root = Path(directory)
+            factory = root / "current"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            # A protected CI baseline keeps the fact of publication even when
+            # this PR tries to delete every current-tree reference to it.
+            baseline = root / "trusted-baseline"
+            shutil.copytree(factory, baseline)
+            registry_path = factory / ".xsec-factory" / "registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"] = []
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            write_marketplace_index(factory, load_registry(factory))
+            shutil.rmtree(factory / "plugins" / "com.example.sample")
+            (factory / ".xsec-factory" / "publications" / "com.example.sample.json").unlink()
+
+            with self.assertRaisesRegex(FactoryError, "cannot be removed from the registry"):
+                validate_factory(factory, "example/factory", baseline_root=baseline)
+
+    def test_trusted_baseline_rejects_source_identity_rewrite_for_published_registration(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-baseline-source-identity-test-") as directory:
+            root = Path(directory)
+            factory = root / "current"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            baseline = root / "trusted-baseline"
+            shutil.copytree(factory, baseline)
+            registry_path = factory / ".xsec-factory" / "registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["source"]["repository"] = "example/replacement-plugin"
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+            with self.assertRaisesRegex(FactoryError, "cannot change its registered source identity"):
+                validate_factory(factory, "example/factory", baseline_root=baseline)
+
     def test_registry_repository_slug_rejects_path_like_components(self) -> None:
         for repository in ("../plugin", "team/..", ".team/plugin", "team/plugin..backup"):
             with self.assertRaisesRegex(FactoryError, "owner/repository"):
@@ -368,6 +411,12 @@ class MarketplaceFactoryTests(unittest.TestCase):
         readme = (TEMPLATE / "README.md").read_text(encoding="utf-8")
         validate_workflow = (workflows / "validate.yml").read_text(encoding="utf-8")
         self.assertIn('factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"', validate_workflow)
+        self.assertIn("fetch-depth: 0", validate_workflow)
+        self.assertIn("Materialize trusted pre-change Factory baseline", validate_workflow)
+        self.assertIn("PULL_REQUEST_BASE_SHA", validate_workflow)
+        self.assertIn("PUSH_BEFORE_SHA", validate_workflow)
+        self.assertIn("git worktree add --detach", validate_workflow)
+        self.assertIn("--baseline-root", validate_workflow)
         self.assertIn("`production` with **required reviewers limited to release maintainers**", readme)
         self.assertIn("prevent self-review", readme)
         self.assertIn("Do not treat protected-branch status as dispatcher\n   authorization", readme)

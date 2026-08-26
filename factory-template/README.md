@@ -80,7 +80,10 @@ source, and Desktop treats it as a confirmation-driven custom marketplace.
 the exact `beta` and `main` mappings above. `disabled` blocks new publication
 and hides an already published plugin from the generated marketplace index, but
 must retain its complete package snapshot, release history, and publication
-evidence. Remove a never-published authorization instead. User Factories are
+evidence. The included protected validation workflow compares against a trusted
+pre-change checkout, so deleting a published registry entry together with its
+snapshot/evidence is rejected; retain it as `disabled`. Remove a never-published
+authorization instead. User Factories are
 intentionally limited to `AVAILABLE` installation; registry changes cannot
 silently install a plugin on every Desktop.
 `pluginId` must match Desktop's lowercase catalog grammar: 1–64 ASCII

@@ -1217,10 +1217,114 @@ def validate_disabled_snapshot_artifacts(
                 fail(f"{label} SHA-256 does not match its immutable release record")
 
 
-def validate_registry_and_snapshots(root: Path) -> None:
+def published_release_history(
+    root: Path,
+    registrations: tuple[Registration, ...],
+    *,
+    state_label: str,
+) -> dict[str, frozenset[str]]:
+    """Return immutable release IDs that a trusted Factory state has published."""
+
+    histories: dict[str, frozenset[str]] = {}
+    for registration in registrations:
+        path = release_path(root, registration.plugin_id)
+        if is_link(path):
+            fail(f"{state_label} release metadata for {registration.plugin_id} must not use symbolic links")
+        if not path.is_file():
+            continue
+        try:
+            document = load_release_document(path, registration.plugin_id)
+        except ValueError as error:
+            raise ExternalSourceFactoryError(
+                f"{state_label} release metadata for {registration.plugin_id} is invalid"
+            ) from error
+        releases = document.get("releases")
+        if not isinstance(releases, list):
+            fail(f"{state_label} release metadata for {registration.plugin_id} has an invalid release list")
+        identifiers = frozenset(
+            record.get("releaseId")
+            for record in releases
+            if isinstance(record, dict) and isinstance(record.get("releaseId"), str)
+        )
+        if identifiers:
+            histories[registration.plugin_id] = identifiers
+    return histories
+
+
+def validate_trusted_baseline_continuity(
+    root: Path,
+    registrations: tuple[Registration, ...],
+    baseline_root: Path | None,
+) -> None:
+    """Prevent a PR from erasing a released Factory package before reusing it.
+
+    A registry/snapshot/evidence deletion has no remaining state in the new
+    tree to distinguish it from a never-published authorization. CI supplies a
+    separately materialized protected base revision, so a published plugin may
+    be withdrawn only by retaining its registry entry with ``status=disabled``.
+    The release IDs themselves are also append-only across that trusted state.
+    """
+
+    if baseline_root is None:
+        return
+    try:
+        baseline = baseline_root.resolve(strict=True)
+        current = root.resolve(strict=True)
+    except OSError as error:
+        raise ExternalSourceFactoryError("trusted Factory baseline is unavailable") from error
+    if baseline == current or is_link(baseline) or not baseline.is_dir():
+        fail("trusted Factory baseline must be a distinct regular directory")
+
+    baseline_registrations = load_registry(baseline)
+    baseline_histories = published_release_history(
+        baseline,
+        baseline_registrations,
+        state_label="trusted Factory baseline",
+    )
+    if not baseline_histories:
+        return
+
+    current_by_id = {registration.plugin_id: registration for registration in registrations}
+    baseline_by_id = {registration.plugin_id: registration for registration in baseline_registrations}
+    current_histories = published_release_history(root, registrations, state_label="current Factory")
+    for plugin_id, baseline_ids in baseline_histories.items():
+        registration = current_by_id.get(plugin_id)
+        if registration is None:
+            fail(
+                f"published external official plugin {plugin_id} cannot be removed from the registry; "
+                "retain it with status=disabled"
+            )
+        baseline_registration = baseline_by_id[plugin_id]
+        if (
+            registration.repository != baseline_registration.repository
+            or registration.source_path != baseline_registration.source_path
+            or registration.beta_ref != baseline_registration.beta_ref
+            or registration.stable_ref != baseline_registration.stable_ref
+        ):
+            fail(
+                f"published external official plugin {plugin_id} cannot change its registered source "
+                "identity from the trusted baseline"
+            )
+        snapshot = snapshot_directory(root, plugin_id)
+        evidence = publication_path(root, plugin_id)
+        if is_link(snapshot) or not snapshot.is_dir() or is_link(evidence) or not evidence.is_file():
+            fail(
+                f"published external official plugin {plugin_id} must retain its immutable snapshot, "
+                "release history, and publication evidence recorded in the trusted baseline"
+            )
+        missing_ids = baseline_ids.difference(current_histories.get(plugin_id, frozenset()))
+        if missing_ids:
+            fail(
+                f"published external official plugin {plugin_id} must retain every immutable release "
+                "recorded in the trusted baseline"
+            )
+
+
+def validate_registry_and_snapshots(root: Path, *, baseline_root: Path | None = None) -> None:
     """Validate external records in addition to the existing generic market gate."""
 
     registrations = load_registry(root)
+    validate_trusted_baseline_continuity(root, registrations, baseline_root)
     registered_ids = {registration.plugin_id for registration in registrations}
     index = read_json(root / MARKETPLACE_RELATIVE_PATH, "official marketplace index")
     entries = index.get("plugins")
@@ -1368,7 +1472,12 @@ def main() -> None:
         help="reject an external plugin in the legacy built-in Stable workflow",
     )
     legacy_parser.add_argument("--plugin-id", required=True)
-    commands.add_parser("validate")
+    validate_parser = commands.add_parser("validate")
+    validate_parser.add_argument(
+        "--baseline-root",
+        type=Path,
+        help="trusted pre-change Factory checkout used to prevent publication-history deletion",
+    )
     args = parser.parse_args()
     root = args.root.resolve()
     try:
@@ -1385,7 +1494,8 @@ def main() -> None:
         elif args.command == "reject-legacy-stable":
             result = reject_legacy_stable_promotion(root, args.plugin_id)
         else:
-            validate_registry_and_snapshots(root)
+            baseline_root = args.baseline_root.resolve() if args.baseline_root is not None else None
+            validate_registry_and_snapshots(root, baseline_root=baseline_root)
             result = {"valid": "true"}
         write_outputs(result, args.github_output)
     except ExternalSourceFactoryError as error:

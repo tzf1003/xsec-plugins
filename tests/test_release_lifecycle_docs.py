@@ -60,6 +60,13 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("Ed25519", document)
         self.assertIn("密码学验证 sidecar", document)
 
+    def test_published_external_registry_removal_is_blocked_against_the_trusted_baseline(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("trusted pre-change\nFactory revision", readme)
+        self.assertIn("同一 PR 同时删除 registry、快照和证据", document)
+        self.assertIn("设为 `disabled`", document)
+
 
 if __name__ == "__main__":
     unittest.main()
