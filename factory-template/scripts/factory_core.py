@@ -768,6 +768,23 @@ def append_publication(
         "artifact": {"sha256": artifact["sha256"], "url": artifact["url"]},
         "publisher": publisher,
     }
-    if event not in events:
-        events.append(event)
+    # Retrying the same immutable source/release can be initiated by a
+    # different authorized release maintainer. Publisher is useful audit
+    # context, but is intentionally not part of an immutable event identity:
+    # retaining the first record keeps retries byte-for-byte idempotent and
+    # agrees with the validator's duplicate-evidence contract.
+    identity = (str(release["releaseId"]), channel, registration.repository, source_sha)
+    for existing in events:
+        if not isinstance(existing, dict):
+            continue
+        existing_source = existing.get("source")
+        existing_identity = (
+            existing.get("releaseId"),
+            existing.get("channel"),
+            existing_source.get("repository") if isinstance(existing_source, dict) else None,
+            existing_source.get("sha") if isinstance(existing_source, dict) else None,
+        )
+        if existing_identity == identity:
+            return
+    events.append(event)
     atomic_write(path, stable_json({"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events}))

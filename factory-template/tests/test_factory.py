@@ -100,6 +100,21 @@ class MarketplaceFactoryTests(unittest.TestCase):
             self.assertIsNone(release["channels"]["stable"])
             validate_factory(factory, "example/factory")
 
+            evidence_path = factory / ".xsec-factory" / "publications" / "com.example.sample.json"
+            before_beta_retry = evidence_path.read_bytes()
+            beta_retry = beta_publish(
+                factory,
+                "com.example.sample",
+                source,
+                "a" * 40,
+                "example/factory",
+                root / "artifacts",
+                publisher="another-authorized-releaser",
+            )
+            self.assertEqual(beta_retry["release_id"], built["release_id"])
+            self.assertEqual(evidence_path.read_bytes(), before_beta_retry)
+            validate_factory(factory, "example/factory")
+
             promoted = stable_promote(
                 factory,
                 "com.example.sample",
@@ -113,7 +128,6 @@ class MarketplaceFactoryTests(unittest.TestCase):
             self.assertEqual(release["channels"]["stable"], {"releaseId": built["release_id"]})
             validate_factory(factory, "example/factory")
 
-            evidence_path = factory / ".xsec-factory" / "publications" / "com.example.sample.json"
             before_retry = evidence_path.read_bytes()
             retried = stable_promote(
                 factory,
@@ -125,6 +139,23 @@ class MarketplaceFactoryTests(unittest.TestCase):
             )
             self.assertEqual(retried["changed"], "false")
             self.assertEqual(evidence_path.read_bytes(), before_retry)
+
+    def test_factory_validation_rejects_snapshot_engine_drift(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-engine-drift-test-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            manifest_path = factory / "plugins" / "com.example.sample" / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["extensions"]["com.xsec.desktop"]["engines"]["xsec"] = ">=999.0.0"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(FactoryError, "does not describe its beta release engines"):
+                validate_factory(factory, "example/factory")
 
     def test_new_content_at_a_published_version_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-factory-version-test-") as directory:

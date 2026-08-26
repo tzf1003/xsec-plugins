@@ -22,6 +22,7 @@ from factory_core import (
     require_object,
     safe_git_sha,
     safe_repository,
+    source_engines,
     stable_json,
 )
 
@@ -138,6 +139,10 @@ def validate_factory(root: Path, factory_repository: str | None = None) -> None:
         current = records[beta_id]
         if manifest.get("version") != current.get("version"):
             raise FactoryError(f"plugin snapshot manifest for {registration.plugin_id} does not describe its beta release")
+        if source_engines(manifest) != current.get("engines"):
+            raise FactoryError(
+                f"plugin snapshot manifest for {registration.plugin_id} does not describe its beta release engines"
+            )
         if factory_repository is not None:
             for record in records.values():
                 artifacts = record.get("artifacts")
