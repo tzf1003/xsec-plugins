@@ -119,10 +119,10 @@ def snapshot_artifact_digest(snapshot: Path) -> str:
         return sha256(candidate)
 
 
-def published_release_history(root: Path, registry, *, state_label: str) -> dict[str, frozenset[str]]:
-    """Return immutable release IDs present in one trusted Factory state."""
+def published_release_history(root: Path, registry, *, state_label: str) -> dict[str, tuple[str, ...]]:
+    """Return ordered immutable release IDs present in one trusted Factory state."""
 
-    histories: dict[str, frozenset[str]] = {}
+    histories: dict[str, tuple[str, ...]] = {}
     for registration in registry.plugins:
         path = release_document_path(root, registration.plugin_id)
         if is_link(path):
@@ -133,11 +133,13 @@ def published_release_history(root: Path, registry, *, state_label: str) -> dict
         releases = document.get("releases")
         if not isinstance(releases, list):
             raise FactoryError(f"{state_label} release metadata for {registration.plugin_id} has an invalid release list")
-        identifiers = frozenset(
+        identifiers = tuple(
             record.get("releaseId")
             for record in releases
             if isinstance(record, dict) and isinstance(record.get("releaseId"), str)
         )
+        if len(set(identifiers)) != len(identifiers):
+            raise FactoryError(f"{state_label} release metadata for {registration.plugin_id} duplicates an immutable release")
         if identifiers:
             histories[registration.plugin_id] = identifiers
     return histories
@@ -239,10 +241,11 @@ def validate_trusted_baseline_continuity(root: Path, registry, baseline_root: Pa
                 f"published plugin {plugin_id} must retain its immutable snapshot, release history, "
                 "and publication evidence recorded in the trusted baseline"
             )
-        missing_ids = baseline_ids.difference(current_histories.get(plugin_id, frozenset()))
-        if missing_ids:
+        current_ids = current_histories.get(plugin_id, ())
+        if current_ids[: len(baseline_ids)] != baseline_ids:
             raise FactoryError(
-                f"published plugin {plugin_id} must retain every immutable release recorded in the trusted baseline"
+                f"published plugin {plugin_id} must retain every immutable release recorded in the trusted baseline "
+                "in append-only order"
             )
         baseline_events = publication_evidence_history(
             baseline,

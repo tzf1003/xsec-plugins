@@ -347,6 +347,33 @@ class MarketplaceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(FactoryError, "cannot change its registered source identity"):
                 validate_factory(factory, "example/factory", baseline_root=baseline)
 
+    def test_trusted_baseline_requires_published_release_history_to_remain_in_order(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-baseline-release-order-test-") as directory:
+            root = Path(directory)
+            factory = root / "current"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            frontend = source / "frontend" / "index.js"
+            frontend.write_text("export const value = 2;\n", encoding="utf-8")
+            manifest_path = source / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.1.0"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            beta_publish(factory, "com.example.sample", source, "b" * 40, "example/factory", root / "artifacts")
+            validate_factory(factory, "example/factory")
+
+            baseline = root / "trusted-baseline"
+            shutil.copytree(factory, baseline)
+            release_path = factory / "plugins" / "com.example.sample" / ".xsec-market" / "releases.json"
+            release = json.loads(release_path.read_text(encoding="utf-8"))
+            release["releases"].reverse()
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(FactoryError, "must retain every immutable release"):
+                validate_factory(factory, "example/factory", baseline_root=baseline)
+
     def test_trusted_baseline_rejects_rewriting_published_evidence_events(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-factory-baseline-evidence-test-") as directory:
             root = Path(directory)

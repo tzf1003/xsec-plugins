@@ -85,7 +85,8 @@ pre-change checkout, so deleting a published registry entry together with its
 snapshot/evidence is rejected; retain it as `disabled`. Remove a never-published
 authorization instead. Individual publication-evidence events are append-only
 in their original order: their source SHA, artifact binding, and publisher
-cannot be rewritten or reordered. User Factories are
+cannot be rewritten or reordered. The immutable release list uses the same
+original-order append-only rule. User Factories are
 intentionally limited to `AVAILABLE` installation; registry changes cannot
 silently install a plugin on every Desktop.
 `pluginId` must match Desktop's lowercase catalog grammar: 1–64 ASCII

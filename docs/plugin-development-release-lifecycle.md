@@ -49,6 +49,7 @@ Factory 只保存经过审批的发布快照、不可变 artifact、release hist
   伪装成从未发布的授权；只能保留条目并设为 `disabled`。从未发布的授权可直接从
   allowlist 移除。证据中的每个发布事件同样只能按原有顺序追加，既有事件的来源 SHA、
   artifact 绑定和发布者均不可改写或重排。
+  不可变 release 记录列表也必须保持原有顺序并仅在末尾追加，不能改写历史发布顺序。
 
 外部 Factory 包也不是 Desktop 内置包的替身：不得占用已编译的 Desktop package
 ID，或官方保留的 workspace contribution、Agent/MCP tool（包括 host 的 `xsec_`

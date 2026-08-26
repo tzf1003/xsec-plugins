@@ -646,6 +646,35 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             ):
                 factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
+    def test_trusted_baseline_requires_published_external_release_history_to_remain_in_order(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-baseline-release-order-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+
+            source_plugin = source / "package"
+            (source_plugin / "frontend.js").write_text("export function activate() { return 'next'; }\n", encoding="utf-8")
+            manifest_path = source_plugin / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.1.0"
+            write_json(manifest_path, manifest)
+            self.stage_and_record_beta(root, source, source_sha=STABLE_SHA)
+            factory.validate_registry_and_snapshots(root)
+
+            baseline = workspace / "trusted-baseline"
+            shutil.copytree(root, baseline)
+            release_path = factory.release_path(root, PLUGIN_ID)
+            release = json.loads(release_path.read_text(encoding="utf-8"))
+            release["releases"].reverse()
+            write_json(release_path, release)
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "must retain every immutable release",
+            ):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_trusted_baseline_rejects_rewriting_published_external_evidence_events(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-baseline-evidence-") as directory:
             workspace = Path(directory)

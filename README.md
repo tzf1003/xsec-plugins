@@ -83,6 +83,8 @@ never-published authorization.
 Each retained publication-evidence event is also append-only in its original
 order: its source SHA, artifact binding, and recorded publisher cannot be
 rewritten or reordered in a later PR.
+The immutable release record list follows the same original-order append-only
+rule, preventing historical release chronology from being rewritten.
 A never-published authorization can instead be removed from the registry.
 Their archive member paths must also meet Desktop's portable Windows/macOS
 rules: ASCII only; no case-fold, file/directory, trailing-dot/space, NTFS
