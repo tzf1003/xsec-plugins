@@ -150,6 +150,24 @@ class MarketplaceValidationTests(unittest.TestCase):
         asset_methods = asset_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
         self.assertEqual(asset_methods["xsec.asset-discovery.credentials.set"]["binding"], "plugin")
         self.assertEqual(asset_methods["xsec.asset-discovery.credentials.clear"]["binding"], "plugin")
+        self.assertEqual(
+            validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT["com.xsec.asset-discovery"]["methods"],
+            {
+                "xsec.asset-discovery.settings.get": ("pluginData.read", "plugin"),
+                "xsec.asset-discovery.settings.set": ("pluginData.write", "plugin"),
+                "xsec.asset-discovery.credentials.set": ("pluginData.write", "plugin"),
+                "xsec.asset-discovery.credentials.clear": ("pluginData.write", "plugin"),
+                "xsec.plugin.settings.open": ("pluginData.read", "plugin"),
+            },
+        )
+
+        approval_source = (
+            ROOT / "plugins" / "com.xsec.workspace.approvals" / "com.xsec.desktop" / "frontend" / "index.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("let settingsReady = false;", approval_source)
+        self.assertIn("settingsReady = false;", approval_source)
+        self.assertIn("if (!settingsReady)", approval_source)
+        self.assertIn('saveButton.disabled = true;', approval_source)
 
         traffic_source = (
             ROOT / "plugins" / "com.xsec.workspace.traffic" / "com.xsec.desktop" / "frontend" / "index.js"

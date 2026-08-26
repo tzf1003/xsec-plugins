@@ -87,6 +87,8 @@ OFFICIAL_PLUGIN_SETTINGS_CONTRACT: dict[str, dict[str, object]] = {
         "methods": {
             "xsec.asset-discovery.settings.get": ("pluginData.read", "plugin"),
             "xsec.asset-discovery.settings.set": ("pluginData.write", "plugin"),
+            "xsec.asset-discovery.credentials.set": ("pluginData.write", "plugin"),
+            "xsec.asset-discovery.credentials.clear": ("pluginData.write", "plugin"),
             "xsec.plugin.settings.open": ("pluginData.read", "plugin"),
         },
     },
@@ -149,7 +151,7 @@ FORBIDDEN_OFFICIAL_FRONTEND_MARKERS = (
 # The browser-side approvals frontend is explicitly reviewed and pinned.  The
 # hash includes its isolated settings surface, so any source change still
 # requires an intentional validation update in the same review.
-APPROVALS_FRONTEND_SOURCE_SHA256 = "b878924e67743bf320c9125ab18c71de729eef844410275bb404f09cba334467"
+APPROVALS_FRONTEND_SOURCE_SHA256 = "5508a16c22e704d9a366abe60112edf20e7f0a9478d44e9d0048973501fcf00b"
 
 
 class MarketplaceValidationError(ValueError):

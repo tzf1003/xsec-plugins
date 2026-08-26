@@ -66,6 +66,7 @@ function addStyles(root) {
 function settingsPage(host) {
   let root;
   let controls;
+  let settingsReady = false;
 
   function setNotice(message, error) {
     controls.notice.textContent = message;
@@ -73,6 +74,9 @@ function settingsPage(host) {
   }
 
   async function load() {
+    settingsReady = false;
+    controls.save.disabled = true;
+    controls.retry.disabled = true;
     setNotice("正在读取审批设置…");
     try {
       const settings = await host.request("xsec.approvals.settings.get", {});
@@ -83,12 +87,20 @@ function settingsPage(host) {
       controls.model.value = settings?.llm?.use_default_model ? "" : (settings?.llm?.model || "");
       controls.timeout.value = String(settings?.llm?.timeout_ms ?? 60000);
       setNotice("");
+      settingsReady = true;
+      controls.save.disabled = false;
     } catch (error) {
       setNotice(`读取审批设置失败：${error instanceof Error ? error.message : String(error)}`, true);
+    } finally {
+      controls.retry.disabled = false;
     }
   }
 
   async function save() {
+    if (!settingsReady) {
+      setNotice("请先成功读取当前审批设置后再保存。", true);
+      return;
+    }
     const fullAccess = controls.fullAccess.checked;
     const acknowledged = !fullAccess || controls.confirm.value === "我确认启用完全访问权限";
     if (!acknowledged) {
@@ -96,6 +108,7 @@ function settingsPage(host) {
       return;
     }
     controls.save.disabled = true;
+    controls.retry.disabled = true;
     try {
       await host.request("xsec.approvals.settings.set", {
         autoEnabled: controls.autoEnabled.checked,
@@ -109,7 +122,8 @@ function settingsPage(host) {
     } catch (error) {
       setNotice(`保存审批设置失败：${error instanceof Error ? error.message : String(error)}`, true);
     } finally {
-      controls.save.disabled = false;
+      controls.save.disabled = !settingsReady;
+      controls.retry.disabled = false;
     }
   }
 
@@ -137,15 +151,18 @@ function settingsPage(host) {
     const timeout = element("input"); timeout.type = "number"; timeout.min = "1000"; timeout.step = "1000";
     const confirm = element("input"); confirm.placeholder = "启用完全访问时输入：我确认启用完全访问权限";
     const saveButton = element("button", "", "保存设置");
+    const retryButton = element("button", "", "重新读取设置");
     const notice = element("p", "notice");
+    saveButton.disabled = true;
     const check = (input, text) => { const label = element("label", "check"); label.append(input, document.createTextNode(text)); return label; };
     saveButton.onclick = () => void save();
+    retryButton.onclick = () => void load();
     page.append(style, element("h1", "", "审批记录"), element("p", "", "默认策略只适用于后续会话；当前会话的审批状态仍在任务界面管理。"), check(autoEnabled, "新会话默认使用 LLM 自动审批"), check(fullAccess, "允许选择完全访问（高风险）"), check(localReadonly, "本地只读调用直接放行"));
     const fields = [["低置信度阈值", threshold], ["审批模型", model], ["模型超时（毫秒）", timeout], ["完全访问确认", confirm]];
     for (const [title, input] of fields) { const label = element("label", "", title); label.append(input); page.append(label); }
-    page.append(saveButton, notice);
+    page.append(saveButton, retryButton, notice);
     root.append(page);
-    controls = { autoEnabled, fullAccess, localReadonly, threshold, model, timeout, confirm, save: saveButton, notice };
+    controls = { autoEnabled, fullAccess, localReadonly, threshold, model, timeout, confirm, save: saveButton, retry: retryButton, notice };
     void load();
   }
 
