@@ -127,6 +127,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('const [runsData,assetsData,settings]=await Promise.all', asset_source)
         self.assertIn('if("error" in settings)', asset_source)
         self.assertIn('renderRuns(runsData);renderAssets(assetsData);if("error" in settings)', asset_source)
+        # The recovery affordance must describe the credential required by the
+        # selected default provider, rather than treating a different
+        # provider's configured credential as sufficient.
+        self.assertIn(
+            'const provider=settings.value?.provider==="fofa"?"fofa":"hunter";const missing=provider==="fofa"?!settings.value?.fofaApiKeyConfigured:!settings.value?.hunterApiKeyConfigured;',
+            asset_source,
+        )
 
         traffic_source = (
             ROOT / "plugins" / "com.xsec.workspace.traffic" / "com.xsec.desktop" / "frontend" / "index.js"
