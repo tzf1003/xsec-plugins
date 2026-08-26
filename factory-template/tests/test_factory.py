@@ -365,6 +365,12 @@ class MarketplaceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(FactoryError, "must retain every immutable publication evidence event"):
                 validate_factory(factory, "example/factory", baseline_root=baseline)
 
+            evidence["events"][0]["source"]["sha"] = "a" * 40
+            evidence["events"][0]["publisher"] = "rewritten-publisher"
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+            with self.assertRaisesRegex(FactoryError, "must retain every immutable publication evidence event"):
+                validate_factory(factory, "example/factory", baseline_root=baseline)
+
     def test_trusted_baseline_requires_published_evidence_events_to_remain_in_order(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-factory-baseline-evidence-order-test-") as directory:
             root = Path(directory)
@@ -390,12 +396,6 @@ class MarketplaceFactoryTests(unittest.TestCase):
             evidence_path = factory / ".xsec-factory" / "publications" / "com.example.sample.json"
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
             evidence["events"].reverse()
-            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
-            with self.assertRaisesRegex(FactoryError, "must retain every immutable publication evidence event"):
-                validate_factory(factory, "example/factory", baseline_root=baseline)
-
-            evidence["events"][0]["source"]["sha"] = "a" * 40
-            evidence["events"][0]["publisher"] = "rewritten-publisher"
             evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
             with self.assertRaisesRegex(FactoryError, "must retain every immutable publication evidence event"):
                 validate_factory(factory, "example/factory", baseline_root=baseline)
