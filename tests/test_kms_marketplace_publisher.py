@@ -303,7 +303,10 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             release = root / "plugins" / "com.example" / ".xsec-market" / "releases.json"
             marketplace.parent.mkdir(parents=True)
             release.parent.mkdir(parents=True)
-            marketplace.write_text("{}", encoding="utf-8")
+            marketplace.write_text(
+                json.dumps({"plugins": [{"source": {"path": "./plugins/com.example"}}]}),
+                encoding="utf-8",
+            )
             release.write_text("{}", encoding="utf-8")
             for document in (marketplace, release):
                 document.with_name(document.name + ".sig").write_text("legacy", encoding="utf-8")

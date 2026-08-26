@@ -70,8 +70,8 @@ Once an external package has a Factory snapshot or marketplace entry, its
 registry ownership is sticky: do not delete its registry/evidence files to
 reclassify it as a local official plugin. Use `status: "disabled"` to withdraw
 it while retaining the ownership record, generated snapshot/release history,
-and publication evidence. A never-published authorization can instead be
-removed from the registry.
+publication evidence, and KMS release sidecar. A never-published authorization
+can instead be removed from the registry.
 Their archive member paths must also meet Desktop's portable Windows/macOS
 rules: ASCII only; no case-fold, file/directory, trailing-dot/space, NTFS
 stream, forbidden-character, or device-name alias. Source file count and sizes

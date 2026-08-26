@@ -256,6 +256,36 @@ def validate_sidecar(
     return sidecar
 
 
+def validate_historical_sidecar(
+    sidecar_bytes: bytes,
+    document: MarketplaceDocument,
+    *,
+    now: int | None = None,
+) -> str:
+    """Validate a retained sidecar using the revision embedded in its envelope.
+
+    Marketplace documents in the active index are freshly signed by the current
+    protected run. A withdrawn plugin's immutable release document is not in
+    that index, so its retained sidecar must instead remain bound to the
+    historical protected revision recorded in its own envelope.
+    """
+
+    sidecar = json_object(sidecar_bytes, f"KMS sidecar for {document.subject}")
+    exact_keys(sidecar, {"schema_version", "envelope_b64", "jws"}, "KMS sidecar")
+    envelope = json_object(
+        canonical_base64url_decode(sidecar.get("envelope_b64"), "KMS sidecar envelope_b64"),
+        "KMS document envelope",
+    )
+    exact_keys(
+        envelope,
+        {"schema_version", "purpose", "subject", "content_sha256", "source_revision", "issued_at"},
+        "KMS document envelope",
+    )
+    source_revision = required_string(envelope, "source_revision", "KMS document envelope")
+    validate_sidecar(sidecar_bytes, document, source_revision, now=now)
+    return source_revision
+
+
 def sidecar_from_broker_response(
     response_bytes: bytes,
     document: MarketplaceDocument,

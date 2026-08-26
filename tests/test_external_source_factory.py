@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import build_market  # noqa: E402
 import external_source_factory as factory  # noqa: E402
+import kms_marketplace_publisher as publisher  # noqa: E402
 import promote_release  # noqa: E402
 
 
@@ -26,6 +30,40 @@ STABLE_SHA = "b" * 40
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def write_historical_release_sidecar(root: Path, plugin_id: str, *, source_revision: str = BETA_SHA) -> Path:
+    """Write a protocol-valid release sidecar without needing a test KMS broker."""
+
+    release = factory.release_path(root, plugin_id)
+    subject = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    envelope = {
+        "schema_version": 1,
+        "purpose": "xsec.plugin-marketplace.release",
+        "subject": subject,
+        "content_sha256": hashlib.sha256(release.read_bytes()).hexdigest(),
+        "source_revision": source_revision,
+        "issued_at": int(time.time()),
+    }
+    envelope_bytes = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+    protected = base64url(
+        json.dumps(
+            {"alg": "EdDSA", "kid": "test-key", "iss": publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL},
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    sidecar = {
+        "schema_version": 1,
+        "envelope_b64": base64url(envelope_bytes),
+        "jws": {"protected": protected, "payload": base64url(envelope_bytes), "signature": base64url(b"s" * 64)},
+    }
+    destination = release.with_name(release.name + ".sig.jws.json")
+    destination.write_text(json.dumps(sidecar, separators=(",", ":")), encoding="utf-8")
+    return destination
 
 
 class ExternalSourceFactoryTests(unittest.TestCase):
@@ -394,6 +432,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             source = self.make_source(root / "source")
             self.make_factory(root, self.registry_entry())
             self.stage_and_record_beta(root, source)
+            sidecar = write_historical_release_sidecar(root, PLUGIN_ID)
 
             # Withdrawing an already published plugin removes only discovery;
             # the generated snapshot, releases.json, and provenance remain.
@@ -403,6 +442,14 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []},
             )
             factory.validate_registry_and_snapshots(root)
+            build_market.clean_generated_output(root)
+            self.assertTrue(sidecar.is_file())
+            factory.validate_registry_and_snapshots(root)
+
+            sidecar.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS release sidecar is invalid"):
+                factory.validate_registry_and_snapshots(root)
+            sidecar = write_historical_release_sidecar(root, PLUGIN_ID)
 
             shutil.rmtree(root / "plugins" / PLUGIN_ID)
             factory.publication_path(root, PLUGIN_ID).unlink()

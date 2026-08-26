@@ -37,6 +37,11 @@ from build_market import (
     stable_json,
     write_zip,
 )
+from kms_marketplace_publisher import (
+    MarketplaceDocument,
+    MarketplaceKmsPublisherError,
+    validate_historical_sidecar,
+)
 
 
 REGISTRY_RELATIVE_PATH = Path(".xsec-factory") / "official-registry.json"
@@ -1106,6 +1111,23 @@ def validate_evidence(root: Path, registration: Registration, document: dict[str
         fail(f"external official plugin {registration.plugin_id} lacks Stable provenance")
 
 
+def validate_disabled_release_sidecar(root: Path, registration: Registration) -> None:
+    """Require the signed immutable release document retained by a withdrawal."""
+
+    release = release_path(root, registration.plugin_id)
+    sidecar = release.with_name(release.name + ".sig.jws.json")
+    if is_link(sidecar) or not sidecar.is_file():
+        fail(f"disabled external official plugin {registration.plugin_id} KMS release sidecar is unavailable")
+    subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
+    document = MarketplaceDocument("xsec.plugin-marketplace.release", subject, release)
+    try:
+        validate_historical_sidecar(sidecar.read_bytes(), document)
+    except (OSError, MarketplaceKmsPublisherError) as error:
+        raise ExternalSourceFactoryError(
+            f"disabled external official plugin {registration.plugin_id} KMS release sidecar is invalid"
+        ) from error
+
+
 def validate_registry_and_snapshots(root: Path) -> None:
     """Validate external records in addition to the existing generic market gate."""
 
@@ -1207,6 +1229,8 @@ def validate_registry_and_snapshots(root: Path) -> None:
         if snapshot_engines != beta.get("engines"):
             fail(f"external official plugin {registration.plugin_id} snapshot engines do not match its Beta release")
         validate_evidence(root, registration, document)
+        if registration.status == "disabled":
+            validate_disabled_release_sidecar(root, registration)
 
 
 def write_outputs(values: dict[str, str], output_path: Path | None) -> None:

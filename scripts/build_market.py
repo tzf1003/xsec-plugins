@@ -18,7 +18,7 @@ import re
 import shutil
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -528,12 +528,62 @@ def copy_source_tree(output_root: Path) -> None:
         )
 
 
+def active_marketplace_release_documents(output_root: Path) -> set[Path]:
+    """Return release documents that the current marketplace will re-sign.
+
+    Withdrawal removes a plugin from marketplace discovery but intentionally
+    leaves its immutable snapshot in ``plugins/``.  Its KMS sidecar is bound to
+    the retained historical release document and must therefore survive a later
+    global ``--clean``.  Parse only safe local ``plugins/`` source paths before
+    deciding which sidecars are replaceable in this run.
+    """
+
+    marketplace_path = output_root / MARKETPLACE_RELATIVE_PATH
+    current = marketplace_path
+    for _ in MARKETPLACE_RELATIVE_PATH.parts:
+        if is_link(current):
+            raise ValueError(f"marketplace metadata path must not contain symbolic links: {current}")
+        current = current.parent
+    try:
+        marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("marketplace.json cannot be read before sidecar cleanup") from error
+    entries = marketplace.get("plugins") if isinstance(marketplace, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("marketplace.json plugins must be a list before sidecar cleanup")
+
+    output_plugins = output_root / "plugins"
+    active: set[Path] = set()
+    for entry in entries:
+        source = entry.get("source") if isinstance(entry, dict) else None
+        source_path = source.get("path") if isinstance(source, dict) else None
+        if not isinstance(source_path, str) or not source_path:
+            raise ValueError("every marketplace entry needs source.path before sidecar cleanup")
+        relative = PurePosixPath(source_path)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or relative.parts[0] != "plugins"
+            or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
+        ):
+            raise ValueError("marketplace plugin source.path must remain below plugins/ before sidecar cleanup")
+        candidate = output_root.joinpath(*relative.parts)
+        try:
+            candidate.resolve(strict=False).relative_to(output_plugins.resolve(strict=False))
+        except (OSError, ValueError) as error:
+            raise ValueError("marketplace plugin source.path escaped plugins/ before sidecar cleanup") from error
+        active.add((candidate / ".xsec-market" / "releases.json").resolve(strict=False))
+    return active
+
+
 def clean_generated_output(output_root: Path) -> None:
-    """Remove stale signatures without deleting immutable releases or artifacts.
+    """Remove replaceable signatures without deleting immutable release state.
 
     Older versions removed every `.xsec-market` directory for `--clean`.  That
     made publishing a new version erase the only artifact a stable pointer
     could reference, so it is intentionally no longer a release-history clean.
+    KMS sidecars for currently discoverable plugins are regenerated in this
+    publication; sidecars for withdrawn snapshots remain as signed history.
     """
     output_plugins = output_root / "plugins"
     if is_link(output_plugins):
@@ -542,6 +592,7 @@ def clean_generated_output(output_root: Path) -> None:
         return
     if not output_plugins.is_dir():
         raise ValueError(f"generated plugin root is unavailable: {output_plugins}")
+    release_roots: list[Path] = []
     for plugin_dir in output_plugins.iterdir():
         if is_link(plugin_dir):
             raise ValueError(f"generated plugin directory must not be a symbolic link: {plugin_dir}")
@@ -556,8 +607,20 @@ def clean_generated_output(output_root: Path) -> None:
             release_root.resolve(strict=True).relative_to(output_plugins.resolve(strict=True))
         except (OSError, ValueError) as error:
             raise ValueError(f"generated output path must remain below plugins/: {release_root}") from error
-        for suffix in (".sig", ".sig.jws.json"):
-            release_root.joinpath("releases.json").with_name("releases.json" + suffix).unlink(missing_ok=True)
+        release_roots.append(release_root)
+    # Preserve the historic validation ordering: reject unsafe plugin paths
+    # before opening the marketplace metadata that decides which sidecars are
+    # replaceable in this publication.
+    active_release_documents = active_marketplace_release_documents(output_root)
+    for release_root in release_roots:
+        release_path = release_root / "releases.json"
+        # Legacy detached signatures are always stale. The KMS sidecar is
+        # replaced only for documents that remain in marketplace discovery;
+        # an unlisted external snapshot is a disabled publication whose
+        # historical sidecar must remain intact.
+        release_path.with_name(release_path.name + ".sig").unlink(missing_ok=True)
+        if release_path.resolve(strict=False) in active_release_documents:
+            release_path.with_name(release_path.name + ".sig.jws.json").unlink(missing_ok=True)
     marketplace_path = output_root / MARKETPLACE_RELATIVE_PATH
     for suffix in (".sig", ".sig.jws.json"):
         marketplace_path.with_name(marketplace_path.name + suffix).unlink(missing_ok=True)
