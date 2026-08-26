@@ -123,13 +123,16 @@ class MarketplaceValidationTests(unittest.TestCase):
         # intentionally converted to a value-or-error result before the
         # Promise.all so a failed settings RPC cannot enter the branch that
         # clears those two rendered lists.
-        self.assertIn(
-            'Promise.resolve().then(()=>host.request("xsec.asset-discovery.settings.get",{})).then(value=>({value}),error=>({error}))',
+        self.assertRegex(
             asset_source,
+            r'Promise\.resolve\(\)\.then\(\(?\(\)=>host\.request\("xsec\.asset-discovery\.settings\.get",\{\}\)',
         )
-        self.assertIn('const [runsData,assetsData,settings]=await Promise.all', asset_source)
-        self.assertIn('if("error" in settings)', asset_source)
-        self.assertIn('renderRuns(runsData);renderAssets(assetsData);if("error" in settings)', asset_source)
+        self.assertRegex(asset_source, r'const\s*\[\s*runsData\s*,\s*assetsData\s*,\s*settings\s*\]\s*=\s*await\s+Promise\.all')
+        self.assertRegex(asset_source, r'if\s*\(\s*"error"\s*in\s*settings\s*\)')
+        self.assertRegex(
+            asset_source,
+            r'renderRuns\(runsData\);renderAssets\(assetsData\);if\s*\(\s*"error"\s*in\s*settings\s*\)',
+        )
         # The recovery affordance must describe the credential required by the
         # selected default provider, rather than treating a different
         # provider's configured credential as sufficient.
@@ -145,6 +148,12 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('type="password"', asset_source)
         self.assertIn('async function load(preserveDraft=false)', asset_source)
         self.assertIn("await load(true);note(", asset_source)
+        self.assertIn("controls.credentialActions.forEach", asset_source)
+        self.assertIn("if(!settingsReady)return;const value=input.value.trim()", asset_source)
+        self.assertIn("if(!settingsReady)return;if(!confirm", asset_source)
+        self.assertIn("controls.credentialActions.forEach", asset_source)
+        self.assertIn("if(!settingsReady)return;const value", asset_source)
+        self.assertIn("if(!settingsReady)return;if(!confirm", asset_source)
         asset_manifest = json.loads(
             (ROOT / "plugins" / "com.xsec.asset-discovery" / "plugin.json").read_text(encoding="utf-8")
         )
