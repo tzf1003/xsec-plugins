@@ -675,6 +675,32 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             ):
                 factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
+    def test_trusted_baseline_requires_published_external_evidence_events_to_remain_in_order(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-baseline-evidence-order-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, source)
+
+            baseline = workspace / "trusted-baseline"
+            shutil.copytree(root, baseline)
+            factory.verify_stable(root, PLUGIN_ID, source, release_id)
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            # Appending the Stable event is valid.
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+            evidence_path = factory.publication_path(root, PLUGIN_ID)
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["events"].reverse()
+            write_json(evidence_path, evidence)
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "must retain every immutable publication evidence event",
+            ):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_trusted_baseline_without_a_factory_allows_its_first_published_registration(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-first-factory-") as directory:
             workspace = Path(directory)

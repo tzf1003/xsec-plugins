@@ -365,6 +365,35 @@ class MarketplaceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(FactoryError, "must retain every immutable publication evidence event"):
                 validate_factory(factory, "example/factory", baseline_root=baseline)
 
+    def test_trusted_baseline_requires_published_evidence_events_to_remain_in_order(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-baseline-evidence-order-test-") as directory:
+            root = Path(directory)
+            factory = root / "current"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta = beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            baseline = root / "trusted-baseline"
+            shutil.copytree(factory, baseline)
+            stable_promote(
+                factory,
+                "com.example.sample",
+                source,
+                "b" * 40,
+                beta["release_id"],
+                "example/factory",
+            )
+            # Appending the Stable event is valid.
+            validate_factory(factory, "example/factory", baseline_root=baseline)
+
+            evidence_path = factory / ".xsec-factory" / "publications" / "com.example.sample.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["events"].reverse()
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+            with self.assertRaisesRegex(FactoryError, "must retain every immutable publication evidence event"):
+                validate_factory(factory, "example/factory", baseline_root=baseline)
+
             evidence["events"][0]["source"]["sha"] = "a" * 40
             evidence["events"][0]["publisher"] = "rewritten-publisher"
             evidence_path.write_text(json.dumps(evidence), encoding="utf-8")

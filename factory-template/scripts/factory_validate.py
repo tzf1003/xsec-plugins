@@ -143,8 +143,8 @@ def published_release_history(root: Path, registry, *, state_label: str) -> dict
     return histories
 
 
-def publication_evidence_history(root: Path, registration, *, state_label: str) -> frozenset[str]:
-    """Return whole publication events whose source provenance is immutable."""
+def publication_evidence_history(root: Path, registration, *, state_label: str) -> tuple[str, ...]:
+    """Return ordered publication events whose source provenance is immutable."""
 
     path = publication_path(root, registration.plugin_id)
     if is_link(path) or not path.is_file():
@@ -157,7 +157,7 @@ def publication_evidence_history(root: Path, registration, *, state_label: str) 
     events = evidence.get("events")
     if not isinstance(events, list):
         raise FactoryError(f"{state_label} publication evidence for {registration.plugin_id} has an invalid event list")
-    canonical_events = frozenset(
+    canonical_events = tuple(
         json.dumps(
             require_object(event, f"{state_label} publication evidence event {index}"),
             ensure_ascii=False,
@@ -166,7 +166,7 @@ def publication_evidence_history(root: Path, registration, *, state_label: str) 
         )
         for index, event in enumerate(events)
     )
-    if len(canonical_events) != len(events):
+    if len(set(canonical_events)) != len(canonical_events):
         raise FactoryError(f"{state_label} publication evidence for {registration.plugin_id} duplicates an immutable event")
     return canonical_events
 
@@ -254,10 +254,10 @@ def validate_trusted_baseline_continuity(root: Path, registry, baseline_root: Pa
             registration,
             state_label="current Factory",
         )
-        if not baseline_events.issubset(current_events):
+        if current_events[: len(baseline_events)] != baseline_events:
             raise FactoryError(
                 f"published plugin {plugin_id} must retain every immutable publication evidence event "
-                "recorded in the trusted baseline"
+                "recorded in the trusted baseline in append-only order"
             )
 
 

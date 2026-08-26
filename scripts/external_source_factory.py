@@ -1251,13 +1251,14 @@ def published_release_history(
     return histories
 
 
-def publication_evidence_history(root: Path, registration: Registration, *, state_label: str) -> frozenset[str]:
+def publication_evidence_history(root: Path, registration: Registration, *, state_label: str) -> tuple[str, ...]:
     """Return canonical immutable evidence events for one published plugin.
 
     Publication evidence binds a release to the source commit and publisher,
-    neither of which is represented by the release ID. Preserve whole events
-    rather than just the evidence file so an attacker cannot rewrite an old
-    source SHA or publisher while retaining a syntactically valid document.
+    neither of which is represented by the release ID. Preserve whole ordered
+    events rather than just the evidence file so an attacker cannot rewrite an
+    old source SHA/publisher or reorder prior evidence while retaining a
+    syntactically valid document.
     """
 
     path = publication_path(root, registration.plugin_id)
@@ -1274,7 +1275,7 @@ def publication_evidence_history(root: Path, registration: Registration, *, stat
     events = evidence.get("events")
     if not isinstance(events, list):
         fail(f"{state_label} publication evidence for {registration.plugin_id} has an invalid event list")
-    canonical_events = frozenset(
+    canonical_events = tuple(
         json.dumps(
             require_object(event, f"{state_label} publication evidence event {index}"),
             ensure_ascii=False,
@@ -1283,7 +1284,7 @@ def publication_evidence_history(root: Path, registration: Registration, *, stat
         )
         for index, event in enumerate(events)
     )
-    if len(canonical_events) != len(events):
+    if len(set(canonical_events)) != len(canonical_events):
         fail(f"{state_label} publication evidence for {registration.plugin_id} duplicates an immutable event")
     return canonical_events
 
@@ -1380,10 +1381,10 @@ def validate_trusted_baseline_continuity(
             registration,
             state_label="current Factory",
         )
-        if not baseline_events.issubset(current_events):
+        if current_events[: len(baseline_events)] != baseline_events:
             fail(
                 f"published external official plugin {plugin_id} must retain every immutable publication "
-                "evidence event recorded in the trusted baseline"
+                "evidence event recorded in the trusted baseline in append-only order"
             )
 
 
