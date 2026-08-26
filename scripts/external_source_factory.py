@@ -1185,6 +1185,17 @@ def validate_registry_and_snapshots(root: Path) -> None:
         _, beta = current_beta_record(root, registration.plugin_id)
         if manifest.get("version") != beta.get("version"):
             fail(f"external official plugin {registration.plugin_id} snapshot does not match its Beta release")
+        try:
+            snapshot_engines = require_release_engines(
+                manifest["extensions"]["com.xsec.desktop"]["engines"],
+                f"external official plugin {registration.plugin_id} snapshot manifest",
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExternalSourceFactoryError(
+                f"external official plugin {registration.plugin_id} snapshot engines are invalid"
+            ) from error
+        if snapshot_engines != beta.get("engines"):
+            fail(f"external official plugin {registration.plugin_id} snapshot engines do not match its Beta release")
         validate_evidence(root, registration, document)
 
 

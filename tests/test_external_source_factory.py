@@ -478,6 +478,21 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "artifact does not match"):
                 factory.validate_registry_and_snapshots(root)
 
+    def test_snapshot_engine_drift_is_rejected_before_signing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-engine-drift-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+
+            manifest_path = root / "plugins" / PLUGIN_ID / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["extensions"]["com.xsec.desktop"]["engines"] = {"xsec": ">=2", "pluginApi": "^2"}
+            write_json(manifest_path, manifest)
+
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "snapshot engines do not match"):
+                factory.validate_registry_and_snapshots(root)
+
     def test_same_external_beta_retry_is_idempotent_across_publishers(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-retry-") as directory:
             root = Path(directory)
