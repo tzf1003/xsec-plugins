@@ -6,7 +6,9 @@ business plugins. It follows the portable Agent Plugins marketplace contract:
 - `.agents/plugins/marketplace.json` is the discovery index.
 - Every `plugins/<id>/` directory carries `plugin.json` for XSEC and
   `.codex-plugin/plugin.json` for Codex-compatible discovery.
-- `.xsec-market/releases.json` selects immutable `.xsec-plugin` artifacts.
+- `.xsec-market/releases.json` is a signed release index. Schema v2 keeps an
+  append-only `releases` list and exposes independent `beta` and `stable`
+  channel pointers.
 
 ## Trust and releases
 
@@ -24,16 +26,49 @@ the protected publisher and Desktop-dispatch credentials) are governed by the
 That registry is the authoritative non-sensitive record; do not duplicate
 credential values or create a competing inventory here.
 
-The `Publish signed marketplace` workflow rebuilds deterministic archives,
-requests sidecars from the production Cloud KMS broker using a short-lived
-GitHub OIDC token, validates every broker response before it is written, and
-commits changed output to `main`. The broker accepts only the protected
-`xsec-plugins` production workflow; it calculates the document digest itself.
-After publication the workflow dispatches the immutable marketplace revision
-to the Desktop smoke gate. Desktop automatically installs the default official
-plugins on its first successful online launch, then stages official updates;
-custom sources remain confirmation-driven and continue to use their own
-user-pinned raw-signature protocol.
+## Release channels
+
+Release records are immutable and content addressed. A record contains its
+version, engine range, artifact URL(s) and SHA-256; its `releaseId` is derived
+from the version, engine range, each artifact's OS/architecture target, and
+SHA-256. It deliberately excludes the delivery URL so an existing package can
+retain its identity if its URL moves; the signed release record still binds the
+URL itself. Artifact filenames include a digest prefix, so a source change
+without a version bump cannot overwrite an existing package.
+
+The detailed developer and Agent operating rules are in the Chinese
+[plugin development and release lifecycle](docs/plugin-development-release-lifecycle.md).
+In particular, a marketplace publication canonically recomputes `releaseId`;
+one plugin `plugin.json.version` (SemVer) can name exactly one immutable
+release record and its artifact set. Different packaged content, engines, or
+artifact SHA-256 values require a version bump before publication. A local
+Desktop `dev_revision` is intentionally separate: it permits same-version hot
+reload while debugging a private workspace, but never creates a marketplace
+release, artifact, channel update, or cloud upload.
+
+The protected `Publish immutable marketplace beta release` workflow runs after a normal main
+change. It preserves every existing record and artifact, appends a new record
+only when the current deterministic package is new, and moves **only** the
+`beta` pointer. This includes a newly added plugin: its first Beta release
+leaves `channels.stable` as `null`, so it cannot reach Stable without
+an explicit promotion. It then requests sidecars from the production Cloud KMS broker
+using a short-lived GitHub OIDC token, validates every broker response, and
+publishes the generated metadata through a protected PR. The broker accepts
+only the protected `xsec-plugins` production workflow; it calculates the
+document digest itself.
+
+`Promote immutable marketplace release to stable` is a separate protected,
+manual workflow. Give it a plugin ID and an existing `releaseId` to promote or
+roll back. It changes only `channels.stable.releaseId`, never rebuilds an
+archive and never changes an artifact SHA-256. A fresh KMS sidecar is produced
+for the edited index and the update is again merged through a protected PR.
+
+Both workflows dispatch the resulting immutable revision to Desktop with an
+explicit `channel` (`beta` or `stable`). Desktop defaults to stable; opting
+into beta must be an explicit Desktop setting. Desktop automatically installs
+the default official plugins on its first successful online launch, then
+stages official updates; custom sources remain confirmation-driven and
+continue to use their own user-pinned raw-signature protocol.
 
 ## Local validation
 
@@ -49,11 +84,13 @@ python scripts\validate_market.py source --source-root . --built-root $temporary
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Local builds intentionally contain no official sidecars. Official sidecars can
-only be created in the protected production workflow, where the Cloud broker
-accepts GitHub Actions OIDC and signs through the non-exportable Vercel KMS
-key. A missing or invalid sidecar is rejected by the pinned official Desktop
-source.
+`--clean` removes stale sidecars only. It deliberately does **not** remove
+release history or artifacts, because either channel may still point at any
+earlier immutable release. Local builds intentionally contain no official
+sidecars. Official sidecars can only be created in the protected production
+workflow, where the Cloud broker accepts GitHub Actions OIDC and signs through
+the non-exportable Vercel KMS key. A missing or invalid sidecar is rejected by
+the pinned official Desktop source.
 
 See [the remote Desktop smoke-test contract](docs/desktop-remote-marketplace-smoke-contract.md)
 for the cross-platform release hand-off.

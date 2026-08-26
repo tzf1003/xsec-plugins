@@ -275,7 +275,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 publisher.github_oidc_token(environment)
         request_json.assert_not_called()
 
-    def test_raw_official_signing_key_path_is_removed_and_clean_deletes_legacy_outputs(self) -> None:
+    def test_raw_official_signing_key_path_is_removed_and_clean_deletes_only_stale_sidecars(self) -> None:
         for path in (
             SCRIPTS / "build_market.py",
             SCRIPTS / "validate_market.py",
@@ -297,7 +297,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             build_market.clean_generated_output(root)
             for suffix in (".sig", ".sig.jws.json"):
                 self.assertFalse(marketplace.with_name(marketplace.name + suffix).exists())
-            self.assertFalse(release.parent.exists())
+                self.assertFalse(release.with_name(release.name + suffix).exists())
+            self.assertTrue(release.exists())
 
     def test_publish_workflow_requires_protected_main_oidc_and_desktop_smoke_dispatch(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
@@ -322,7 +323,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             workflow.index("Require the protected marketplace publication token before checkout or KMS"),
             workflow.index("actions/checkout@v4"),
         )
-        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: publish KMS-signed marketplace artifacts')", workflow)
+        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release')", workflow)
+        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release')", workflow)
         self.assertIn("python scripts/kms_marketplace_publisher.py --root .", workflow)
         self.assertIn("python scripts/kms_marketplace_publisher.py --root . --validate-only", workflow)
         self.assertNotIn("XSEC_MARKETPLACE_SIGNING_KEY_B64", workflow)
@@ -335,6 +337,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("source_ref:$source_ref", workflow)
         self.assertIn("source_sha:$source_sha", workflow)
         self.assertIn("marketplace_revision:$marketplace_revision", workflow)
+        self.assertIn("channel:$channel", workflow)
         self.assertIn('--arg source_repository "$GITHUB_REPOSITORY"', workflow)
         self.assertIn('--arg source_ref "refs/heads/main"', workflow)
         self.assertIn('--arg source_sha "$GITHUB_SHA"', workflow)
@@ -346,9 +349,30 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("--event workflow_dispatch", workflow)
         self.assertIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
         self.assertIn('pull_number="$(gh pr view "$pull_url" --json number --jq .number)"', workflow)
-        self.assertIn('-f commit_title="chore: publish KMS-signed marketplace artifacts"', workflow)
+        self.assertIn('-f commit_title="chore: publish marketplace beta release"', workflow)
         self.assertIn('branch="xsec-marketplace/publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
         self.assertIn("workflow_dispatch:", validation_workflow)
+
+    def test_stable_promotion_workflow_only_moves_an_existing_pointer(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")
+        publish_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("plugin_id:", workflow)
+        self.assertIn("release_id:", workflow)
+        self.assertNotIn("push:", workflow)
+        self.assertIn("github.ref_protected", workflow)
+        self.assertIn("environment: production", workflow)
+        self.assertIn("python scripts/promote_release.py", workflow)
+        self.assertNotIn("scripts/build_market.py", workflow)
+        self.assertIn("chore: promote marketplace stable release", workflow)
+        self.assertIn('--arg channel "stable"', workflow)
+        # Both workflows write the same signed index and generated PRs; do
+        # not allow an otherwise valid promotion to race beta publication.
+        self.assertIn("group: xsec-marketplace-publish-main", workflow)
+        self.assertIn("'publish-main'", publish_workflow)
+        self.assertIn("github.run_id", publish_workflow)
+        self.assertIn("chore: publish marketplace beta release", publish_workflow)
+        self.assertIn("chore: promote marketplace stable release", publish_workflow)
 
 
 if __name__ == "__main__":

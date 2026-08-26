@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "com.xsec.asset-discovery",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "XSEC asset discovery business surface",
   "author": { "name": "XSEC" },
   "license": "MIT",

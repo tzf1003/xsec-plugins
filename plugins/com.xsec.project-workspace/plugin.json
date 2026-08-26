@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "com.xsec.project-workspace", "version": "1.2.0",
+  "name": "com.xsec.project-workspace", "version": "1.2.1",
   "description": "XSEC project assets, findings, reports and execution workspace", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "项目工作区", "publisher": "XSEC", "icon": "folder-kanban",
