@@ -22,10 +22,12 @@
 
 ## 清单、隔离上下文与接口
 
-在 `extensions.com.xsec.desktop.contributes.settingsPages` 中以稳定 ID 声明页面：
+在 `extensions.com.xsec.desktop.contributes.settingsPages` 中以稳定 ID 声明页面，并为每个页面声明
+`onSettingsPage:<settings-page-id>` 激活事件：
 
 ```json
 {
+  "activationEvents": ["onSettingsPage:example"],
   "settingsPages": {
     "example": {
       "title": "示例插件",
@@ -37,6 +39,9 @@
   }
 }
 ```
+
+Desktop 仅在这个事件已声明时挂载对应页面的隔离前端，因此页面的 `export activate(host)` 会在首次打开时运行。
+设置页激活不授予项目、会话、工作目录或实体上下文，前端仍仅接收下述隔离 context。
 
 宿主会将 Marketplace 插件统一放在“插件”组；`group` 是兼容字段，不能用来把
 第三方设置插入宿主的其他分组。启用的插件才显示其设置页；禁用或卸载后入口会
@@ -61,6 +66,17 @@ xsec.plugin.config.get({ key })
 xsec.plugin.config.set({ key, value })
 xsec.plugin.config.delete({ key })
 xsec.plugin.settings.open({ pageId? })
+```
+
+调用 `xsec.plugin.settings.open` 时也必须在 `frontendApi.methods` 中显式声明它；它是一个插件绑定的读权限操作：
+
+```json
+{
+  "xsec.plugin.config.get": { "capability": "pluginData.read", "binding": "plugin" },
+  "xsec.plugin.config.set": { "capability": "pluginData.write", "binding": "plugin" },
+  "xsec.plugin.config.delete": { "capability": "pluginData.write", "binding": "plugin" },
+  "xsec.plugin.settings.open": { "capability": "pluginData.read", "binding": "plugin" }
+}
 ```
 
 `get`、`set` 和 `delete` 只处理 JSON 值。key 最长 128 字节；单项序列化值上限
