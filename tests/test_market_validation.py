@@ -862,6 +862,30 @@ export function renderPlaceholder() {}
                 info = archive.getinfo("com.xsec.desktop/frontend/index.js")
             self.assertEqual(info.external_attr >> 16, 0o100644)
 
+    def test_builder_normalizes_utf8_text_line_endings_without_changing_binary_members(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-line-endings-") as directory:
+            root = Path(directory)
+            windows_plugin = root / "windows" / "com.xsec.test"
+            unix_plugin = root / "unix" / "com.xsec.test"
+            for plugin_dir, line_ending in ((windows_plugin, "\r\n"), (unix_plugin, "\n")):
+                entrypoint = plugin_dir / "com.xsec.desktop" / "frontend" / "index.js"
+                entrypoint.parent.mkdir(parents=True)
+                (plugin_dir / "plugin.json").write_bytes(
+                    (json.dumps({"name": "com.xsec.test", "version": "1.0.0"}) + line_ending).encode("utf-8")
+                )
+                entrypoint.write_bytes(f"export const platform = 'test';{line_ending}".encode("utf-8"))
+                (plugin_dir / "asset.bin").write_bytes(b"\x00binary\r\nbytes")
+
+            windows_artifact = root / "windows.xsec-plugin"
+            unix_artifact = root / "unix.xsec-plugin"
+            build_market.write_zip(windows_plugin, windows_artifact)
+            build_market.write_zip(unix_plugin, unix_artifact)
+
+            self.assertEqual(windows_artifact.read_bytes(), unix_artifact.read_bytes())
+            with zipfile.ZipFile(windows_artifact) as archive:
+                self.assertEqual(archive.read("com.xsec.desktop/frontend/index.js"), b"export const platform = 'test';\n")
+                self.assertEqual(archive.read("asset.bin"), b"\x00binary\r\nbytes")
+
     def test_manual_publish_is_rejected_outside_main_before_signing(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
         self.assertIn("enforce-publish-ref:", workflow)

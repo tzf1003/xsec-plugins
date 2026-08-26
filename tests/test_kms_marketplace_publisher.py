@@ -131,6 +131,19 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "source revision"):
                 publisher.sidecar_from_broker_response(response, document, REVISION)
 
+    def test_current_main_revision_overrides_stale_event_sha(self) -> None:
+        current_main = "b" * 40
+        environment = {
+            "GITHUB_SHA": REVISION,
+            publisher.CURRENT_SOURCE_REVISION_ENV: current_main,
+        }
+        self.assertEqual(publisher.source_revision_from_environment(environment), current_main)
+        self.assertEqual(publisher.source_revision_from_environment({"GITHUB_SHA": REVISION}), REVISION)
+        for invalid in ("", "B" * 40, "a" * 39):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, publisher.CURRENT_SOURCE_REVISION_ENV):
+                    publisher.source_revision_from_environment({"GITHUB_SHA": REVISION, publisher.CURRENT_SOURCE_REVISION_ENV: invalid})
+
     def test_unknown_protected_header_parameters_are_safely_identifiable(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
             document = self.make_marketplace(Path(directory))[0]
@@ -316,6 +329,11 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("XSEC_MARKETPLACE_PUBLISH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}", workflow)
         self.assertNotIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertIn("token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}", workflow)
+        self.assertIn("ref: refs/heads/main", workflow)
+        self.assertIn("Check out current protected main after acquiring the publication slot", workflow)
+        self.assertIn("id: current-main", workflow)
+        self.assertIn('source_revision="$(git rev-parse HEAD)"', workflow)
+        self.assertIn('git rev-parse origin/main', workflow)
         self.assertNotIn("require_publish_token:", workflow)
         self.assertIn("needs: enforce-publish-ref", workflow)
         self.assertNotIn("needs.require_publish_token.result == 'success'", workflow)
@@ -340,7 +358,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("channel:$channel", workflow)
         self.assertIn('--arg source_repository "$GITHUB_REPOSITORY"', workflow)
         self.assertIn('--arg source_ref "refs/heads/main"', workflow)
-        self.assertIn('--arg source_sha "$GITHUB_SHA"', workflow)
+        self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
+        self.assertIn('--arg source_sha "${{ steps.current-main.outputs.source_revision }}"', workflow)
         self.assertNotIn('event_type:"xsec_marketplace_smoke"', workflow)
         self.assertNotIn("marketplace_public_key_b64", workflow)
         self.assertNotIn("expected_default_plugin_ids", workflow)
@@ -369,6 +388,13 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         # Both workflows write the same signed index and generated PRs; do
         # not allow an otherwise valid promotion to race beta publication.
         self.assertIn("group: xsec-marketplace-publish-main", workflow)
+        self.assertIn("ref: refs/heads/main", workflow)
+        self.assertIn("Check out current protected main after acquiring the publication slot", workflow)
+        self.assertIn("id: current-main", workflow)
+        self.assertIn('source_revision="$(git rev-parse HEAD)"', workflow)
+        self.assertIn('git rev-parse origin/main', workflow)
+        self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
+        self.assertIn('--arg source_sha "${{ steps.current-main.outputs.source_revision }}"', workflow)
         self.assertIn("'publish-main'", publish_workflow)
         self.assertIn("github.run_id", publish_workflow)
         self.assertIn("chore: publish marketplace beta release", publish_workflow)

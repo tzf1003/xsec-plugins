@@ -70,6 +70,20 @@ the default official plugins on its first successful online launch, then
 stages official updates; custom sources remain confirmation-driven and
 continue to use their own user-pinned raw-signature protocol.
 
+## Publication queue and Agent evidence
+
+Beta publication and Stable promotion share one serialized publication slot.
+When a run waited in that queue, it checks out the protected `main` tip after
+obtaining the slot; it does not rebuild the historical GitHub event SHA that
+originally queued it. The resulting `source_sha` therefore identifies the
+actual source that built and KMS-signed the documents, and may include more
+than one previously queued `main` change. Agents must use the workflow's
+`source_sha`, `marketplace_revision`, and `channel` as publication evidence;
+they must not rerun an old event or hand-edit an index merely because that old
+event SHA has no standalone Beta artifact. Bot-generated metadata pushes are
+skip/no-op runs in a separate concurrency group, so they cannot replace a
+pending Stable promotion.
+
 ## Local validation
 
 Node.js 24 is required as well as Python 3.13. Marketplace validation invokes
@@ -91,6 +105,12 @@ sidecars. Official sidecars can only be created in the protected production
 workflow, where the Cloud broker accepts GitHub Actions OIDC and signs through
 the non-exportable Vercel KMS key. A missing or invalid sidecar is rejected by
 the pinned official Desktop source.
+
+The package builder canonicalizes CRLF to LF for UTF-8 text members before it
+hashes an artifact, while preserving binary members byte-for-byte. A Windows
+developer can therefore verify the same artifact SHA-256 that the Linux
+publisher will sign; an unchanged local package never needs a cloud upload
+just to discover a line-ending mismatch.
 
 See [the remote Desktop smoke-test contract](docs/desktop-remote-marketplace-smoke-contract.md)
 for the cross-platform release hand-off.

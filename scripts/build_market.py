@@ -73,6 +73,29 @@ def iter_plugin_files(plugin_dir: Path) -> list[Path]:
     return files
 
 
+def archive_bytes(path: Path) -> bytes:
+    """Return cross-platform-stable bytes for a package member.
+
+    Git may check UTF-8 source files out with CRLF on Windows even though the
+    protected Linux publisher sees LF.  Package text therefore needs one
+    explicit line-ending representation; otherwise an unchanged source commit
+    produces a different immutable artifact SHA-256 locally and in CI.
+
+    Binary members stay byte-for-byte intact.  A NUL byte is treated as binary
+    before UTF-8 decoding so an accidental CRLF sequence in an asset is never
+    rewritten.
+    """
+
+    value = path.read_bytes()
+    if b"\r\n" not in value or b"\x00" in value:
+        return value
+    try:
+        value.decode("utf-8")
+    except UnicodeDecodeError:
+        return value
+    return value.replace(b"\r\n", b"\n")
+
+
 def require_link_free_tree(root: Path, label: str) -> None:
     """Reject a link anywhere in a tree before copytree can follow it."""
 
@@ -313,7 +336,7 @@ def write_zip(plugin_dir: Path, destination: Path) -> None:
             # digest will be bound by a cross-platform KMS sidecar.
             info.create_system = 3
             info.external_attr = 0o100644 << 16
-            archive.writestr(info, path.read_bytes())
+            archive.writestr(info, archive_bytes(path))
 
 
 def require_safe_marketplace_path() -> None:
