@@ -110,6 +110,40 @@ class MarketplaceValidationTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, main_source)
 
+    def test_settings_read_failures_do_not_discard_workspace_data_or_clear_the_notice(self) -> None:
+        """Auxiliary plugin settings reads must not hide the useful failure state."""
+
+        asset_source = (
+            ROOT / "plugins" / "com.xsec.asset-discovery" / "com.xsec.desktop" / "frontend" / "index.js"
+        ).read_text(encoding="utf-8")
+        # Runs and assets are the main workspace data.  The settings read is
+        # intentionally converted to a value-or-error result before the
+        # Promise.all so a failed settings RPC cannot enter the branch that
+        # clears those two rendered lists.
+        self.assertIn(
+            'Promise.resolve().then(()=>host.request("xsec.asset-discovery.settings.get",{})).then(value=>({value}),error=>({error}))',
+            asset_source,
+        )
+        self.assertIn('const [runsData,assetsData,settings]=await Promise.all', asset_source)
+        self.assertIn('if("error" in settings)', asset_source)
+        self.assertIn('renderRuns(runsData);renderAssets(assetsData);if("error" in settings)', asset_source)
+
+        traffic_source = (
+            ROOT / "plugins" / "com.xsec.workspace.traffic" / "com.xsec.desktop" / "frontend" / "index.js"
+        ).read_text(encoding="utf-8")
+        # The helpers deliberately propagate to load().  Its single outer
+        # catch writes the error after the rejected Promise.all, so it cannot
+        # be overwritten by the success-only note("") below it.
+        self.assertIn(
+            'async function loadRules(){renderRules(await host.request("xsec.traffic.passive-rules.list",{}))}',
+            traffic_source,
+        )
+        self.assertIn(
+            'async function loadCa(){const view=await host.request("xsec.traffic.ca.status",{});',
+            traffic_source,
+        )
+        self.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`读取流量设置失败：', traffic_source)
+
     def test_v1_migration_initially_points_beta_and_stable_to_the_same_release(self) -> None:
         artifacts = [{"os": "any", "arch": "any", "url": "artifacts/test.xsec-plugin", "sha256": "a" * 64}]
         legacy = {
