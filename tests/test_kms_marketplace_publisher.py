@@ -369,7 +369,10 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         # Both workflows write the same signed index and generated PRs; do
         # not allow an otherwise valid promotion to race beta publication.
         self.assertIn("group: xsec-marketplace-publish-main", workflow)
-        self.assertIn("group: xsec-marketplace-publish-main", publish_workflow)
+        self.assertIn("'publish-main'", publish_workflow)
+        self.assertIn("github.run_id", publish_workflow)
+        self.assertIn("chore: publish marketplace beta release", publish_workflow)
+        self.assertIn("chore: promote marketplace stable release", publish_workflow)
 
 
 if __name__ == "__main__":

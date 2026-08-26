@@ -12,7 +12,11 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: xsec-marketplace-publish-main
+  # A generated metadata commit still starts this push workflow before its job
+  # condition skips it. Put that no-op run in its own group so it cannot
+  # replace a pending manual Stable promotion in the shared publication queue.
+  group: >-
+    xsec-marketplace-${{ (startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release') || startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release')) && github.run_id || 'publish-main' }}
   cancel-in-progress: false
 
 jobs:
