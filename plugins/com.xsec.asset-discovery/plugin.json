@@ -20,6 +20,8 @@
         "xsec.asset-discovery.assets.list": { "capability": "workspace.project.read", "binding": "context" },
         "xsec.asset-discovery.settings.get": { "capability": "pluginData.read", "binding": "plugin" },
         "xsec.asset-discovery.settings.set": { "capability": "pluginData.write", "binding": "plugin" },
+        "xsec.asset-discovery.credentials.set": { "capability": "pluginData.write", "binding": "plugin" },
+        "xsec.asset-discovery.credentials.clear": { "capability": "pluginData.write", "binding": "plugin" },
         "xsec.plugin.settings.open": { "capability": "pluginData.read", "binding": "plugin" }
       } },
       "contributes": {

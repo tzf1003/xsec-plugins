@@ -90,6 +90,11 @@ xsec.plugin.settings.open({ pageId? })
 `xsec.terminal.settings.get/set`。专用 RPC 同样必须由宿主按插件 ID、制品和能力
 白名单校验，不能成为调用任意原生命令的通道。
 
+需要保存凭据的受支持插件应声明独立的 `credentials.set({ kind, value })` 与
+`credentials.clear({ kind })` 写入 RPC；两者使用 `pluginData.write` 和 `binding: "plugin"`。
+设置页用密码输入框提交后必须立即清空输入，`settings.get` 只能返回已配置布尔值，不能返回密钥内容。秘密由 Host
+写入系统密钥库，不得进入 `xsec.plugin.config.*`、插件日志、错误提示或设置页初始值。
+
 ## 数据、安全与生效时机
 
 配置按“当前账户 + 插件 ID”隔离，且只保存在本机；禁用和升级保留数据，卸载删除

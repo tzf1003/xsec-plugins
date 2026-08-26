@@ -134,6 +134,18 @@ class MarketplaceValidationTests(unittest.TestCase):
             'const provider=settings.value?.provider==="fofa"?"fofa":"hunter";const missing=provider==="fofa"?!settings.value?.fofaApiKeyConfigured:!settings.value?.hunterApiKeyConfigured;',
             asset_source,
         )
+        # Credentials stay out of the generic plugin KV store. The settings
+        # page offers only write/clear actions; its settings read still
+        # receives the configured booleans rather than secret values.
+        self.assertIn('xsec.asset-discovery.credentials.set', asset_source)
+        self.assertIn('xsec.asset-discovery.credentials.clear', asset_source)
+        self.assertIn('type="password"', asset_source)
+        asset_manifest = json.loads(
+            (ROOT / "plugins" / "com.xsec.asset-discovery" / "plugin.json").read_text(encoding="utf-8")
+        )
+        asset_methods = asset_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
+        self.assertEqual(asset_methods["xsec.asset-discovery.credentials.set"]["binding"], "plugin")
+        self.assertEqual(asset_methods["xsec.asset-discovery.credentials.clear"]["binding"], "plugin")
 
         traffic_source = (
             ROOT / "plugins" / "com.xsec.workspace.traffic" / "com.xsec.desktop" / "frontend" / "index.js"
@@ -150,6 +162,8 @@ class MarketplaceValidationTests(unittest.TestCase):
             traffic_source,
         )
         self.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`读取流量设置失败：', traffic_source)
+        self.assertIn('enabled.onchange=()=>void toggle(rule.rule_id,enabled.checked,enabled);', traffic_source)
+        self.assertIn('control.checked=!enabled;note(`更新被动规则失败：', traffic_source)
 
     def test_v1_migration_initially_points_beta_and_stable_to_the_same_release(self) -> None:
         artifacts = [{"os": "any", "arch": "any", "url": "artifacts/test.xsec-plugin", "sha256": "a" * 64}]
