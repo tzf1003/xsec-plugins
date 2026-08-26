@@ -100,7 +100,10 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn("function terminalSettings(host)", settings_source)
         self.assertIn('profile=e("select")', settings_source)
         self.assertIn("xsec.terminal.settings.set", settings_source)
+        self.assertIn('catch(error){status(`读取终端设置失败：${error instanceof Error?error.message:String(error)}`,true);throw error}', settings_source)
         self.assertIn('host.context?.kind==="settings-page"', main_source)
+        self.assertIn('retry=e("button","settings-link","重试启动终端")', main_source)
+        self.assertIn('retry.onclick=()=>void open()', main_source)
         for forbidden in (
             'e("select")',
             '"重新启动"',
@@ -140,6 +143,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('xsec.asset-discovery.credentials.set', asset_source)
         self.assertIn('xsec.asset-discovery.credentials.clear', asset_source)
         self.assertIn('type="password"', asset_source)
+        self.assertIn('try{await load();note("密钥已保存到系统密钥库。")}catch{}', asset_source)
         asset_manifest = json.loads(
             (ROOT / "plugins" / "com.xsec.asset-discovery" / "plugin.json").read_text(encoding="utf-8")
         )
@@ -164,6 +168,9 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`读取流量设置失败：', traffic_source)
         self.assertIn('enabled.onchange=()=>void toggle(rule.rule_id,enabled.checked,enabled);', traffic_source)
         self.assertIn('control.checked=!enabled;note(`更新被动规则失败：', traffic_source)
+        self.assertIn('CA 已导入，但刷新 CA 状态失败', traffic_source)
+        self.assertIn('规则已保存，但刷新规则列表失败', traffic_source)
+        self.assertIn('规则已删除，但刷新规则列表失败', traffic_source)
 
     def test_v1_migration_initially_points_beta_and_stable_to_the_same_release(self) -> None:
         artifacts = [{"os": "any", "arch": "any", "url": "artifacts/test.xsec-plugin", "sha256": "a" * 64}]
