@@ -347,6 +347,22 @@ class MarketplaceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(FactoryError, "cannot change its registered source identity"):
                 validate_factory(factory, "example/factory", baseline_root=baseline)
 
+    def test_trusted_baseline_without_a_factory_allows_its_first_published_registration(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-first-publication-test-") as directory:
+            root = Path(directory)
+            factory = root / "current"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            # A repository may adopt the Factory template after its protected
+            # main history already exists. An absent old registry is a valid
+            # empty publication history, not a corrupted baseline.
+            baseline = root / "pre-factory-baseline"
+            baseline.mkdir()
+            validate_factory(factory, "example/factory", baseline_root=baseline)
+
     def test_registry_repository_slug_rejects_path_like_components(self) -> None:
         for repository in ("../plugin", "team/..", ".team/plugin", "team/plugin..backup"):
             with self.assertRaisesRegex(FactoryError, "owner/repository"):

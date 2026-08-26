@@ -12,6 +12,7 @@ from factory_core import (
     FactoryError,
     MARKETPLACE_RELATIVE_PATH,
     PLUGIN_ROOT_RELATIVE_PATH,
+    REGISTRY_RELATIVE_PATH,
     artifact_url,
     is_link,
     load_registry,
@@ -159,6 +160,20 @@ def validate_trusted_baseline_continuity(root: Path, registry, baseline_root: Pa
         raise FactoryError("trusted Factory baseline is unavailable") from error
     if baseline == current or is_link(baseline) or not baseline.is_dir():
         raise FactoryError("trusted Factory baseline must be a distinct regular directory")
+
+    baseline_registry_directory = baseline / REGISTRY_RELATIVE_PATH.parent
+    baseline_registry_path = baseline / REGISTRY_RELATIVE_PATH
+    if is_link(baseline_registry_directory):
+        raise FactoryError("trusted Factory baseline registry directory must not be a symbolic link")
+    if baseline_registry_directory.exists() and not baseline_registry_directory.is_dir():
+        raise FactoryError("trusted Factory baseline registry directory must be a regular directory")
+    if is_link(baseline_registry_path):
+        raise FactoryError("trusted Factory baseline registry must not be a symbolic link")
+    if not baseline_registry_path.exists():
+        # A Factory can first be introduced relative to a protected revision
+        # that predates this metadata. That state has no release history to
+        # retain; once a registry exists, the checks below are append-only.
+        return
 
     baseline_registry = load_registry(baseline)
     baseline_histories = published_release_history(

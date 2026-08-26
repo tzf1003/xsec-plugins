@@ -646,6 +646,21 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             ):
                 factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
+    def test_trusted_baseline_without_a_factory_allows_its_first_published_registration(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-first-factory-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+
+            # The protected main revision can predate the Factory entirely.
+            # It supplies no publication history, so first publication stays
+            # valid while all later revisions use append-only continuity.
+            baseline = workspace / "pre-factory-baseline"
+            baseline.mkdir()
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_snapshot_root_rejects_symlink_entries_before_ownership_checks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-snapshot-link-") as directory:
             root = Path(directory)

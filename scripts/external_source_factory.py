@@ -1275,6 +1275,21 @@ def validate_trusted_baseline_continuity(
     if baseline == current or is_link(baseline) or not baseline.is_dir():
         fail("trusted Factory baseline must be a distinct regular directory")
 
+    baseline_registry_directory = baseline / REGISTRY_RELATIVE_PATH.parent
+    baseline_registry_path = baseline / REGISTRY_RELATIVE_PATH
+    if is_link(baseline_registry_directory):
+        fail("trusted Factory baseline registry directory must not be a symbolic link")
+    if baseline_registry_directory.exists() and not baseline_registry_directory.is_dir():
+        fail("trusted Factory baseline registry directory must be a regular directory")
+    if is_link(baseline_registry_path):
+        fail("trusted Factory baseline registry must not be a symbolic link")
+    if not baseline_registry_path.exists():
+        # The first Factory-enabled change may be compared with a protected
+        # revision that predates the Factory itself. It has no publication
+        # history to preserve, while a baseline that does contain a registry
+        # remains subject to the strict append-only checks below.
+        return
+
     baseline_registrations = load_registry(baseline)
     baseline_histories = published_release_history(
         baseline,
