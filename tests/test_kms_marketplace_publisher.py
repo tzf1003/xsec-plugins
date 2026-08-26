@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -20,10 +22,63 @@ import kms_marketplace_publisher as publisher  # noqa: E402
 
 
 REVISION = "a" * 40
+TEST_KMS_KID = "historical-test-key"
+TEST_KMS_PUBLIC_KEY_X = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+TEST_KMS_PRIVATE_KEY_D = "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"
+TEST_KMS_JWKS = json.dumps(
+    {
+        "keys": [
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": TEST_KMS_PUBLIC_KEY_X,
+                "kid": TEST_KMS_KID,
+                "alg": "EdDSA",
+                "use": "sig",
+            }
+        ]
+    },
+    separators=(",", ":"),
+).encode("utf-8")
+
+# RFC 8032's first Ed25519 test key, used only to produce deterministic test
+# signatures. Production verification deliberately has no private-key input.
+NODE_ED25519_SIGN_PROGRAM = f"""
+import {{ createPrivateKey, sign }} from "node:crypto";
+import {{ readFileSync }} from "node:fs";
+
+const key = createPrivateKey({{
+  key: {{
+    kty: "OKP",
+    crv: "Ed25519",
+    x: "{TEST_KMS_PUBLIC_KEY_X}",
+    d: "{TEST_KMS_PRIVATE_KEY_D}",
+  }},
+  format: "jwk",
+}});
+const signingInput = Buffer.from(readFileSync(0, "utf8"), "base64");
+process.stdout.write(sign(null, signingInput, key).toString("base64url"));
+"""
 
 
 def base64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def sign_test_ed25519(signing_input: bytes) -> bytes:
+    """Sign one JWS input with the public RFC 8032 test fixture key."""
+
+    node = shutil.which("node")
+    if node is None:
+        raise AssertionError("Node.js is required by the KMS sidecar verifier tests")
+    completed = subprocess.run(
+        [node, "--input-type=module", "--eval", NODE_ED25519_SIGN_PROGRAM],
+        input=base64.b64encode(signing_input),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    return base64.urlsafe_b64decode(completed.stdout + b"=" * (-len(completed.stdout) % 4))
 
 
 class KmsMarketplacePublisherTests(unittest.TestCase):
@@ -82,6 +137,111 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             separators=(",", ":"),
         ).encode("utf-8")
 
+    def signed_historical_sidecar(
+        self,
+        document: publisher.MarketplaceDocument,
+        *,
+        detached: bool = False,
+    ) -> bytes:
+        """Build a real, historical KMS sidecar without a network request."""
+
+        envelope = {
+            "schema_version": 1,
+            "purpose": document.purpose,
+            "subject": document.subject,
+            "content_sha256": hashlib.sha256(document.path.read_bytes()).hexdigest(),
+            "source_revision": REVISION,
+            "issued_at": 1_700_000_000,
+        }
+        envelope_bytes = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+        header: dict[str, object] = {
+            "alg": "EdDSA",
+            "kid": TEST_KMS_KID,
+            "iss": publisher.OFFICIAL_MARKETPLACE_KMS_ISSUER_URL,
+        }
+        if detached:
+            header.update({"b64": False, "crit": ["b64"]})
+        protected = base64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+        payload = "" if detached else base64url(envelope_bytes)
+        signing_payload = envelope_bytes if detached else payload.encode("ascii")
+        signature = sign_test_ed25519(protected.encode("ascii") + b"." + signing_payload)
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "envelope_b64": base64url(envelope_bytes),
+                "jws": {
+                    "protected": protected,
+                    "payload": payload,
+                    "signature": base64url(signature),
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def test_retained_historical_sidecar_requires_a_valid_issuer_signature(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-history-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            sidecar = self.signed_historical_sidecar(document)
+            self.assertEqual(
+                publisher.verify_historical_sidecar_signature(
+                    sidecar,
+                    document,
+                    now=1_700_000_001,
+                    jwks_bytes=TEST_KMS_JWKS,
+                ),
+                REVISION,
+            )
+
+            forged = json.loads(sidecar)
+            forged["jws"]["signature"] = base64url(b"f" * 64)
+            with self.assertRaisesRegex(
+                publisher.MarketplaceKmsPublisherError,
+                "signature verification failed",
+            ):
+                publisher.verify_historical_sidecar_signature(
+                    json.dumps(forged, separators=(",", ":")).encode("utf-8"),
+                    document,
+                    now=1_700_000_001,
+                    jwks_bytes=TEST_KMS_JWKS,
+                )
+
+    def test_retained_historical_sidecar_verifies_detached_rfc_7797_jws(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-history-") as directory:
+            document = self.make_marketplace(Path(directory))[0]
+            self.assertEqual(
+                publisher.verify_historical_sidecar_signature(
+                    self.signed_historical_sidecar(document, detached=True),
+                    document,
+                    now=1_700_000_001,
+                    jwks_bytes=TEST_KMS_JWKS,
+                ),
+                REVISION,
+            )
+
+    def test_pinned_issuer_jwks_rejects_unknown_duplicate_and_malformed_keys(self) -> None:
+        self.assertEqual(
+            publisher.pinned_issuer_ed25519_key(TEST_KMS_JWKS, TEST_KMS_KID),
+            TEST_KMS_PUBLIC_KEY_X,
+        )
+        with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "not published"):
+            publisher.pinned_issuer_ed25519_key(TEST_KMS_JWKS, "unknown-key")
+
+        duplicate = json.loads(TEST_KMS_JWKS)
+        duplicate["keys"].append(dict(duplicate["keys"][0]))
+        with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "duplicate key id"):
+            publisher.pinned_issuer_ed25519_key(
+                json.dumps(duplicate, separators=(",", ":")).encode("utf-8"),
+                TEST_KMS_KID,
+            )
+
+        malformed = json.loads(TEST_KMS_JWKS)
+        malformed["keys"][0]["x"] = base64url(b"x" * 31)
+        with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "32-byte Ed25519 key"):
+            publisher.pinned_issuer_ed25519_key(
+                json.dumps(malformed, separators=(",", ":")).encode("utf-8"),
+                TEST_KMS_KID,
+            )
+
     def test_publisher_writes_only_desktop_sidecar_schema_for_every_document(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
             root = Path(directory)
@@ -108,6 +268,40 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 self.assertNotIn("issuer_id", sidecar)
                 self.assertNotIn("issuer_url", sidecar)
             self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+
+    def test_publisher_signs_external_factory_provenance_in_a_separate_fixed_proof_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            evidence = root / ".xsec-factory" / "official-publications" / "com.example.alpha.json"
+            evidence.parent.mkdir(parents=True)
+            evidence.write_bytes(b'{"schemaVersion":1,"pluginId":"com.example.alpha","events":[]}\n')
+
+            documents = publisher.marketplace_documents(root)
+            provenance = next(
+                document for document in documents
+                if document.purpose == publisher.OFFICIAL_PUBLICATION_PROVENANCE_PURPOSE
+            )
+            self.assertEqual(
+                provenance.subject,
+                ".xsec-factory/official-publications/com.example.alpha.json",
+            )
+            self.assertEqual(
+                publisher.sidecar_path_for(provenance),
+                root / ".xsec-factory" / "official-publication-proofs" / "com.example.alpha.json",
+            )
+
+            written = publisher.publish_sidecars(root, REVISION, self.broker_response)
+            self.assertIn(publisher.sidecar_path_for(provenance), written)
+            self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+
+    def test_official_factory_provenance_rejects_windows_device_plugin_ids(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-id-") as directory:
+            root = Path(directory)
+            for plugin_id in ("con", "nul", "lpt1", "com1.foo"):
+                with self.subTest(plugin_id=plugin_id):
+                    with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "plugin ID is unsafe"):
+                        publisher.official_publication_provenance_document(root, plugin_id)
 
     def test_unexpected_broker_issuer_prevents_every_sidecar_write(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-") as directory:
@@ -303,7 +497,10 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             release = root / "plugins" / "com.example" / ".xsec-market" / "releases.json"
             marketplace.parent.mkdir(parents=True)
             release.parent.mkdir(parents=True)
-            marketplace.write_text("{}", encoding="utf-8")
+            marketplace.write_text(
+                json.dumps({"plugins": [{"source": {"path": "./plugins/com.example"}}]}),
+                encoding="utf-8",
+            )
             release.write_text("{}", encoding="utf-8")
             for document in (marketplace, release):
                 document.with_name(document.name + ".sig").write_text("legacy", encoding="utf-8")
@@ -324,10 +521,18 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('node-version: "24"', workflow)
         self.assertIn("actions/setup-node@v4", validation_workflow)
         self.assertIn('node-version: "24"', validation_workflow)
+        self.assertIn("fetch-depth: 0", validation_workflow)
+        self.assertIn("Materialize trusted pre-change Factory baseline", validation_workflow)
+        self.assertIn("PULL_REQUEST_BASE_SHA", validation_workflow)
+        self.assertIn("PUSH_BEFORE_SHA", validation_workflow)
+        self.assertIn("git worktree add --detach", validation_workflow)
+        self.assertIn("--baseline-root", validation_workflow)
         self.assertIn("environment: production", workflow)
         self.assertIn("github.ref_protected", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("XSEC_MARKETPLACE_PUBLISH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}", workflow)
+        self.assertIn("actions/create-github-app-token@v2", workflow)
+        self.assertIn("permission-contents: read", workflow)
         self.assertNotIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertIn("token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}", workflow)
         self.assertIn("ref: refs/heads/main", workflow)
@@ -369,8 +574,14 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("--event workflow_dispatch", workflow)
         self.assertIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
         self.assertIn('pull_number="$(gh pr view "$pull_url" --json number --jq .number)"', workflow)
-        self.assertIn('-f commit_title="chore: publish marketplace beta release"', workflow)
-        self.assertIn('branch="xsec-marketplace/publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
+        # The protected workflow selects a title/prefix based on whether the
+        # request is built-in or an approved external Factory publication.
+        # Keep the legacy built-in values and ensure the dynamic values are
+        # the ones handed to GitHub's merge API and generated branch name.
+        self.assertIn('echo "commit_title=chore: publish marketplace beta release"', workflow)
+        self.assertIn('COMMIT_TITLE: ${{ steps.request.outputs.commit_title }}', workflow)
+        self.assertIn('-f commit_title="$COMMIT_TITLE"', workflow)
+        self.assertIn('branch="xsec-marketplace/${BRANCH_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
         self.assertIn("workflow_dispatch:", validation_workflow)
 
     def test_stable_promotion_workflow_only_moves_an_existing_pointer(self) -> None:

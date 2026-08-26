@@ -43,6 +43,30 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("Publication queue and Agent evidence", readme)
         self.assertIn("event SHA", readme)
 
+    def test_external_source_transport_boundary_is_documented(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("Git transport", document)
+        self.assertIn("verified ref", document)
+        self.assertIn("https://github.com", readme)
+        self.assertIn("insteadOf", readme)
+        self.assertIn("local verified ref", readme)
+
+    def test_disabled_external_history_requires_cryptographic_sidecar_verification(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("pinned Vercel KMS issuer JWKS", readme)
+        self.assertIn("cryptographically verifies", readme)
+        self.assertIn("Ed25519", document)
+        self.assertIn("密码学验证 sidecar", document)
+
+    def test_published_external_registry_removal_is_blocked_against_the_trusted_baseline(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("trusted pre-change\nFactory revision", readme)
+        self.assertIn("同一 PR 同时删除 registry、快照和证据", document)
+        self.assertIn("设为 `disabled`", document)
+
 
 if __name__ == "__main__":
     unittest.main()

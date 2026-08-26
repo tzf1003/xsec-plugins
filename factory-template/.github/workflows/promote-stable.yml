@@ -1,0 +1,263 @@
+name: Promote Marketplace Factory beta to stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin_id:
+        description: Registered plugin ID to promote from its main branch
+        required: true
+        type: string
+      source_sha:
+        description: Exact lowercase 40-character commit SHA already pushed to main
+        required: true
+        type: string
+      beta_release_id:
+        description: Existing immutable Beta releaseId that main must rebuild exactly
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xsec-marketplace-factory-publish
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    # A protected ref alone is not caller authorization. Require the same
+    # reviewer-gated release environment as Beta before this write-capable job
+    # can upload or promote an immutable Factory release.
+    environment: production
+    steps:
+      - name: Require an explicit Factory-main dispatch
+        env:
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
+            echo "Run Marketplace Factory promotion from a protected refs/heads/main." >&2
+            exit 1
+          }
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Require the isolated source-reader GitHub App secrets
+        env:
+          FACTORY_GITHUB_APP_ID: ${{ secrets.FACTORY_GITHUB_APP_ID }}
+          FACTORY_GITHUB_APP_PRIVATE_KEY: ${{ secrets.FACTORY_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          [ -n "$FACTORY_GITHUB_APP_ID" ] && [ -n "$FACTORY_GITHUB_APP_PRIVATE_KEY" ] || {
+            echo "Configure FACTORY_GITHUB_APP_ID and FACTORY_GITHUB_APP_PRIVATE_KEY before promoting." >&2
+            exit 1
+          }
+      - name: Validate the registered main source before requesting repository access
+        id: prepare
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python scripts/factory_publish.py --github-output "$GITHUB_OUTPUT" prepare \
+            --plugin-id "$PLUGIN_ID" --channel stable --source-sha "$SOURCE_SHA"
+      - name: Create a read-only source repository token
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FACTORY_GITHUB_APP_ID }}
+          private-key: ${{ secrets.FACTORY_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ steps.prepare.outputs.source_owner }}
+          repositories: ${{ steps.prepare.outputs.source_repo }}
+          # The source App must be installed with read-only Contents access;
+          # request the same minimum permission in the issued token.
+          permission-contents: read
+      - name: Check out the exact external source commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.prepare.outputs.source_repository }}
+          # User Factories intentionally support GitHub.com only. Do not
+          # inherit a self-hosted or caller-provided GitHub server URL.
+          github-server-url: https://github.com
+          ref: ${{ steps.prepare.outputs.source_sha }}
+          token: ${{ steps.source-token.outputs.token }}
+          path: .factory-source
+          fetch-depth: 0
+          # The reachability fetch below supplies an ephemeral header. Never
+          # leave a GitHub App reader token in untrusted source .git/config.
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Require the exact commit to remain reachable from main
+        env:
+          SOURCE_SHA: ${{ steps.prepare.outputs.source_sha }}
+          SOURCE_REF: ${{ steps.prepare.outputs.source_ref }}
+          SOURCE_REPOSITORY: ${{ steps.prepare.outputs.source_repository }}
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          token_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
+          # Keep the raw source-reader token out of every Git child process,
+          # including the local-config inspection below.
+          unset SOURCE_TOKEN
+          # `SOURCE_REPOSITORY` is emitted by the trusted registry parser,
+          # not copied from the dispatch input.  Never fetch through `origin`:
+          # URL rewrites and remote helpers can retarget a local remote name.
+          source_git_url="https://github.com/${SOURCE_REPOSITORY}.git"
+          if ! origin_url="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            git -C .factory-source config --local --no-includes --get-all remote.origin.url)"; then
+            echo "The external source checkout has no readable origin URL." >&2
+            exit 1
+          fi
+          case "$origin_url" in
+            "https://github.com/${SOURCE_REPOSITORY}"|"$source_git_url") ;;
+            *)
+              echo "The external source checkout did not retain the canonical GitHub HTTPS origin." >&2
+              exit 1
+              ;;
+          esac
+          source_config_keys="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            git -C .factory-source config --local --no-includes --name-only --list)"
+          unsafe_source_config="$(printf '%s\n' "$source_config_keys" | LC_ALL=C grep -E -i '^(url\..*\.(insteadof|pushinsteadof)|remote\..*\.(uploadpack|receivepack|vcs|proxy)|core\.gitproxy|http\..*|credential(\..*)?\.helper|protocol\..*|include(\..*)?\.path|includeif\..*\.path)$' || true)"
+          if [ -n "$unsafe_source_config" ]; then
+            echo "The external source checkout contains a forbidden Git transport override: $unsafe_source_config" >&2
+            exit 1
+          fi
+          # Do not pass the source-reader token to a child environment. This
+          # direct fetch pins HTTPS, ignores system/global config, refuses
+          # redirects, and writes a verified local ref instead of trusting a
+          # source-controlled remote alias.
+          env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+            -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
+            -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 \
+            git -C .factory-source \
+              -c credential.helper= \
+              -c core.hooksPath=/dev/null \
+              -c http.sslVerify=true \
+              -c http.followRedirects=false \
+              -c protocol.allow=never \
+              -c protocol.https.allow=always \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
+              fetch --no-tags "$source_git_url" "$SOURCE_REF:refs/remotes/xsec-factory-source/verified"
+          unset token_header
+          [ "$(git -C .factory-source rev-parse HEAD)" = "$SOURCE_SHA" ]
+          git -C .factory-source cat-file -e "$SOURCE_SHA^{commit}"
+          git -C .factory-source merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/xsec-factory-source/verified
+          if git -C .factory-source config --local --no-includes --get-regexp '^http\..*\.extraheader$' >/dev/null; then
+            echo "The external source checkout retained an HTTP credential." >&2
+            exit 1
+          fi
+      - name: Rebuild main and promote only a byte-identical Beta release
+        id: promote
+        env:
+          PLUGIN_ID: ${{ steps.prepare.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.prepare.outputs.source_sha }}
+          BETA_RELEASE_ID: ${{ inputs.beta_release_id }}
+        run: |
+          python scripts/factory_publish.py --github-output "$GITHUB_OUTPUT" stable \
+            --plugin-id "$PLUGIN_ID" \
+            --source-root .factory-source \
+            --source-sha "$SOURCE_SHA" \
+            --beta-release-id "$BETA_RELEASE_ID" \
+            --factory-repository "$GITHUB_REPOSITORY" \
+            --publisher "$GITHUB_ACTOR"
+      - name: Validate generated snapshots and release metadata before attestation upload
+        # A changed Stable pointer appends an evidence event whose immutable
+        # Release asset is created in the controlled production steps below.
+        # The normal source gate always performs the strict check after it
+        # downloads the complete proof set.
+        run: >-
+          python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
+          --allow-unsigned-publication-attestations
+      - name: Materialize the exact immutable Stable provenance attestation
+        id: stable-attestation
+        if: ${{ steps.promote.outputs.changed == 'true' }}
+        env:
+          PLUGIN_ID: ${{ steps.promote.outputs.plugin_id }}
+          RELEASE_ID: ${{ steps.promote.outputs.release_id }}
+          SOURCE_SHA: ${{ steps.promote.outputs.source_sha }}
+        run: |
+          python scripts/factory_attestation.py --github-output "$GITHUB_OUTPUT" materialize \
+            --plugin-id "$PLUGIN_ID" \
+            --channel stable \
+            --release-id "$RELEASE_ID" \
+            --source-sha "$SOURCE_SHA" \
+            --output-directory "$RUNNER_TEMP/xsec-factory-new-attestation"
+      - name: Verify the immutable Beta package and publish the Stable provenance attestation
+        if: ${{ steps.promote.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FACTORY_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.promote.outputs.release_tag }}
+          ARTIFACT_NAME: ${{ steps.promote.outputs.artifact_name }}
+          ARTIFACT_SHA256: ${{ steps.promote.outputs.artifact_sha256 }}
+          ATTESTATION_PATH: ${{ steps.stable-attestation.outputs.attestation_path }}
+          ATTESTATION_NAME: ${{ steps.stable-attestation.outputs.attestation_name }}
+          ATTESTATION_SHA256: ${{ steps.stable-attestation.outputs.attestation_sha256 }}
+        run: |
+          set -euo pipefail
+          release_repo="github.com/$FACTORY_REPOSITORY"
+          asset_directory="$RUNNER_TEMP/xsec-factory-stable-asset"
+          mkdir -p "$asset_directory"
+          # The Factory release record is not enough on its own: do not make
+          # Stable discoverable if the immutable Beta asset was deleted or
+          # replaced after Beta publication.
+          gh release view "$RELEASE_TAG" --repo "$release_repo" --json tagName >/dev/null
+          gh release download "$RELEASE_TAG" --repo "$release_repo" --pattern "$ARTIFACT_NAME" --dir "$asset_directory"
+          asset_path="$asset_directory/$ARTIFACT_NAME"
+          [ -f "$asset_path" ] || { echo "Expected immutable Factory Release asset is unavailable." >&2; exit 1; }
+          [ "$(sha256sum "$asset_path" | awk '{print $1}')" = "$ARTIFACT_SHA256" ] || {
+            echo "Immutable Factory Release asset digest does not match the selected Beta record." >&2
+            exit 1
+          }
+          attestation_directory="$RUNNER_TEMP/xsec-factory-stable-attestation"
+          mkdir -p "$attestation_directory"
+          if gh release download "$RELEASE_TAG" --repo "$release_repo" --pattern "$ATTESTATION_NAME" --dir "$attestation_directory"; then
+            existing_attestation="$attestation_directory/$ATTESTATION_NAME"
+            [ -f "$existing_attestation" ] || { echo "Expected Stable provenance attestation is unavailable." >&2; exit 1; }
+            [ "$(sha256sum "$existing_attestation" | awk '{print $1}')" = "$ATTESTATION_SHA256" ] || {
+              echo "Existing Stable provenance attestation has different bytes." >&2
+              exit 1
+            }
+          else
+            gh release upload "$RELEASE_TAG" --repo "$release_repo" "$ATTESTATION_PATH#$ATTESTATION_NAME"
+          fi
+      - name: Download and verify the complete immutable provenance set
+        id: attestation-proofs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output_directory="$RUNNER_TEMP/xsec-factory-publication-attestation-proofs"
+          [ ! -e "$output_directory" ] || {
+            echo "Publication attestation proof path already exists." >&2
+            exit 1
+          }
+          python scripts/factory_attestation.py --github-output "$GITHUB_OUTPUT" download \
+            --factory-repository "$GITHUB_REPOSITORY" \
+            --output-directory "$output_directory"
+      - name: Strictly validate the complete immutable provenance set before moving Stable
+        env:
+          ATTESTATION_ROOT: ${{ steps.attestation-proofs.outputs.attestation_root }}
+        run: >-
+          python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY"
+          --publication-attestation-root "$ATTESTATION_ROOT"
+      - name: Commit the stable channel pointer and immutable promotion evidence
+        if: ${{ steps.promote.outputs.changed == 'true' }}
+        env:
+          PLUGIN_ID: ${{ steps.promote.outputs.plugin_id }}
+        run: |
+          set -euo pipefail
+          git add -- "plugins/$PLUGIN_ID/.xsec-market/releases.json" ".xsec-factory/publications/$PLUGIN_ID.json"
+          git diff --cached --quiet && exit 0
+          git config user.name "xsec-marketplace-factory[bot]"
+          git config user.email "xsec-marketplace-factory[bot]@users.noreply.github.com"
+          git commit -m "chore: promote $PLUGIN_ID stable"
+          git push origin HEAD:refs/heads/main

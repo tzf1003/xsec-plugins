@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "marketplace": {
+    "name": "my-xsec-marketplace",
+    "displayName": "My XSEC Plugin Marketplace"
+  },
+  "plugins": []
+}

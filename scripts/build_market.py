@@ -13,11 +13,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,12 +26,28 @@ MARKETPLACE_RELATIVE_PATH = Path(".agents") / "plugins" / "marketplace.json"
 MARKETPLACE = ROOT / MARKETPLACE_RELATIVE_PATH
 PLUGIN_ROOT = ROOT / "plugins"
 ARTIFACT_DIR_NAME = "artifacts"
-EXCLUDED_PARTS = {"__pycache__", ".git", ".xsec-market"}
+# Dependency installs are not a reproducible source input. The external
+# Factory snapshot already excludes node_modules, so the shared deterministic
+# packager must do the same when a Stable source checkout is hashed directly.
+EXCLUDED_PARTS = {"__pycache__", ".git", ".xsec-market", "node_modules"}
 RELEASE_ID_PATTERN = re.compile(r"^sha256-[0-9a-f]{64}$")
 TEXT_ARCHIVE_SUFFIXES = frozenset({
     ".cjs", ".css", ".html", ".htm", ".js", ".json", ".jsx", ".md",
     ".mjs", ".ps1", ".sh", ".svg", ".toml", ".ts", ".tsx", ".txt",
     ".xml", ".yaml", ".yml",
+})
+MAX_PACKAGE_ENTRIES = 10_000
+MAX_PACKAGE_FILE_BYTES = 64 * 1024 * 1024
+MAX_PACKAGE_TOTAL_BYTES = 128 * 1024 * 1024
+MAX_SOURCE_TREE_ENTRIES = MAX_PACKAGE_ENTRIES
+# Keep this preflight in lockstep with Desktop's package installer. Source
+# repositories are authored on many platforms, while the immutable artifact
+# must extract unambiguously on Windows and macOS too.
+WINDOWS_FORBIDDEN_COMPONENT_CHARACTERS = frozenset('<>"\\|?*')
+WINDOWS_RESERVED_DEVICE_NAMES = frozenset({
+    "con", "prn", "aux", "nul", "clock$", "conin$", "conout$",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
 })
 
 
@@ -67,15 +84,103 @@ def iter_plugin_files(plugin_dir: Path) -> list[Path]:
     if is_link(plugin_dir):
         raise ValueError(f"plugin directory must not be a symbolic link: {plugin_dir}")
     files: list[Path] = []
-    for path in plugin_dir.rglob("*"):
-        relative = path.relative_to(plugin_dir)
-        if any(part in EXCLUDED_PARTS for part in relative.parts):
-            continue
-        if is_link(path):
-            raise ValueError(f"plugin package must not contain symbolic links: {relative.as_posix()}")
-        if path.is_file():
+    total_bytes = 0
+    source_entries = 0
+    # Prune ignored source trees before visiting their contents. A committed
+    # node_modules/.git tree is deliberately not a package input and must not
+    # turn preflight itself into a privileged runner DoS.
+    for current, directories, names in os.walk(plugin_dir, topdown=True, followlinks=False):
+        current_path = Path(current)
+        retained_directories: list[str] = []
+        for name in directories:
+            path = current_path / name
+            relative = path.relative_to(plugin_dir)
+            if name in EXCLUDED_PARTS:
+                continue
+            if is_link(path):
+                raise ValueError(f"plugin package must not contain symbolic links: {relative.as_posix()}")
+            source_entries += 1
+            if source_entries > MAX_SOURCE_TREE_ENTRIES:
+                raise ValueError("plugin source tree contains too many files or directories")
+            retained_directories.append(name)
+        directories[:] = retained_directories
+        for name in names:
+            path = current_path / name
+            relative = path.relative_to(plugin_dir)
+            if any(part in EXCLUDED_PARTS for part in relative.parts):
+                continue
+            if is_link(path):
+                raise ValueError(f"plugin package must not contain symbolic links: {relative.as_posix()}")
+            source_entries += 1
+            if source_entries > MAX_SOURCE_TREE_ENTRIES:
+                raise ValueError("plugin source tree contains too many files or directories")
+            if not path.is_file():
+                continue
+            if len(files) >= MAX_PACKAGE_ENTRIES:
+                raise ValueError("plugin package contains too many files")
+            size = path.stat().st_size
+            if size > MAX_PACKAGE_FILE_BYTES:
+                raise ValueError(f"plugin package file is too large: {relative.as_posix()}")
+            total_bytes += size
+            if total_bytes > MAX_PACKAGE_TOTAL_BYTES:
+                raise ValueError("plugin package is too large")
             files.append(path)
+    require_portable_package_paths(plugin_dir, files)
     return files
+
+
+def portable_target_filesystem_path(relative: str) -> str:
+    """Return Desktop's normalized target path or reject an unsafe member name."""
+
+    if not relative.isascii():
+        raise ValueError(f"plugin package path must use portable ASCII characters: {relative}")
+    parts = relative.split("/")
+    if not parts or any(not part or part in {".", ".."} for part in parts):
+        raise ValueError(f"plugin package path is unsafe: {relative}")
+    normalized_parts: list[str] = []
+    for part in parts:
+        if part.endswith((".", " ")):
+            raise ValueError(f"plugin package path has a Windows trailing-dot or trailing-space alias: {relative}")
+        if ":" in part:
+            raise ValueError(f"plugin package path has a Windows NTFS stream alias: {relative}")
+        if any(ord(character) <= 0x1F or character in WINDOWS_FORBIDDEN_COMPONENT_CHARACTERS for character in part):
+            raise ValueError(f"plugin package path has a Windows-forbidden character: {relative}")
+        device_name = part.split(".", 1)[0].lower()
+        if device_name in WINDOWS_RESERVED_DEVICE_NAMES:
+            raise ValueError(f"plugin package path has a Windows reserved device name: {relative}")
+        normalized_parts.append(part.lower())
+    return "/".join(normalized_parts)
+
+
+def require_portable_package_paths(plugin_dir: Path, files: list[Path]) -> None:
+    """Match Desktop's portable ZIP-name admission policy before signing bytes.
+
+    Source files have no explicit ZIP directory entries, so every normalized
+    member is a file. Detect both exact aliases and a file used as the
+    case-folded ancestor of another member before any copy or ZIP work.
+    """
+
+    target_paths: dict[str, str] = {}
+    for path in files:
+        relative = path.relative_to(plugin_dir).as_posix()
+        target = portable_target_filesystem_path(relative)
+        existing = target_paths.get(target)
+        if existing is not None:
+            raise ValueError(
+                "plugin package paths collide on case-insensitive filesystems: "
+                f"{existing} and {relative}"
+            )
+        target_paths[target] = relative
+    for target, relative in target_paths.items():
+        parts = target.split("/")
+        for length in range(1, len(parts)):
+            ancestor = "/".join(parts[:length])
+            existing = target_paths.get(ancestor)
+            if existing is not None:
+                raise ValueError(
+                    "plugin package paths have a file/directory collision on case-insensitive filesystems: "
+                    f"{existing} and {relative}"
+                )
 
 
 def archive_bytes(path: Path) -> bytes:
@@ -423,12 +528,62 @@ def copy_source_tree(output_root: Path) -> None:
         )
 
 
+def active_marketplace_release_documents(output_root: Path) -> set[Path]:
+    """Return release documents that the current marketplace will re-sign.
+
+    Withdrawal removes a plugin from marketplace discovery but intentionally
+    leaves its immutable snapshot in ``plugins/``.  Its KMS sidecar is bound to
+    the retained historical release document and must therefore survive a later
+    global ``--clean``.  Parse only safe local ``plugins/`` source paths before
+    deciding which sidecars are replaceable in this run.
+    """
+
+    marketplace_path = output_root / MARKETPLACE_RELATIVE_PATH
+    current = marketplace_path
+    for _ in MARKETPLACE_RELATIVE_PATH.parts:
+        if is_link(current):
+            raise ValueError(f"marketplace metadata path must not contain symbolic links: {current}")
+        current = current.parent
+    try:
+        marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("marketplace.json cannot be read before sidecar cleanup") from error
+    entries = marketplace.get("plugins") if isinstance(marketplace, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("marketplace.json plugins must be a list before sidecar cleanup")
+
+    output_plugins = output_root / "plugins"
+    active: set[Path] = set()
+    for entry in entries:
+        source = entry.get("source") if isinstance(entry, dict) else None
+        source_path = source.get("path") if isinstance(source, dict) else None
+        if not isinstance(source_path, str) or not source_path:
+            raise ValueError("every marketplace entry needs source.path before sidecar cleanup")
+        relative = PurePosixPath(source_path)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or relative.parts[0] != "plugins"
+            or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
+        ):
+            raise ValueError("marketplace plugin source.path must remain below plugins/ before sidecar cleanup")
+        candidate = output_root.joinpath(*relative.parts)
+        try:
+            candidate.resolve(strict=False).relative_to(output_plugins.resolve(strict=False))
+        except (OSError, ValueError) as error:
+            raise ValueError("marketplace plugin source.path escaped plugins/ before sidecar cleanup") from error
+        active.add((candidate / ".xsec-market" / "releases.json").resolve(strict=False))
+    return active
+
+
 def clean_generated_output(output_root: Path) -> None:
-    """Remove stale signatures without deleting immutable releases or artifacts.
+    """Remove replaceable signatures without deleting immutable release state.
 
     Older versions removed every `.xsec-market` directory for `--clean`.  That
     made publishing a new version erase the only artifact a stable pointer
     could reference, so it is intentionally no longer a release-history clean.
+    KMS sidecars for currently discoverable plugins are regenerated in this
+    publication; sidecars for withdrawn snapshots remain as signed history.
     """
     output_plugins = output_root / "plugins"
     if is_link(output_plugins):
@@ -437,6 +592,7 @@ def clean_generated_output(output_root: Path) -> None:
         return
     if not output_plugins.is_dir():
         raise ValueError(f"generated plugin root is unavailable: {output_plugins}")
+    release_roots: list[Path] = []
     for plugin_dir in output_plugins.iterdir():
         if is_link(plugin_dir):
             raise ValueError(f"generated plugin directory must not be a symbolic link: {plugin_dir}")
@@ -451,8 +607,20 @@ def clean_generated_output(output_root: Path) -> None:
             release_root.resolve(strict=True).relative_to(output_plugins.resolve(strict=True))
         except (OSError, ValueError) as error:
             raise ValueError(f"generated output path must remain below plugins/: {release_root}") from error
-        for suffix in (".sig", ".sig.jws.json"):
-            release_root.joinpath("releases.json").with_name("releases.json" + suffix).unlink(missing_ok=True)
+        release_roots.append(release_root)
+    # Preserve the historic validation ordering: reject unsafe plugin paths
+    # before opening the marketplace metadata that decides which sidecars are
+    # replaceable in this publication.
+    active_release_documents = active_marketplace_release_documents(output_root)
+    for release_root in release_roots:
+        release_path = release_root / "releases.json"
+        # Legacy detached signatures are always stale. The KMS sidecar is
+        # replaced only for documents that remain in marketplace discovery;
+        # an unlisted external snapshot is a disabled publication whose
+        # historical sidecar must remain intact.
+        release_path.with_name(release_path.name + ".sig").unlink(missing_ok=True)
+        if release_path.resolve(strict=False) in active_release_documents:
+            release_path.with_name(release_path.name + ".sig.jws.json").unlink(missing_ok=True)
     marketplace_path = output_root / MARKETPLACE_RELATIVE_PATH
     for suffix in (".sig", ".sig.jws.json"):
         marketplace_path.with_name(marketplace_path.name + suffix).unlink(missing_ok=True)

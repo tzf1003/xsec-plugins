@@ -26,6 +26,92 @@
 [插件设置规范](plugin-settings.md)。修改设置页面或其前端能力声明同样会改变
 发布包内容，必须遵守本文件的版本和不可变发布规则。
 
+## 官方外部源码 Factory
+
+当插件的开发源码位于独立 Git 仓库时，`xsec-plugins` 充当**官方签名的
+Factory/收录库**，而不是第二个开发仓库。外部仓库仍是代码唯一开发权威；
+Factory 只保存经过审批的发布快照、不可变 artifact、release history 和可审计的
+来源证据。因此不要在 `xsec-plugins/plugins/<id>/` 直接开发或把它当作应同步回
+外部仓库的源码目录。
+
+先在 `.xsec-factory/official-registry.json` 提交经审查的 allowlist 条目。条目固定：
+
+- 插件 ID、GitHub `owner/repository` 和可选的仓库内插件路径；
+- `beta` 只能是 `refs/heads/beta`，`stable` 只能是 `refs/heads/main`；
+- `AVAILABLE` + `ON_INSTALL`。外部条目不能变成 `INSTALLED_BY_DEFAULT`；
+- `active` 或 `disabled` 状态。`disabled` 仅从市场索引隐藏已发布插件，仍必须
+  留存生成快照、完整 release history 及其每个不可变 artifact、KMS release sidecar
+  和来源证据，且拒绝新的发布；Factory 会重新打包该快照并对照当前 Beta SHA-256，
+  同时逐一重算所有历史 artifact 的 SHA-256。验证归档时还会从固定的 Vercel KMS
+  issuer JWKS 选择 `kid` 对应的 Ed25519 公钥并密码学验证 sidecar，因此仅格式正确
+  的伪造历史签名也会被拒绝。受保护的 source gate 会读取可信的变更前 Factory
+  revision，因此即使同一 PR 同时删除 registry、快照和证据，也不能把已发布插件
+  伪装成从未发布的授权；只能保留条目并设为 `disabled`。从未发布的授权可直接从
+  allowlist 移除。证据中的每个发布事件同样只能按原有顺序追加，既有事件的来源 SHA、
+  artifact 绑定和发布者均不可改写或重排。
+  不可变 release 记录列表也必须保持原有顺序并仅在末尾追加，不能改写历史发布顺序。
+
+外部 Factory 包也不是 Desktop 内置包的替身：不得占用已编译的 Desktop package
+ID，或官方保留的 workspace contribution、Agent/MCP tool（包括 host 的 `xsec_`
+和 `browser_` 名称空间）。这项检查发生在打包前，独立于插件是否默认安装。
+又因为 Desktop 会对 `OfficialMarketplace` 自动签发其已声明 capability 的运行时
+grant，外部包只允许保守的 browser-sandbox 能力集合：只读 workspace/session、
+plugin 自己的数据和 secret、workspace 跳转、网络请求、通知、非保留 Agent tool
+注册。`process.spawn`、`terminal.shell`、`native.execute`、workspace 写入、browser/
+clipboard 控制、MCP server 注册等高权限不会因 registry 或源码提交而自动获得；需要
+先完成独立的 Desktop 信任模型/API 变更和安全审查。
+
+Desktop 开发者工具在发布时固定向官方 Factory 的受保护 `main` 分支调度
+`publish.yml`，而不是把 token 或 KMS 密钥交给外部仓库。请求字段严格为：
+
+```text
+channel: beta | stable
+plugin_id: 已注册的外部插件 ID
+source_sha: 已推送的、40 位小写外部 commit SHA
+release_id: 仅 stable；已存在的 Beta releaseId
+```
+
+外部插件 ID 不得使用 `com.xsec` 或 `com.xsec.*`：该完整命名空间属于 Desktop 的
+内置/内部开发插件，开发者工具也会将其按内部功能处理。外部开发者应使用自己的反向
+域名空间，例如 `com.acme.discovery`。
+
+外部源码的待打包文件路径也必须满足 Desktop 的跨平台 archive 规则：仅 ASCII，不能有
+大小写或文件/目录别名，也不能使用 Windows 的尾随点/空格、NTFS stream、禁止字符或
+设备名。Factory 在复制快照和写 ZIP 前限制文件数、单文件大小及总大小，因此不会签发
+Desktop 无法安装的 artifact，也不会因未受限源码树耗尽受保护发布 runner。
+
+发布触发以这个显式请求为准；单纯向外部仓库 push 不会自动取得官方发布凭据。这样
+开发者可先在 Desktop 开发者模式中反复调试，再选择确切提交发版，而不必向 Desktop
+暴露外部仓库写权限或 KMS 私钥。
+
+Beta 请求先读取 Factory `main` 中的 allowlist，再使用仅有 `Contents: Read` 和
+`Metadata: Read` 权限的 GitHub App 临时 token 检出**精确 SHA**。工作流必须证明该
+SHA 仍可从注册的 `beta` 分支到达，清除 checkout 凭据，并且只静态读取/复制/确定性
+打包：不会执行插件代码、Git hook、`npm`/`pnpm` 脚本或外部 build script。Factory
+随后将快照放入 `plugins/<id>/`，由原有不可变发布器构建并记录 Beta 来源证据。
+
+外部源码可达性校验的 Git transport 也有独立信任边界：checkout 固定为
+`https://github.com`，先拒绝非规范/明文 HTTP `origin`、`insteadOf` URL 重写、remote
+helper、proxy 与 include 覆盖；再只由 allowlist 的 `owner/repository` 组装 HTTPS
+fetch URL，忽略 system/global Git config、禁止重定向和非 HTTPS 协议，并写入本地
+verified ref。工作流绝不会用外部 checkout 的 `origin` URL 或 remote alias 访问网络；
+这只防止临时只读 token 被 Git transport 重定向，绝不表示外部插件代码可被执行或信任。
+
+Stable 请求同样只接受可从外部 `main` 到达的精确 SHA。它重新确定性打包并要求得到
+的 `releaseId` 与指定的已有 Beta `releaseId` 完全一致；通过后只移动
+`channels.stable.releaseId`，并追加对应 main 证据。它不重传、不替换 artifact。若
+Stable 指针已经选择该 release，则仅验证既有证据，不请求 KMS、不创建 PR，也不触发
+Desktop smoke。
+
+外部读取 App 的 production secrets 是
+`XSEC_MARKETPLACE_SOURCE_APP_ID` 和
+`XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY`；它与 Factory 的发布 token 分离。Cloud
+broker 目前只允许受保护的 `xsec-plugins/.github/workflows/publish.yml@main` 请求
+KMS，因此签名 envelope 的 `source_revision` 始终是 Factory 在发布队列中取得槽位后
+检出的受保护 `main` SHA，绝不是外部 SHA。外部 SHA 位于
+`.xsec-factory/official-publications/<id>.json` 的证据中。Desktop 的 smoke dispatch
+同样只携带 Factory revision，继续使用既有的官方签名和信任链。
+
 ## 云端不可变发布规则
 
 每个插件的 `.xsec-market/releases.json` 使用 schema v2。`releases` 是只能
@@ -81,7 +167,7 @@ artifact、历史 release record 和 `stable` 指针都不可由常规 Beta 构�
    `releaseId`、只追加新 release（如有）并只移动 `beta` 指针。它签名后才会
    向 Desktop 发送 Beta smoke 请求。若工作流曾在发布队列等待，它在取得队列槽位后
    会重新检出当时的受保护 `main`，而不是使用排队时捕获的旧 commit；因此后续构建和
-   发送给 Desktop 的 `source_sha` 始终对应实际参与发布的源代码。
+    发送给 Desktop 的 `source_sha` 始终对应实际参与发布的源代码。
 5. Beta 验证通过后，由人工在受保护 `main` 上运行
    `Promote immutable marketplace release to stable`，并传入已经存在的
    `plugin_id` 和 `release_id`。该操作只移动 `stable` 指针，不重新打包、不
@@ -92,6 +178,11 @@ artifact、历史 release record 和 `stable` 指针都不可由常规 Beta 构�
 新插件的首次自动发布仅进入 Beta：`channels.stable` 为 `null`（不得写成
 `{"releaseId": null}`）。只有
 独立的人工推广才能使它成为 Stable。
+
+对于上述外部源码插件，第 4、5 步分别替换为外部 Factory 的显式 `publish.yml`
+Beta/Stable 请求。不要使用旧的 `Promote immutable marketplace release to stable`
+直接推广已注册的外部插件；该旧工作流只保留给内置源码，且会拒绝外部 registry ID，
+以免绕过外部 `main` 的可达性和内容一致性证明。
 
 ## 回滚和 Agent 操作边界
 

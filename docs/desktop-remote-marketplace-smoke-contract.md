@@ -41,6 +41,15 @@ user opt-in. For a stable promotion or rollback, Desktop must download the
 already-published artifact whose SHA-256 is in the selected immutable record;
 it must never expect a newly rebuilt package.
 
+The official external-source Factory uses the same dispatch contract. Its
+developer-facing `publish.yml` request contains an external repository SHA as
+auditable Factory provenance, but the **dispatch** `source_sha` above remains
+the protected `xsec-plugins/main` revision that KMS signed. Desktop must not
+interpret the dispatch as permission to fetch an external repository, accept an
+external URL, or relax its compiled official origin/ref checks. The merged
+Factory revision contains the reviewed snapshot, release index, and KMS
+sidecars that Desktop verifies normally.
+
 The dispatched Marketplace contract never represents a local Desktop
 `dev_revision`: local same-version hot reload is private and is not uploaded or
 published. For cloud records, a plugin `plugin.json.version` identifies exactly

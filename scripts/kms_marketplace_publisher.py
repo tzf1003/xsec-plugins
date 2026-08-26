@@ -15,6 +15,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
@@ -24,22 +26,63 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from build_market import WINDOWS_RESERVED_DEVICE_NAMES
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE_INDEX_SUBJECT = ".agents/plugins/marketplace.json"
+OFFICIAL_PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publications"
+OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-publication-proofs"
+# This document is not consumed by Desktop.  It binds the external source
+# provenance kept by the Factory to the same protected OIDC/KMS publication
+# boundary as the Marketplace index and release records.
+OFFICIAL_PUBLICATION_PROVENANCE_PURPOSE = "xsec.plugin-marketplace.provenance"
 BROKER_AUDIENCE = "xsec-kms-document-signing-v1"
 PRODUCTION_BROKER_URL = "https://api.54321000.xyz/v2/internal/signing/documents"
 GITHUB_ACTIONS_OIDC_HOST_SUFFIX = ".actions.githubusercontent.com"
 OFFICIAL_MARKETPLACE_KMS_ISSUER_ID = "dc24288e-f77c-4c13-81a7-f649afbe7b73"
 OFFICIAL_MARKETPLACE_KMS_ISSUER_URL = f"https://kms.vercel.com/{OFFICIAL_MARKETPLACE_KMS_ISSUER_ID}"
 MAX_BROKER_RESPONSE_BYTES = 64 * 1024
+MAX_KMS_JWKS_BYTES = 256 * 1024
+MAX_KMS_JWKS_KEYS = 32
+MAX_KMS_JWS_SIGNING_INPUT_BYTES = 24 * 1024
+PINNED_KMS_JWKS_URL = f"{OFFICIAL_MARKETPLACE_KMS_ISSUER_URL}/jwks.json"
 GITHUB_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 BASE64URL_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+OFFICIAL_PLUGIN_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$")
 CURRENT_SOURCE_REVISION_ENV = "XSEC_MARKETPLACE_SOURCE_REVISION"
+
+# This is deliberately a fixed built-in-only program.  The Factory already
+# requires Node 24 for its source gate; using its platform Ed25519 primitive
+# avoids adding an unpinned Python crypto dependency while keeping KMS key
+# rotation in the issuer JWKS.  Untrusted sidecar values are supplied only as
+# JSON on stdin, never interpolated into code, an argv item, or a shell.
+NODE_ED25519_VERIFY_PROGRAM = r"""
+import { createPublicKey, verify } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+const request = JSON.parse(readFileSync(0, "utf8"));
+const key = createPublicKey({
+  key: { kty: "OKP", crv: "Ed25519", x: request.public_key_x },
+  format: "jwk",
+});
+const valid = verify(
+  null,
+  Buffer.from(request.signing_input_b64, "base64"),
+  key,
+  Buffer.from(request.signature_b64, "base64"),
+);
+process.exitCode = valid ? 0 : 1;
+"""
 
 
 class MarketplaceKmsPublisherError(ValueError):
     """The broker or a generated sidecar violates the Desktop protocol."""
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
 
 
 @dataclass(frozen=True)
@@ -47,6 +90,11 @@ class MarketplaceDocument:
     purpose: str
     subject: str
     path: Path
+    # Marketplace release/index sidecars live beside the document because
+    # Desktop knows those locations. Factory provenance is internal metadata,
+    # so its sidecar lives in a separate namespace to avoid filename aliasing
+    # between a valid dotted plugin ID and a ``.sig.jws.json`` suffix.
+    sidecar_path: Path | None = None
 
 
 def fail(message: str) -> None:
@@ -142,6 +190,60 @@ def canonical_plugin_subject(source_path: object) -> str:
     return "/".join(path.parts)
 
 
+def official_publication_provenance_document(root: Path, plugin_id: str) -> MarketplaceDocument:
+    """Return the one KMS document that authenticates Factory provenance.
+
+    Keep the subject and sidecar location fixed independently of untrusted
+    evidence contents.  The Cloud broker has a matching narrow allowlist, and
+    the separate proof directory avoids turning one plugin ID into another
+    plugin's adjacent sidecar filename.
+    """
+
+    if (
+        not isinstance(plugin_id, str)
+        or not OFFICIAL_PLUGIN_ID_PATTERN.fullmatch(plugin_id)
+        or ".." in plugin_id
+        or "--" in plugin_id
+        or plugin_id.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES
+    ):
+        fail("official Factory provenance plugin ID is unsafe")
+    subject = (OFFICIAL_PUBLICATIONS_RELATIVE_PATH / f"{plugin_id}.json").as_posix()
+    proof_subject = (OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").as_posix()
+    return MarketplaceDocument(
+        OFFICIAL_PUBLICATION_PROVENANCE_PURPOSE,
+        subject,
+        safe_document_path(root, subject, must_exist=True),
+        safe_document_path(root, proof_subject, must_exist=False),
+    )
+
+
+def official_publication_provenance_documents(root: Path) -> list[MarketplaceDocument]:
+    """Enumerate only canonical Factory provenance documents for KMS signing."""
+
+    publication_root = root / OFFICIAL_PUBLICATIONS_RELATIVE_PATH
+    if not publication_root.exists():
+        return []
+    if is_link(publication_root) or not publication_root.is_dir():
+        fail("official Factory provenance directory must be a regular directory")
+    proof_root = root / OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH
+    if proof_root.exists() and (is_link(proof_root) or not proof_root.is_dir()):
+        fail("official Factory provenance proof directory must be a regular directory")
+
+    documents: list[MarketplaceDocument] = []
+    for evidence in sorted(publication_root.iterdir(), key=lambda candidate: candidate.name):
+        if is_link(evidence) or not evidence.is_file() or evidence.suffix != ".json":
+            fail(f"official Factory provenance directory has an unsafe entry: {evidence.name}")
+        plugin_id = evidence.name.removesuffix(".json")
+        document = official_publication_provenance_document(root, plugin_id)
+        # `safe_document_path` and the current directory entry must resolve
+        # to the same regular file, otherwise a race or odd filesystem alias
+        # could make KMS sign bytes other than those enumerated above.
+        if document.path != evidence.resolve(strict=True):
+            fail(f"official Factory provenance path does not match its subject: {evidence.name}")
+        documents.append(document)
+    return documents
+
+
 def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     index_path = safe_document_path(root, MARKETPLACE_INDEX_SUBJECT, must_exist=True)
     marketplace = json_object(index_path.read_bytes(), MARKETPLACE_INDEX_SUBJECT)
@@ -168,6 +270,7 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
                 safe_document_path(root, subject, must_exist=True),
             )
         )
+    documents.extend(official_publication_provenance_documents(root))
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
 
 
@@ -256,6 +359,180 @@ def validate_sidecar(
     return sidecar
 
 
+def validate_historical_sidecar(
+    sidecar_bytes: bytes,
+    document: MarketplaceDocument,
+    *,
+    now: int | None = None,
+) -> str:
+    """Validate a retained sidecar using the revision embedded in its envelope.
+
+    Marketplace documents in the active index are freshly signed by the current
+    protected run. A withdrawn plugin's immutable release document is not in
+    that index, so its retained sidecar must instead remain bound to the
+    historical protected revision recorded in its own envelope.
+    """
+
+    sidecar = json_object(sidecar_bytes, f"KMS sidecar for {document.subject}")
+    exact_keys(sidecar, {"schema_version", "envelope_b64", "jws"}, "KMS sidecar")
+    envelope = json_object(
+        canonical_base64url_decode(sidecar.get("envelope_b64"), "KMS sidecar envelope_b64"),
+        "KMS document envelope",
+    )
+    exact_keys(
+        envelope,
+        {"schema_version", "purpose", "subject", "content_sha256", "source_revision", "issued_at"},
+        "KMS document envelope",
+    )
+    source_revision = required_string(envelope, "source_revision", "KMS document envelope")
+    validate_sidecar(sidecar_bytes, document, source_revision, now=now)
+    return source_revision
+
+
+def download_pinned_issuer_jwks() -> bytes:
+    """Fetch only the fixed official Marketplace issuer JWKS, without redirects."""
+
+    request = Request(PINNED_KMS_JWKS_URL, headers={"Accept": "application/json"})
+    try:
+        with build_opener(NoRedirect()).open(request, timeout=15) as response:
+            if response.status != 200 or response.geturl() != PINNED_KMS_JWKS_URL:
+                fail("pinned KMS issuer JWKS returned an unexpected response")
+            payload = response.read(MAX_KMS_JWKS_BYTES + 1)
+    except HTTPError as error:
+        raise MarketplaceKmsPublisherError("pinned KMS issuer JWKS is unavailable") from error
+    except URLError as error:
+        raise MarketplaceKmsPublisherError("pinned KMS issuer JWKS is unavailable") from error
+    if len(payload) > MAX_KMS_JWKS_BYTES:
+        fail("pinned KMS issuer JWKS exceeds the size limit")
+    if not payload:
+        fail("pinned KMS issuer JWKS is empty")
+    return payload
+
+
+def pinned_issuer_ed25519_key(jwks_bytes: bytes, kid: str) -> str:
+    """Resolve one strict Ed25519 signing key from the pinned issuer JWKS."""
+
+    if not isinstance(kid, str) or not kid or len(kid) > 256:
+        fail("KMS JWS protected header kid is invalid")
+    if not jwks_bytes or len(jwks_bytes) > MAX_KMS_JWKS_BYTES:
+        fail("pinned KMS issuer JWKS is empty or exceeds the size limit")
+    jwks = json_object(jwks_bytes, "pinned KMS issuer JWKS")
+    keys = jwks.get("keys")
+    if not isinstance(keys, list) or not 1 <= len(keys) <= MAX_KMS_JWKS_KEYS:
+        fail("pinned KMS issuer JWKS has an invalid key set")
+    selected: Mapping[str, object] | None = None
+    seen_kids: set[str] = set()
+    for index, value in enumerate(keys):
+        if not isinstance(value, dict):
+            fail(f"pinned KMS issuer JWKS key {index} is invalid")
+        key_id = value.get("kid")
+        if not isinstance(key_id, str) or not key_id or len(key_id) > 256 or key_id in seen_kids:
+            fail("pinned KMS issuer JWKS contains an invalid or duplicate key id")
+        seen_kids.add(key_id)
+        if key_id == kid:
+            selected = value
+    if selected is None:
+        fail("KMS JWS key id is not published by the pinned issuer")
+    if (
+        selected.get("kty") != "OKP"
+        or selected.get("crv") != "Ed25519"
+        or selected.get("alg") != "EdDSA"
+        or selected.get("use") != "sig"
+    ):
+        fail("KMS JWS key does not meet the pinned EdDSA signing-key requirements")
+    key_x = selected.get("x")
+    if not isinstance(key_x, str) or len(canonical_base64url_decode(key_x, "KMS JWK public key")) != 32:
+        fail("KMS JWK public key must be a 32-byte Ed25519 key")
+    return key_x
+
+
+def historical_jws_verification_material(sidecar_bytes: bytes) -> tuple[str, bytes, bytes]:
+    """Return the trusted-key selector and RFC 7515/7797 signing input."""
+
+    sidecar = json_object(sidecar_bytes, "KMS sidecar")
+    jws = sidecar.get("jws")
+    if not isinstance(jws, dict):
+        fail("KMS sidecar jws must be an object")
+    protected = required_string(jws, "protected", "KMS sidecar jws")
+    header = json_object(canonical_base64url_decode(protected, "KMS JWS protected header"), "KMS JWS protected header")
+    kid = required_string(header, "kid", "KMS JWS protected header")
+    envelope_bytes = canonical_base64url_decode(sidecar.get("envelope_b64"), "KMS sidecar envelope_b64")
+    if header.get("b64") is False and header.get("crit") == ["b64"]:
+        signing_payload = envelope_bytes
+    else:
+        signing_payload = required_string(jws, "payload", "KMS sidecar jws").encode("ascii")
+    signature = canonical_base64url_decode(jws.get("signature"), "KMS JWS signature")
+    signing_input = protected.encode("ascii") + b"." + signing_payload
+    if len(signing_input) > MAX_KMS_JWS_SIGNING_INPUT_BYTES:
+        fail("KMS JWS signing input exceeds the size limit")
+    return kid, signing_input, signature
+
+
+def verify_ed25519_signature_with_node(public_key_x: str, signing_input: bytes, signature: bytes) -> None:
+    """Verify a bounded JWS input using Node's built-in Ed25519 implementation."""
+
+    node = shutil.which("node")
+    if node is None:
+        fail("Node.js is required to verify the pinned KMS JWS signature")
+    request = stable_json(
+        {
+            "public_key_x": public_key_x,
+            "signing_input_b64": base64.b64encode(signing_input).decode("ascii"),
+            "signature_b64": base64.b64encode(signature).decode("ascii"),
+        }
+    )
+    # Do not allow a caller-controlled NODE_OPTIONS/NODE_PATH preload to change
+    # the result of this trust decision. The verifier imports only Node core
+    # modules and accepts all untrusted values through stdin.
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"NODE_OPTIONS", "NODE_PATH", "NODE_REPL_HISTORY", "NODE_V8_COVERAGE"}
+    }
+    try:
+        completed = subprocess.run(
+            [node, "--input-type=module", "--eval", NODE_ED25519_VERIFY_PROGRAM],
+            input=request,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=ROOT,
+            env=environment,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise MarketplaceKmsPublisherError("pinned KMS JWS signature verification is unavailable") from error
+    if completed.returncode != 0:
+        fail("pinned KMS JWS signature verification failed")
+
+
+def verify_historical_sidecar_signature(
+    sidecar_bytes: bytes,
+    document: MarketplaceDocument,
+    *,
+    now: int | None = None,
+    jwks_bytes: bytes | None = None,
+) -> str:
+    """Validate and cryptographically verify a retained KMS document sidecar.
+
+    Disabled plugins are deliberately absent from the active marketplace index,
+    so Desktop does not reach their release sidecars during normal smoke tests.
+    This helper therefore performs the same pinned-issuer key selection and
+    Ed25519 verification before a retained release history can pass Factory
+    validation. `jwks_bytes` exists only for deterministic unit tests; normal
+    callers always download the fixed issuer endpoint.
+    """
+
+    source_revision = validate_historical_sidecar(sidecar_bytes, document, now=now)
+    kid, signing_input, signature = historical_jws_verification_material(sidecar_bytes)
+    public_key_x = pinned_issuer_ed25519_key(
+        download_pinned_issuer_jwks() if jwks_bytes is None else jwks_bytes,
+        kid,
+    )
+    verify_ed25519_signature_with_node(public_key_x, signing_input, signature)
+    return source_revision
+
+
 def sidecar_from_broker_response(
     response_bytes: bytes,
     document: MarketplaceDocument,
@@ -300,6 +577,11 @@ def write_sidecars(sidecars: Mapping[Path, bytes]) -> None:
         for destination, payload in sidecars.items():
             if is_link(destination):
                 fail(f"KMS sidecar path must not be a symbolic link: {destination}")
+            if is_link(destination.parent):
+                fail(f"KMS sidecar directory must not be a symbolic link: {destination.parent}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if is_link(destination.parent) or not destination.parent.is_dir():
+                fail(f"KMS sidecar directory is unavailable: {destination.parent}")
             descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
             temporary = Path(temporary_name)
             temporary_paths.append(temporary)
@@ -315,6 +597,12 @@ def write_sidecars(sidecars: Mapping[Path, bytes]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def sidecar_path_for(document: MarketplaceDocument) -> Path:
+    """Resolve a document's fixed output location without trusting callers."""
+
+    return document.sidecar_path if document.sidecar_path is not None else Path(f"{document.path}.sig.jws.json")
+
+
 def publish_sidecars(
     root: Path,
     source_revision: str,
@@ -327,7 +615,7 @@ def publish_sidecars(
     for document in documents:
         response = request_signed_document(document)
         sidecar = sidecar_from_broker_response(response, document, source_revision, now=now)
-        destination = Path(f"{document.path}.sig.jws.json")
+        destination = sidecar_path_for(document)
         sidecars[destination] = sidecar
     write_sidecars(sidecars)
     return list(sidecars)
@@ -336,17 +624,12 @@ def publish_sidecars(
 def validate_published_sidecars(root: Path, source_revision: str, *, now: int | None = None) -> list[Path]:
     validated: list[Path] = []
     for document in marketplace_documents(root):
-        sidecar_path = Path(f"{document.path}.sig.jws.json")
+        sidecar_path = sidecar_path_for(document)
         if is_link(sidecar_path) or not sidecar_path.is_file():
             fail(f"KMS sidecar is unavailable: {sidecar_path}")
         validate_sidecar(sidecar_path.read_bytes(), document, source_revision, now=now)
         validated.append(sidecar_path)
     return validated
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        return None
 
 
 def request_json(request: Request) -> bytes:

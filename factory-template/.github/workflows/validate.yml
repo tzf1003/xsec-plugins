@@ -1,4 +1,4 @@
-name: Validate marketplace
+name: Validate Marketplace Factory
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  source-gate:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
             exit 0
           fi
           git cat-file -e "${baseline_sha}^{commit}"
-          baseline_root="$RUNNER_TEMP/xsec-marketplace-trusted-baseline"
+          baseline_root="$RUNNER_TEMP/xsec-marketplace-factory-trusted-baseline"
           [ ! -e "$baseline_root" ] || { echo "Trusted Factory baseline path already exists." >&2; exit 1; }
           env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \
             git worktree add --detach "$baseline_root" "$baseline_sha"
@@ -44,23 +44,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - name: Build a disposable marketplace without official sidecars
-        run: python scripts/build_market.py --clean --output-root "$RUNNER_TEMP/xsec-marketplace-build"
-      - name: Validate source manifests, deterministic artifacts and package safety
-        run: python scripts/validate_market.py source --source-root . --built-root "$RUNNER_TEMP/xsec-marketplace-build"
-      - name: Validate official external Factory registry, snapshots and provenance
+      - name: Download and verify the complete immutable publication provenance set
+        id: attestation-proofs
+        env:
+          # Pull-request validation needs only the default read-scoped token.
+          # The downloader accepts no evidence-provided URL: it derives every
+          # GitHub.com tag and asset name from the checked Factory contract.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output_directory="$RUNNER_TEMP/xsec-factory-publication-attestation-proofs"
+          [ ! -e "$output_directory" ] || {
+            echo "Publication attestation proof path already exists." >&2
+            exit 1
+          }
+          python scripts/factory_attestation.py --github-output "$GITHUB_OUTPUT" download \
+            --factory-repository "$GITHUB_REPOSITORY" \
+            --output-directory "$output_directory"
+      - name: Validate registry and generated Desktop snapshots
         env:
           BASELINE_AVAILABLE: ${{ steps.baseline.outputs.available }}
           BASELINE_ROOT: ${{ steps.baseline.outputs.root }}
+          ATTESTATION_ROOT: ${{ steps.attestation-proofs.outputs.attestation_root }}
         run: |
           set -euo pipefail
           args=()
           if [ "$BASELINE_AVAILABLE" = "true" ]; then
             args=(--baseline-root "$BASELINE_ROOT")
           fi
-          python scripts/external_source_factory.py validate "${args[@]}"
-      - name: Run marketplace gate tests
+          python scripts/factory_validate.py --root . --factory-repository "$GITHUB_REPOSITORY" \
+            --publication-attestation-root "$ATTESTATION_ROOT" "${args[@]}"
+      - name: Run Factory unit tests
         run: python -m unittest discover -s tests -p "test_*.py" -v

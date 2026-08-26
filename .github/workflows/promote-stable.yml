@@ -73,6 +73,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - name: Keep registered external plugins on the signed Factory bridge
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+        run: python scripts/external_source_factory.py reject-legacy-stable --plugin-id "$PLUGIN_ID"
       - name: Move only the stable channel pointer
         id: promote
         env:
@@ -87,7 +91,9 @@ jobs:
           fi
       - name: Validate the selected immutable release without rebuilding artifacts
         if: ${{ steps.promote.outputs.changed == 'true' }}
-        run: python scripts/validate_market.py source --source-root . --built-root .
+        run: |
+          python scripts/validate_market.py source --source-root . --built-root .
+          python scripts/external_source_factory.py validate
       - name: Request KMS sidecars through the production Cloud broker
         if: ${{ steps.promote.outputs.changed == 'true' }}
         env:
@@ -104,7 +110,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
         run: |
-          git add -A .agents/plugins plugins
+          git add -A -- .agents/plugins plugins .xsec-factory
           git diff --cached --quiet && { echo "No stable pointer update to publish."; exit 1; }
           git config user.name "xsec-marketplace[bot]"
           git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
