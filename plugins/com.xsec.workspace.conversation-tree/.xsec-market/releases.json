@@ -33,11 +33,27 @@
           "sha256": "52b8458e992e03df46a2351815560cc9af27ffc14a4e9b68857d63091abd5077"
         }
       ]
+    },
+    {
+      "releaseId": "sha256-633f24c8a68cc65f1384d87b60eee1ae0a696a7fb66459eb4b7033e5ed55d5ea",
+      "version": "1.2.2",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.2.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.workspace.conversation-tree-1.2.2-sha256-1b7fdc6c49ef071f-any-any.xsec-plugin",
+          "sha256": "1b7fdc6c49ef071f532f595a00d36d9f472ffa552653dbca2c13743d23ded514"
+        }
+      ]
     }
   ],
   "channels": {
     "beta": {
-      "releaseId": "sha256-c1f99c1230e8f20663cb210d9eaf46d14f3ee8bd83a21fe90e3de19bc63ff9da"
+      "releaseId": "sha256-633f24c8a68cc65f1384d87b60eee1ae0a696a7fb66459eb4b7033e5ed55d5ea"
     },
     "stable": {
       "releaseId": "sha256-f415fea76c75c66e556a6067c0131ac7bb87c7d7b73655f0ac342c86d0cb92cb"
