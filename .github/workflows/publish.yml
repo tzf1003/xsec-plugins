@@ -55,13 +55,24 @@ jobs:
             echo "The protected marketplace publication token is required before checkout or KMS signing." >&2
             exit 1
           fi
-      - uses: actions/checkout@v4
+      # Workflow-level concurrency is acquired before this job begins. Resolve
+      # main only after acquiring that slot: a queued run's event SHA may have
+      # become stale while an earlier publication merged its signed index.
+      - name: Check out current protected main after acquiring the publication slot
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: refs/heads/main
           # `git push` uses checkout's persisted credential, not GH_TOKEN.
           # Keep that credential on the same narrowly scoped token used by
           # the subsequent GitHub CLI calls.
           token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+      - name: Record the current protected source revision
+        id: current-main
+        run: |
+          source_revision="$(git rev-parse HEAD)"
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not protected main." >&2; exit 1; }
+          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -73,8 +84,12 @@ jobs:
       - name: Validate source manifests, deterministic artifacts and package safety
         run: python scripts/validate_market.py source --source-root . --built-root .
       - name: Request KMS sidecars through the production Cloud broker
+        env:
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: python scripts/kms_marketplace_publisher.py --root .
       - name: Gate the KMS sidecar protocol before publishing
+        env:
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: python scripts/kms_marketplace_publisher.py --root . --validate-only
       - name: Publish generated metadata through a protected pull request
         id: publish
@@ -159,14 +174,14 @@ jobs:
             exit 1
           fi
           # The receiver checks these values against its compiled official
-          # GitHub origin. `GITHUB_SHA` is the protected main revision whose
+          # GitHub origin. `source_revision` is the protected main revision whose
           # source was signed; `MARKETPLACE_REVISION` is the immutable merge
           # commit containing those sidecars. The former must be an ancestor
           # of the latter, so Desktop can reject redirected dispatch requests.
           payload="$(jq -cn \
             --arg source_repository "$GITHUB_REPOSITORY" \
             --arg source_ref "refs/heads/main" \
-            --arg source_sha "$GITHUB_SHA" \
+            --arg source_sha "${{ steps.current-main.outputs.source_revision }}" \
             --arg marketplace_revision "$MARKETPLACE_REVISION" \
             --arg channel "beta" \
             '{event_type:"xsec_official_marketplace_published",client_payload:{source_repository:$source_repository,source_ref:$source_ref,source_sha:$source_sha,marketplace_revision:$marketplace_revision,channel:$channel}}')"

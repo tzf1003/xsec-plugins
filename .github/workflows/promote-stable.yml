@@ -52,10 +52,21 @@ jobs:
             echo "The protected marketplace publication token is required before checkout or KMS signing." >&2
             exit 1
           fi
-      - uses: actions/checkout@v4
+      # A manual promotion can wait behind Beta publication. Resolve main
+      # after it obtains the shared slot so promotion sees the release list
+      # that the preceding run actually published.
+      - name: Check out current protected main after acquiring the publication slot
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: refs/heads/main
           token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+      - name: Record the current protected source revision
+        id: current-main
+        run: |
+          source_revision="$(git rev-parse HEAD)"
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not protected main." >&2; exit 1; }
+          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -79,9 +90,13 @@ jobs:
         run: python scripts/validate_market.py source --source-root . --built-root .
       - name: Request KMS sidecars through the production Cloud broker
         if: ${{ steps.promote.outputs.changed == 'true' }}
+        env:
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: python scripts/kms_marketplace_publisher.py --root .
       - name: Gate the KMS sidecar protocol before publishing
         if: ${{ steps.promote.outputs.changed == 'true' }}
+        env:
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: python scripts/kms_marketplace_publisher.py --root . --validate-only
       - name: Publish the stable pointer through a protected pull request
         id: publish
@@ -147,7 +162,7 @@ jobs:
           payload="$(jq -cn \
             --arg source_repository "$GITHUB_REPOSITORY" \
             --arg source_ref "refs/heads/main" \
-            --arg source_sha "$GITHUB_SHA" \
+            --arg source_sha "${{ steps.current-main.outputs.source_revision }}" \
             --arg marketplace_revision "$MARKETPLACE_REVISION" \
             --arg channel "stable" \
             '{event_type:"xsec_official_marketplace_published",client_payload:{source_repository:$source_repository,source_ref:$source_ref,source_sha:$source_sha,marketplace_revision:$marketplace_revision,channel:$channel}}')"

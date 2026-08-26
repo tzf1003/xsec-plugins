@@ -27,6 +27,11 @@ PLUGIN_ROOT = ROOT / "plugins"
 ARTIFACT_DIR_NAME = "artifacts"
 EXCLUDED_PARTS = {"__pycache__", ".git", ".xsec-market"}
 RELEASE_ID_PATTERN = re.compile(r"^sha256-[0-9a-f]{64}$")
+TEXT_ARCHIVE_SUFFIXES = frozenset({
+    ".cjs", ".css", ".html", ".htm", ".js", ".json", ".jsx", ".md",
+    ".mjs", ".ps1", ".sh", ".svg", ".toml", ".ts", ".tsx", ".txt",
+    ".xml", ".yaml", ".yml",
+})
 
 
 def is_link(path: Path) -> bool:
@@ -71,6 +76,30 @@ def iter_plugin_files(plugin_dir: Path) -> list[Path]:
         if path.is_file():
             files.append(path)
     return files
+
+
+def archive_bytes(path: Path) -> bytes:
+    """Return cross-platform-stable bytes for a package member.
+
+    Git may check UTF-8 source files out with CRLF on Windows even though the
+    protected Linux publisher sees LF.  Package text therefore needs one
+    explicit line-ending representation; otherwise an unchanged source commit
+    produces a different immutable artifact SHA-256 locally and in CI.
+
+    Only an explicit set of source-text filename suffixes participates in this
+    rule. Every other member is an arbitrary binary payload and remains
+    byte-for-byte intact, even when it happens to be valid UTF-8 (for example,
+    a PDF with CRLF line endings).
+    """
+
+    value = path.read_bytes()
+    if path.suffix.lower() not in TEXT_ARCHIVE_SUFFIXES or b"\r\n" not in value:
+        return value
+    try:
+        value.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"text package member must be UTF-8: {path}") from error
+    return value.replace(b"\r\n", b"\n")
 
 
 def require_link_free_tree(root: Path, label: str) -> None:
@@ -313,7 +342,7 @@ def write_zip(plugin_dir: Path, destination: Path) -> None:
             # digest will be bound by a cross-platform KMS sidecar.
             info.create_system = 3
             info.external_attr = 0o100644 << 16
-            archive.writestr(info, path.read_bytes())
+            archive.writestr(info, archive_bytes(path))
 
 
 def require_safe_marketplace_path() -> None:

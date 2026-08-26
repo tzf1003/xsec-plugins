@@ -20,8 +20,10 @@ the Desktop workflow with a GitHub `repository_dispatch` event named
 ```
 
 `source_repository` and `source_ref` identify the compiled official publisher.
-`source_sha` is the protected `main` revision from which the publishing job
-built and KMS-signed the documents. `marketplace_revision` is the immutable
+`source_sha` is the protected `main` revision that the publishing job checks
+out after it has acquired the shared publication slot, then builds and
+KMS-signs the documents from. It can therefore be newer than the GitHub event
+that originally queued the job. `marketplace_revision` is the immutable
 merge commit that contains those sidecars. Both must be canonical lowercase
 40-character Git commit SHAs, must be reachable from `xsec-plugins/main`, and
 `source_sha` must be an ancestor of `marketplace_revision`. A receiver must

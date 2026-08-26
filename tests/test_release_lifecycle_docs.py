@@ -29,6 +29,20 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             with self.subTest(required_rule=required_rule):
                 self.assertIn(required_rule, document)
 
+    def test_lifecycle_contract_explains_the_publication_queue(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        for required_rule in (
+            "发布队列",
+            "取得队列槽位后",
+            "`source_sha`",
+            "过期 release index",
+        ):
+            with self.subTest(required_rule=required_rule):
+                self.assertIn(required_rule, document)
+        self.assertIn("Publication queue and Agent evidence", readme)
+        self.assertIn("event SHA", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

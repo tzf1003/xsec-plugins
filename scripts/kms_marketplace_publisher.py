@@ -35,6 +35,7 @@ OFFICIAL_MARKETPLACE_KMS_ISSUER_URL = f"https://kms.vercel.com/{OFFICIAL_MARKETP
 MAX_BROKER_RESPONSE_BYTES = 64 * 1024
 GITHUB_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 BASE64URL_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+CURRENT_SOURCE_REVISION_ENV = "XSEC_MARKETPLACE_SOURCE_REVISION"
 
 
 class MarketplaceKmsPublisherError(ValueError):
@@ -388,12 +389,15 @@ def github_oidc_token(environment: Mapping[str, str]) -> str:
     return required_string(value, "value", "GitHub Actions OIDC response")
 
 
-def request_cloud_signature(document: MarketplaceDocument, oidc_token: str) -> bytes:
+def request_cloud_signature(document: MarketplaceDocument, oidc_token: str, source_revision: str) -> bytes:
+    if not GITHUB_SHA_PATTERN.fullmatch(source_revision):
+        fail("source revision must be a lowercase 40-character Git SHA")
     payload = stable_json(
         {
             "purpose": document.purpose,
             "subject": document.subject,
             "content_b64": base64.b64encode(document.path.read_bytes()).decode("ascii"),
+            "source_revision": source_revision,
         }
     )
     return request_json(
@@ -411,6 +415,15 @@ def request_cloud_signature(document: MarketplaceDocument, oidc_token: str) -> b
 
 
 def source_revision_from_environment(environment: Mapping[str, str]) -> str:
+    # A workflow that waited in the publication queue must bind sidecars to
+    # the protected-main commit it checked out after acquiring that queue, not
+    # to GitHub's immutable event SHA from before it waited. Keep GITHUB_SHA
+    # as the compatibility fallback for callers that do not enter that queue.
+    if CURRENT_SOURCE_REVISION_ENV in environment:
+        revision = environment[CURRENT_SOURCE_REVISION_ENV]
+        if not GITHUB_SHA_PATTERN.fullmatch(revision):
+            fail(f"{CURRENT_SOURCE_REVISION_ENV} must be a lowercase 40-character Git SHA")
+        return revision
     revision = environment.get("GITHUB_SHA", "")
     if not GITHUB_SHA_PATTERN.fullmatch(revision):
         fail("GITHUB_SHA must be a lowercase 40-character GitHub Actions commit SHA")
@@ -430,7 +443,7 @@ def main() -> None:
             print(f"validated {len(validated)} KMS marketplace sidecars")
             return
         token = github_oidc_token(os.environ)
-        written = publish_sidecars(root, source_revision, lambda document: request_cloud_signature(document, token))
+        written = publish_sidecars(root, source_revision, lambda document: request_cloud_signature(document, token, source_revision))
         print(f"published {len(written)} KMS marketplace sidecars")
     except MarketplaceKmsPublisherError as error:
         raise SystemExit(f"KMS marketplace publishing failed: {error}") from error

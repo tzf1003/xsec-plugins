@@ -60,7 +60,10 @@ artifact、历史 release record 和 `stable` 指针都不可由常规 Beta 构�
    内容、engine 范围或任一 artifact 会变化，先将 `plugin.json.version` 提高到
    新 SemVer。
 3. 在临时输出目录执行构建和校验，确认将要写入的 releaseId 与 artifact
-   SHA-256 是由当前源代码确定性生成的：
+   SHA-256 是由当前源代码确定性生成的。打包器会将指定的 UTF-8 源码文本扩展名
+   （如 `.json`、`.js`、`.md`）中的 CRLF 规范成 LF（例如 Windows 工作区），其他
+   任意二进制成员保持原字节；因此本地校验的
+   artifact SHA-256 与云端 Linux 发布器一致：
 
    ```powershell
    $temporary = Join-Path $env:TEMP xsec-marketplace-build
@@ -72,11 +75,15 @@ artifact、历史 release record 和 `stable` 指针都不可由常规 Beta 构�
 4. 将源代码和版本号合入受保护的 `main`。受保护的
    `Publish immutable marketplace beta release` 工作流会重新构建、规范重算
    `releaseId`、只追加新 release（如有）并只移动 `beta` 指针。它签名后才会
-   向 Desktop 发送 Beta smoke 请求。
+   向 Desktop 发送 Beta smoke 请求。若工作流曾在发布队列等待，它在取得队列槽位后
+   会重新检出当时的受保护 `main`，而不是使用排队时捕获的旧 commit；因此后续构建和
+   发送给 Desktop 的 `source_sha` 始终对应实际参与发布的源代码。
 5. Beta 验证通过后，由人工在受保护 `main` 上运行
    `Promote immutable marketplace release to stable`，并传入已经存在的
    `plugin_id` 和 `release_id`。该操作只移动 `stable` 指针，不重新打包、不
-   改 artifact SHA-256，也不修改 release record。
+   改 artifact SHA-256，也不修改 release record。它与 Beta 发布共用同一队列，并在
+   获得槽位后重新检出当前 `main`；因此可推广刚刚由前一轮 Beta 发布写入的 release，
+   不会因为人工操作排队而使用过期 release index。
 
 新插件的首次自动发布仅进入 Beta：`channels.stable` 为 `null`（不得写成
 `{"releaseId": null}`）。只有
@@ -98,6 +105,10 @@ Agent 必须执行以下规则：
 - 不得编辑既有 release record 或历史 artifact；不得让普通 Beta 发布移动
   `stable` 指针。
 - 推广或回滚时，只选择同一插件现有的 `releaseId`；不要要求重新生成包。
+- 不得把排队工作流的事件 commit 当作最终发布证明，也不得因该 commit 未单独出现
+  在 Beta 中而手工重跑或编辑索引。“发布队列”取得槽位后的实际 checkout 才是
+  `source_sha`；验收时读取工作流输出的 `source_sha`、`marketplace_revision` 和
+  `channel`。同一个实际发布可合并排队期间进入受保护 `main` 的多个变更。
 
 远程 Desktop smoke 的通道载荷和验收要求见
 [Desktop remote marketplace smoke-test contract](desktop-remote-marketplace-smoke-contract.md)。
