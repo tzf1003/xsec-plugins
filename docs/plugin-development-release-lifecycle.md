@@ -39,7 +39,9 @@ Factory 只保存经过审批的发布快照、不可变 artifact、release hist
 - 插件 ID、GitHub `owner/repository` 和可选的仓库内插件路径；
 - `beta` 只能是 `refs/heads/beta`，`stable` 只能是 `refs/heads/main`；
 - `AVAILABLE` + `ON_INSTALL`。外部条目不能变成 `INSTALLED_BY_DEFAULT`；
-- `active` 或 `disabled` 状态。`disabled` 留存历史证据但拒绝新的发布。
+- `active` 或 `disabled` 状态。`disabled` 仅从市场索引隐藏已发布插件，仍必须
+  留存生成快照、release history 和来源证据，且拒绝新的发布；从未发布的授权可直接
+  从 allowlist 移除。
 
 外部 Factory 包也不是 Desktop 内置包的替身：不得占用已编译的 Desktop package
 ID，或官方保留的 workspace contribution、Agent/MCP tool（包括 host 的 `xsec_`

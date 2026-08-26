@@ -233,6 +233,12 @@ def desktop_manifest(manifest: dict[str, object], plugin_id: str, plugin_dir: Pa
         if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name):
             fail("plugin manifest has an invalid XSEC Desktop entrypoint name")
         relative = safe_source_path(raw_path, f"plugin manifest entrypoint {name}")
+        # Packaging deliberately omits checkout metadata, dependency trees and
+        # generated Factory state. An entrypoint in one of those trees might
+        # exist while validating the checkout, but it would not exist in the
+        # immutable .xsec-plugin archive that Desktop ultimately installs.
+        if any(part in EXCLUDED_PARTS for part in relative.parts):
+            fail(f"plugin manifest entrypoint {name} cannot point into excluded package content")
         resolve_below(plugin_dir, relative, f"plugin manifest entrypoint {name}")
         normalized[name] = relative.as_posix()
     return version, normalized

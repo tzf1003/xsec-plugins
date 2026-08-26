@@ -160,6 +160,25 @@ class MarketplaceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(FactoryError, "does not describe its beta release engines"):
                 validate_factory(factory, "example/factory")
 
+    def test_factory_rejects_entrypoints_excluded_from_the_published_archive(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-excluded-entrypoint-test-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            manifest_path = source / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for excluded in ("node_modules", ".git", "__pycache__", ".xsec-market"):
+                with self.subTest(excluded=excluded):
+                    entrypoint = source / excluded / "entry.js"
+                    entrypoint.parent.mkdir(parents=True, exist_ok=True)
+                    entrypoint.write_text("export function activate() {}\n", encoding="utf-8")
+                    manifest["extensions"]["com.xsec.desktop"]["entrypoints"] = {"frontend": f"{excluded}/entry.js"}
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaisesRegex(FactoryError, "cannot point into excluded package content"):
+                        beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
     def test_new_content_at_a_published_version_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-factory-version-test-") as directory:
             root = Path(directory)

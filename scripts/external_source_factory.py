@@ -1168,12 +1168,22 @@ def validate_registry_and_snapshots(root: Path) -> None:
         if registration.status == "disabled":
             if entry is not None:
                 fail(f"disabled external official plugin {registration.plugin_id} remains in marketplace index")
-            continue
-        if entry is None:
+            # A disabled external package is a withdrawal from discovery, not
+            # an unpublication. Keep the snapshot (including releases.json)
+            # and its append-only source evidence so the same SemVer can never
+            # be republished with different bytes after a later re-enable.
+            # An un-published registration can simply be removed instead of
+            # being recorded as disabled.
+            if not snapshot.is_dir() or is_link(snapshot) or not evidence.is_file() or is_link(evidence):
+                fail(
+                    f"disabled external official plugin {registration.plugin_id} must retain its immutable "
+                    "snapshot, release history, and publication evidence"
+                )
+        elif entry is None:
             if snapshot.exists() or evidence.exists():
                 fail(f"active external official plugin {registration.plugin_id} has an incomplete publication")
             continue
-        if entry != marketplace_entry(registration):
+        elif entry != marketplace_entry(registration):
             fail(f"official marketplace entry for {registration.plugin_id} does not match the external registry")
         if not snapshot.is_dir() or is_link(snapshot):
             fail(f"external official plugin {registration.plugin_id} snapshot is unavailable")

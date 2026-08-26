@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -386,6 +387,27 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 factory.prepare(root, PLUGIN_ID, "beta", BETA_SHA)
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "is disabled"):
                 factory.stage_beta(root, PLUGIN_ID, source)
+
+    def test_disabled_external_plugin_must_retain_its_immutable_publication_history(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-disabled-history-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+
+            # Withdrawing an already published plugin removes only discovery;
+            # the generated snapshot, releases.json, and provenance remain.
+            self.make_factory(root, self.registry_entry(status="disabled"))
+            write_json(
+                root / ".agents" / "plugins" / "marketplace.json",
+                {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []},
+            )
+            factory.validate_registry_and_snapshots(root)
+
+            shutil.rmtree(root / "plugins" / PLUGIN_ID)
+            factory.publication_path(root, PLUGIN_ID).unlink()
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain its immutable snapshot"):
+                factory.validate_registry_and_snapshots(root)
 
     def test_published_external_plugin_cannot_be_deregistered_into_an_ordinary_official_package(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-deregister-") as directory:
