@@ -90,6 +90,7 @@ def validate_publication_evidence(
     stable_release_id: str | None,
     *,
     attestation_root: Path | None = None,
+    collect_attestations: bool = False,
 ) -> dict[str, bytes]:
     plugin_id = registration.plugin_id
     path = publication_path(root, plugin_id)
@@ -153,8 +154,17 @@ def validate_publication_evidence(
         if key in seen:
             raise FactoryError(f"{label} duplicates an immutable publication event")
         seen.add(key)
-        if attestation_root is not None:
-            name, payload = validate_publication_attestation(attestation_root, registration, event)
+        if collect_attestations:
+            # Calculate the complete expected set even if the caller has not
+            # supplied a local proof directory.  That lets strict validation
+            # accept a truly fresh Factory while still failing closed as soon
+            # as it finds an immutable published-evidence event.
+            name = publication_attestation_name(registration, event)
+            payload = publication_attestation_bytes(registration, event)
+            if len(payload) > MAX_PUBLICATION_ATTESTATION_BYTES:
+                raise FactoryError("publication attestation exceeds the size limit")
+            if attestation_root is not None:
+                name, payload = validate_publication_attestation(attestation_root, registration, event)
             previous = attestations.get(name)
             if previous is not None and previous != payload:
                 raise FactoryError("publication attestation filename collision")
@@ -337,8 +347,6 @@ def validate_factory(
     validate_trusted_baseline_continuity(root, registry, baseline_root)
     if factory_repository is not None:
         factory_repository = safe_repository(factory_repository, "factory repository")
-    if require_publication_attestations and publication_attestation_root is None:
-        raise FactoryError("publication attestation root is required for strict Factory validation")
     if publication_attestation_root is not None:
         try:
             publication_attestation_root = publication_attestation_root.resolve(strict=True)
@@ -453,6 +461,7 @@ def validate_factory(
             records,
             stable_release_id,
             attestation_root=publication_attestation_root if require_publication_attestations else None,
+            collect_attestations=require_publication_attestations,
         ).items():
             previous = expected_attestations.get(name)
             if previous is not None and previous != payload:
@@ -466,8 +475,10 @@ def validate_factory(
         raise FactoryError("generated marketplace index does not match the Factory registry and published snapshots")
     if require_publication_attestations:
         if publication_attestation_root is None:
-            raise AssertionError("strict publication proof validation lost its root")
-        validate_publication_attestation_root(publication_attestation_root, expected_attestations)
+            if expected_attestations:
+                raise FactoryError("publication attestation root is required for strict Factory validation")
+        else:
+            validate_publication_attestation_root(publication_attestation_root, expected_attestations)
 
 
 def main() -> None:

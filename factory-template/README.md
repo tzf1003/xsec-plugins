@@ -149,12 +149,32 @@ required provenance.
 
 ## Verification and trust boundary
 
-Run locally after registry edits or generated metadata changes:
+Run locally after registry edits or generated metadata changes. A brand-new
+Factory that has never published any immutable evidence event has no Release
+proofs to download, so its normal strict validation is directly executable:
 
 ```powershell
 python scripts\factory_validate.py --root .
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
+
+Once a Factory has published any Beta or Stable event, strict validation must
+also verify the complete immutable proof history (including disabled plugins).
+Use a read-scoped `GH_TOKEN`, replace `OWNER/REPOSITORY` with the Factory
+repository, and download into a new empty directory:
+
+```powershell
+$proofRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("xsec-factory-proofs-" + [Guid]::NewGuid())
+python scripts\factory_attestation.py --root . download --factory-repository "OWNER/REPOSITORY" --output-directory $proofRoot
+python scripts\factory_validate.py --root . --factory-repository "OWNER/REPOSITORY" --publication-attestation-root $proofRoot
+```
+
+The download command derives every release tag and asset name from local
+evidence, fetches each fixed GitHub Release asset, and compares its exact
+bytes before validation accepts it. `--allow-unsigned-publication-attestations`
+is only the protected publisher's brief pre-upload staging bypass; it does not
+authenticate published history and must not be used as a local verification
+substitute.
 
 The Factory is an allowlist, packaging, provenance, and distribution service.
 It is not an execution environment for plugins. The source checkout is read

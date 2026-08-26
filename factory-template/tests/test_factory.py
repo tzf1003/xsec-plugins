@@ -148,6 +148,40 @@ class MarketplaceFactoryTests(unittest.TestCase):
             self.assertEqual(retried["changed"], "false")
             self.assertEqual(evidence_path.read_bytes(), before_retry)
 
+    def test_strict_validation_allows_a_fresh_factory_without_a_proof_root(self) -> None:
+        """A new Factory has no historical GitHub Release proof to download."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-fresh-strict-test-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            shutil.copytree(TEMPLATE, factory)
+            self.configure_registry(factory)
+            write_marketplace_index(factory, load_registry(factory))
+
+            validate_factory(
+                factory,
+                "example/factory",
+                require_publication_attestations=True,
+            )
+
+    def test_strict_validation_requires_a_proof_root_after_first_publication(self) -> None:
+        """Historical evidence cannot be locally trusted without its Release asset."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-published-strict-test-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            shutil.copytree(TEMPLATE, factory)
+            source = self.make_source(root)
+            self.configure_registry(factory)
+            beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
+
+            with self.assertRaisesRegex(FactoryError, "publication attestation root is required"):
+                validate_factory(
+                    factory,
+                    "example/factory",
+                    require_publication_attestations=True,
+                )
+
     def test_strict_provenance_download_covers_every_historical_event_including_disabled_plugins(self) -> None:
         """A source gate cannot accept only the newest event's Release asset."""
 
