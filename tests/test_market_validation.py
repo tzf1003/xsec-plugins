@@ -418,7 +418,8 @@ class MarketplaceValidationTests(unittest.TestCase):
             plugin_id = plugin_dir.name
             manifest = validate_source_manifest(plugin_id, plugin_dir)
             desktop = manifest["extensions"]["com.xsec.desktop"]
-            self.assertEqual(desktop["engines"]["pluginApi"], "^1.2.0", plugin_id)
+            expected_plugin_api = "^1.3.0" if "xsec.workspace.tool.open" in desktop["frontendApi"]["methods"] else "^1.2.0"
+            self.assertEqual(desktop["engines"]["pluginApi"], expected_plugin_api, plugin_id)
             self.assertEqual(desktop["frontendApi"]["version"], 2, plugin_id)
             self.assertTrue(desktop["frontendApi"]["methods"], plugin_id)
             source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")

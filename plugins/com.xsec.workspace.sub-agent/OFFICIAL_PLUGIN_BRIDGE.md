@@ -1,6 +1,6 @@
-# Official plugin bridge
+# Plugin-owned official frontend
 
-This package owns the signed plugin manifest, permissions and release lifecycle. XSEC Desktop currently binds its compatible built-in renderer only after this package is installed and enabled. The bridge is intentionally explicit so package state, rather than the application installer, is the source of truth.
+This signed package owns its manifest, permissions, release lifecycle, frontend UI state and interaction logic. XSEC Desktop loads `com.xsec.desktop/frontend/index.js` in the sandbox and exposes only the capability-checked Host RPC methods declared by `plugin.json`; bootstrap must never replace it with a compatibility renderer or placeholder.
 
 ## 设置审查
 

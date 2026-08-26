@@ -1,16 +1,18 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "com.xsec.attack-path", "version": "1.2.2",
+  "name": "com.xsec.attack-path", "version": "1.2.3",
   "description": "XSEC attack-path workspace and Agent tools", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "攻击路径", "publisher": "XSEC", "icon": "git-branch",
-    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.2.0" },
+    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.3.0" },
     "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
     "activationEvents": ["onWorkspaceTool:attack-path", "onAgentTool:xsec_tree_node_create"],
-    "permissions": { "workspace.session.read": {}, "workspace.project.write": {}, "agent.tools.register": {} },
+    "permissions": { "workspace.session.read": {}, "workspace.tool.open": {}, "workspace.project.write": {}, "agent.tools.register": {} },
+    "dependencies": { "required": { "com.xsec.workspace.sub-agent": "^1.2.3" } },
     "frontendApi": { "version": 2, "module": "single-esm", "methods": {
       "xsec.attack-path.tree.list": { "capability": "workspace.session.read", "binding": "context" },
-      "xsec.attack-path.subagents.list": { "capability": "workspace.session.read", "binding": "context" }
+      "xsec.attack-path.subagents.list": { "capability": "workspace.session.read", "binding": "context" },
+      "xsec.workspace.tool.open": { "capability": "workspace.tool.open", "binding": "context" }
     } },
     "contributes": {
       "workspaceTools": { "attack-path": {
