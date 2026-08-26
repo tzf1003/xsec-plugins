@@ -143,7 +143,8 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('xsec.asset-discovery.credentials.set', asset_source)
         self.assertIn('xsec.asset-discovery.credentials.clear', asset_source)
         self.assertIn('type="password"', asset_source)
-        self.assertIn('try{await load();note("密钥已保存到系统密钥库。")}catch{}', asset_source)
+        self.assertIn('async function load(preserveDraft=false)', asset_source)
+        self.assertIn("await load(true);note(", asset_source)
         asset_manifest = json.loads(
             (ROOT / "plugins" / "com.xsec.asset-discovery" / "plugin.json").read_text(encoding="utf-8")
         )
@@ -183,12 +184,21 @@ class MarketplaceValidationTests(unittest.TestCase):
             'async function loadCa(){const view=await host.request("xsec.traffic.ca.status",{});',
             traffic_source,
         )
-        self.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`读取流量设置失败：', traffic_source)
+        self.assertIn('settingsReady=true;controls.save.disabled=false;await Promise.all', traffic_source)
+        self.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`', traffic_source)
         self.assertIn('enabled.onchange=()=>void toggle(rule.rule_id,enabled.checked,enabled);', traffic_source)
         self.assertIn('control.checked=!enabled;note(`更新被动规则失败：', traffic_source)
         self.assertIn('CA 已导入，但刷新 CA 状态失败', traffic_source)
         self.assertIn('规则已保存，但刷新规则列表失败', traffic_source)
         self.assertIn('规则已删除，但刷新规则列表失败', traffic_source)
+
+        for plugin_id in validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT:
+            frontend = ROOT / "plugins" / plugin_id / "com.xsec.desktop" / "frontend" / "index.js"
+            settings_source = frontend.read_text(encoding="utf-8")
+            self.assertRegex(settings_source, r"settingsReady\s*=\s*false", plugin_id)
+            self.assertRegex(settings_source, r"if\s*\(!settingsReady\)", plugin_id)
+            self.assertRegex(settings_source, r"\bretry(?:Button)?\.onclick", plugin_id)
+            self.assertRegex(settings_source, r"\.disabled\s*=\s*true", plugin_id)
 
     def test_v1_migration_initially_points_beta_and_stable_to_the_same_release(self) -> None:
         artifacts = [{"os": "any", "arch": "any", "url": "artifacts/test.xsec-plugin", "sha256": "a" * 64}]
