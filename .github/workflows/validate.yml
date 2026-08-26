@@ -24,5 +24,7 @@ jobs:
         run: python scripts/build_market.py --clean --output-root "$RUNNER_TEMP/xsec-marketplace-build"
       - name: Validate source manifests, deterministic artifacts and package safety
         run: python scripts/validate_market.py source --source-root . --built-root "$RUNNER_TEMP/xsec-marketplace-build"
+      - name: Validate official external Factory registry, snapshots and provenance
+        run: python scripts/external_source_factory.py validate
       - name: Run marketplace gate tests
         run: python -m unittest discover -s tests -p "test_*.py" -v

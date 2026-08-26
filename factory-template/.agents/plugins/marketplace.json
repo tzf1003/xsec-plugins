@@ -1,0 +1,7 @@
+{
+  "name": "my-xsec-marketplace",
+  "interface": {
+    "displayName": "My XSEC Plugin Marketplace"
+  },
+  "plugins": []
+}

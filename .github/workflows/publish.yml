@@ -4,6 +4,25 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Beta publishes an approved external beta SHA; Stable promotes an identical existing Beta release.
+        required: false
+        default: beta
+        type: choice
+        options: [beta, stable]
+      plugin_id:
+        description: Optional registered external plugin ID. Leave empty for the existing built-in Beta publisher.
+        required: false
+        type: string
+      source_sha:
+        description: Exact lowercase 40-character SHA in the registered external repository.
+        required: false
+        type: string
+      release_id:
+        description: Existing external Beta releaseId. Required only for an external Stable promotion.
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -16,19 +35,24 @@ concurrency:
   # condition skips it. Put that no-op run in its own group so it cannot
   # replace a pending manual Stable promotion in the shared publication queue.
   group: >-
-    xsec-marketplace-${{ (startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release') || startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release')) && github.run_id || 'publish-main' }}
+    xsec-marketplace-${{ (startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release') || startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release') || startsWith(github.event.head_commit.message, 'chore: publish external marketplace beta release') || startsWith(github.event.head_commit.message, 'chore: promote external marketplace stable release')) && github.run_id || 'publish-main' }}
   cancel-in-progress: false
 
 jobs:
   enforce-publish-ref:
     runs-on: ubuntu-latest
     steps:
-      - name: Reject manual dispatches outside protected main
+      - name: Require protected main and a complete publication request
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           REF_PROTECTED: ${{ github.ref_protected }}
+          CHANNEL: ${{ inputs.channel }}
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
         run: |
+          set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
             echo "Manual marketplace publishing is permitted only from refs/heads/main." >&2
             exit 1
@@ -37,13 +61,35 @@ jobs:
             echo "Marketplace publication requires a protected main branch or ruleset." >&2
             exit 1
           fi
+          channel="${CHANNEL:-beta}"
+          case "$channel" in
+            beta|stable) ;;
+            *) echo "channel must be beta or stable." >&2; exit 1 ;;
+          esac
+          if [ -n "$PLUGIN_ID" ]; then
+            [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit protected-main dispatch." >&2; exit 1; }
+            [ -n "$SOURCE_SHA" ] || { echo "External source publication requires source_sha." >&2; exit 1; }
+            if [ "$channel" = "beta" ] && [ -n "$RELEASE_ID" ]; then
+              echo "release_id is only valid for an external Stable promotion." >&2
+              exit 1
+            fi
+            if [ "$channel" = "stable" ] && [ -z "$RELEASE_ID" ]; then
+              echo "External Stable promotion requires release_id." >&2
+              exit 1
+            fi
+          else
+            [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] && [ "$channel" = "beta" ] || {
+              echo "Built-in publication accepts no source_sha/release_id and only the beta channel; provide plugin_id for an external publication." >&2
+              exit 1
+            }
+          fi
   sign-and-publish:
     needs: enforce-publish-ref
     # GitHub's merge API puts the generated title in both the subject and
-    # body of the resulting main commit.  Do not recursively build another
+    # body of the resulting main commit. Do not recursively build another
     # beta release from a generated beta or stable-pointer metadata commit.
     if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected && (github.event_name == 'workflow_dispatch' || (!startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release') && !startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release'))) }}
+      ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected && (github.event_name == 'workflow_dispatch' || (!startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release') && !startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release') && !startsWith(github.event.head_commit.message, 'chore: publish external marketplace beta release') && !startsWith(github.event.head_commit.message, 'chore: promote external marketplace stable release'))) }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -79,20 +125,181 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Build an immutable beta release without a private signing key
-        run: python scripts/build_market.py --clean
-      - name: Validate source manifests, deterministic artifacts and package safety
-        run: python scripts/validate_market.py source --source-root . --built-root .
-      - name: Request KMS sidecars through the production Cloud broker
+      - name: Resolve the publication mode from protected Factory main
+        id: request
         env:
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_PLUGIN_ID: ${{ inputs.plugin_id }}
+        run: |
+          set -euo pipefail
+          channel="${INPUT_CHANNEL:-beta}"
+          if [ -n "$INPUT_PLUGIN_ID" ]; then
+            echo "external=true" >> "$GITHUB_OUTPUT"
+            echo "channel=$channel" >> "$GITHUB_OUTPUT"
+            if [ "$channel" = "beta" ]; then
+              echo "commit_title=chore: publish external marketplace beta release" >> "$GITHUB_OUTPUT"
+              echo "branch_prefix=external-beta" >> "$GITHUB_OUTPUT"
+            else
+              echo "commit_title=chore: promote external marketplace stable release" >> "$GITHUB_OUTPUT"
+              echo "branch_prefix=external-stable" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "external=false" >> "$GITHUB_OUTPUT"
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+            echo "commit_title=chore: publish marketplace beta release" >> "$GITHUB_OUTPUT"
+            echo "branch_prefix=publish" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate an external registry request before source access
+        id: external-request
+        if: ${{ steps.request.outputs.external == 'true' }}
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          CHANNEL: ${{ steps.request.outputs.channel }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare \
+            --plugin-id "$PLUGIN_ID" --channel "$CHANNEL" --source-sha "$SOURCE_SHA"
+      - name: Require the read-only external source App secrets
+        if: ${{ steps.request.outputs.external == 'true' }}
+        env:
+          XSEC_MARKETPLACE_SOURCE_APP_ID: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          [ -n "$XSEC_MARKETPLACE_SOURCE_APP_ID" ] && [ -n "$XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY" ] || {
+            echo "Configure the read-only XSEC_MARKETPLACE_SOURCE_APP_ID and XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY production secrets." >&2
+            exit 1
+          }
+      - name: Create a read-only external source token
+        id: source-token
+        if: ${{ steps.request.outputs.external == 'true' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.external-request.outputs.source_owner }}
+          repositories: ${{ steps.external-request.outputs.source_repo }}
+          # Request the minimum permission from the short-lived token as well
+          # as requiring the App installation itself to be source-read-only.
+          permission-contents: read
+      - name: Check out the exact external source commit in an isolated directory
+        if: ${{ steps.request.outputs.external == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.external-request.outputs.source_repository }}
+          ref: ${{ steps.external-request.outputs.source_sha }}
+          token: ${{ steps.source-token.outputs.token }}
+          path: .xsec-factory-source
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Prove the exact external commit remains reachable from its registered branch
+        if: ${{ steps.request.outputs.external == 'true' }}
+        env:
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          SOURCE_REF: ${{ steps.external-request.outputs.source_ref }}
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          token_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
+          git -C .xsec-factory-source \
+            -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
+            fetch --no-tags origin "$SOURCE_REF:refs/remotes/origin/xsec-factory-source"
+          unset token_header SOURCE_TOKEN
+          [ "$(git -C .xsec-factory-source rev-parse HEAD)" = "$SOURCE_SHA" ]
+          git -C .xsec-factory-source cat-file -e "$SOURCE_SHA^{commit}"
+          git -C .xsec-factory-source merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/xsec-factory-source
+          if git -C .xsec-factory-source config --local --get-all http.https://github.com/.extraheader >/dev/null; then
+            echo "The isolated external checkout retained an HTTP credential." >&2
+            exit 1
+          fi
+      - name: Stage a static external Beta source snapshot
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+        run: python scripts/external_source_factory.py stage-beta --plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source
+      - name: Verify external main rebuilds the selected immutable Beta release
+        id: external-stable
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          python scripts/external_source_factory.py verify-stable \
+            --plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source --release-id "$RELEASE_ID"
+          python scripts/promote_release.py --root . --plugin-id "$PLUGIN_ID" --release-id "$RELEASE_ID"
+          if git diff --quiet -- plugins; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record immutable external Stable provenance after moving the pointer
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' && steps.external-stable.outputs.changed == 'true' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          PUBLISHER: ${{ github.actor }}
+        run: |
+          python scripts/external_source_factory.py record-stable \
+            --plugin-id "$PLUGIN_ID" --source-sha "$SOURCE_SHA" --release-id "$RELEASE_ID" --publisher "$PUBLISHER"
+      - name: Remove the isolated external source checkout before packaging or signing
+        if: ${{ steps.request.outputs.external == 'true' }}
+        run: rm -rf -- .xsec-factory-source
+      - name: Build an immutable beta release without a private signing key
+        if: ${{ steps.request.outputs.external != 'true' || steps.request.outputs.channel == 'beta' }}
+        run: python scripts/build_market.py --clean
+      - name: Record immutable external Beta provenance after deterministic packaging
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          PUBLISHER: ${{ github.actor }}
+        run: python scripts/external_source_factory.py record-beta --plugin-id "$PLUGIN_ID" --source-sha "$SOURCE_SHA" --publisher "$PUBLISHER"
+      - name: Skip a byte-identical external Stable retry without KMS or dispatch
+        id: publication-decision
+        env:
+          EXTERNAL: ${{ steps.request.outputs.external }}
+          CHANNEL: ${{ steps.request.outputs.channel }}
+          STABLE_CHANGED: ${{ steps.external-stable.outputs.changed }}
+        run: |
+          set -euo pipefail
+          if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ] && [ "$STABLE_CHANGED" != "true" ]; then
+            # A no-op must still prove the already-selected pointer has
+            # immutable Factory evidence, but it must leave no output to sign.
+            python scripts/external_source_factory.py validate
+            git diff --exit-code
+            test -z "$(git status --porcelain --untracked-files=all)" || {
+              echo "An external Stable no-op left unexpected Factory changes." >&2
+              git status --short >&2
+              exit 1
+            }
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate source manifests, deterministic artifacts and package safety
+        if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
+        run: python scripts/validate_market.py source --source-root . --built-root .
+      - name: Validate official external Factory registry, snapshots and provenance
+        if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
+        run: python scripts/external_source_factory.py validate
+      - name: Request KMS sidecars through the production Cloud broker
+        if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
+        env:
+          # The Cloud broker allowlists this protected publish.yml workflow.
+          # It binds the protected Factory main SHA, never an external source SHA.
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: python scripts/kms_marketplace_publisher.py --root .
       - name: Gate the KMS sidecar protocol before publishing
+        if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
         env:
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: python scripts/kms_marketplace_publisher.py --root . --validate-only
       - name: Publish generated metadata through a protected pull request
         id: publish
+        if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
         env:
           # The repository deliberately does not allow the default Actions
           # token to create pull requests. This narrowly scoped fine-grained
@@ -100,30 +307,38 @@ jobs:
           # permitted to push the generated branch, create/merge its PR, and
           # dispatch the immutable source gate.
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          EXTERNAL: ${{ steps.request.outputs.external }}
+          CHANNEL: ${{ steps.request.outputs.channel }}
+          COMMIT_TITLE: ${{ steps.request.outputs.commit_title }}
+          BRANCH_PREFIX: ${{ steps.request.outputs.branch_prefix }}
         run: |
-          # Stage the index sidecar as well as the index itself. A KMS sidecar
-          # binds exact bytes and must never be left untracked beside a newly
-          # published marketplace.json.
-          git add -A .agents/plugins plugins
+          set -euo pipefail
+          # Stage Factory provenance as well as the index/release sidecars.
+          # A KMS sidecar binds exact bytes and must never be left untracked.
+          git add -A .agents/plugins plugins .xsec-factory
           if git diff --cached --quiet; then
             echo "marketplace_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "xsec-marketplace[bot]"
           git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
-          git commit -m "chore: publish marketplace beta release"
+          git commit -m "$COMMIT_TITLE"
           generated_revision="$(git rev-parse HEAD)"
           # A re-run retains GITHUB_RUN_ID but gets a new attempt number. Keep
           # that number in the generated branch so an earlier, divergent
           # publication attempt cannot make this push non-fast-forward.
-          branch="xsec-marketplace/publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          branch="xsec-marketplace/${BRANCH_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
-          pull_url="$(gh pr create \
-            --base main \
-            --head "$branch" \
-            --title "chore: publish marketplace beta release" \
-            --body "Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. This appends immutable releases as needed and advances beta only; the source gate must pass before the signed update can merge.")"
+          if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ]; then
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It proved external main deterministically rebuilds the selected Beta release and changes only channels.stable.releaseId plus Factory provenance."
+          elif [ "$EXTERNAL" = "true" ]; then
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It snapshots one reachable external beta commit, appends immutable releases as needed, advances beta only, and records Factory provenance."
+          else
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. This appends immutable releases as needed and advances beta only; the source gate must pass before the signed update can merge."
+          fi
+          pull_url="$(gh pr create --base main --head "$branch" --title "$COMMIT_TITLE" --body "$body")"
           pull_number="$(gh pr view "$pull_url" --json number --jq .number)"
           gh workflow run validate.yml --ref "$branch"
           deadline="$((SECONDS + 900))"
@@ -157,33 +372,37 @@ jobs:
           merge_result="$(gh api \
             --method PUT \
             "repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge" \
-            -f commit_title="chore: publish marketplace beta release" \
+            -f commit_title="$COMMIT_TITLE" \
             -f merge_method=merge)"
           if [ "$(printf '%s' "$merge_result" | jq -r .merged)" != "true" ]; then
             echo "The generated marketplace pull request was not merged." >&2
             exit 1
           fi
           echo "marketplace_revision=$(printf '%s' "$merge_result" | jq -r .sha)" >> "$GITHUB_OUTPUT"
+          echo "published=true" >> "$GITHUB_OUTPUT"
       - name: Dispatch the immutable marketplace revision to the Desktop smoke gate
+        if: ${{ steps.publication-decision.outputs.should_publish == 'true' && steps.publish.outputs.published == 'true' }}
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
           MARKETPLACE_REVISION: ${{ steps.publish.outputs.marketplace_revision }}
+          MARKETPLACE_CHANNEL: ${{ steps.request.outputs.channel }}
         run: |
           if [ -z "$XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN" ] || [ -z "$MARKETPLACE_REVISION" ]; then
             echo "The protected Desktop smoke-dispatch token and marketplace revision are required." >&2
             exit 1
           fi
           # The receiver checks these values against its compiled official
-          # GitHub origin. `source_revision` is the protected main revision whose
-          # source was signed; `MARKETPLACE_REVISION` is the immutable merge
-          # commit containing those sidecars. The former must be an ancestor
-          # of the latter, so Desktop can reject redirected dispatch requests.
+          # GitHub origin. `source_revision` is the protected Factory main
+          # revision whose source was signed; `MARKETPLACE_REVISION` is the
+          # immutable merge commit containing those sidecars. The former must
+          # be an ancestor of the latter, so Desktop can reject redirected
+          # dispatch requests.
           payload="$(jq -cn \
             --arg source_repository "$GITHUB_REPOSITORY" \
             --arg source_ref "refs/heads/main" \
             --arg source_sha "${{ steps.current-main.outputs.source_revision }}" \
             --arg marketplace_revision "$MARKETPLACE_REVISION" \
-            --arg channel "beta" \
+            --arg channel "$MARKETPLACE_CHANNEL" \
             '{event_type:"xsec_official_marketplace_published",client_payload:{source_repository:$source_repository,source_ref:$source_ref,source_sha:$source_sha,marketplace_revision:$marketplace_revision,channel:$channel}}')"
           curl --fail --silent --show-error --retry 3 --retry-all-errors \
             --request POST \

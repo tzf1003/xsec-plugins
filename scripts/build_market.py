@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -25,12 +26,28 @@ MARKETPLACE_RELATIVE_PATH = Path(".agents") / "plugins" / "marketplace.json"
 MARKETPLACE = ROOT / MARKETPLACE_RELATIVE_PATH
 PLUGIN_ROOT = ROOT / "plugins"
 ARTIFACT_DIR_NAME = "artifacts"
-EXCLUDED_PARTS = {"__pycache__", ".git", ".xsec-market"}
+# Dependency installs are not a reproducible source input. The external
+# Factory snapshot already excludes node_modules, so the shared deterministic
+# packager must do the same when a Stable source checkout is hashed directly.
+EXCLUDED_PARTS = {"__pycache__", ".git", ".xsec-market", "node_modules"}
 RELEASE_ID_PATTERN = re.compile(r"^sha256-[0-9a-f]{64}$")
 TEXT_ARCHIVE_SUFFIXES = frozenset({
     ".cjs", ".css", ".html", ".htm", ".js", ".json", ".jsx", ".md",
     ".mjs", ".ps1", ".sh", ".svg", ".toml", ".ts", ".tsx", ".txt",
     ".xml", ".yaml", ".yml",
+})
+MAX_PACKAGE_ENTRIES = 10_000
+MAX_PACKAGE_FILE_BYTES = 64 * 1024 * 1024
+MAX_PACKAGE_TOTAL_BYTES = 128 * 1024 * 1024
+MAX_SOURCE_TREE_ENTRIES = MAX_PACKAGE_ENTRIES
+# Keep this preflight in lockstep with Desktop's package installer. Source
+# repositories are authored on many platforms, while the immutable artifact
+# must extract unambiguously on Windows and macOS too.
+WINDOWS_FORBIDDEN_COMPONENT_CHARACTERS = frozenset('<>"\\|?*')
+WINDOWS_RESERVED_DEVICE_NAMES = frozenset({
+    "con", "prn", "aux", "nul", "clock$", "conin$", "conout$",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
 })
 
 
@@ -67,15 +84,103 @@ def iter_plugin_files(plugin_dir: Path) -> list[Path]:
     if is_link(plugin_dir):
         raise ValueError(f"plugin directory must not be a symbolic link: {plugin_dir}")
     files: list[Path] = []
-    for path in plugin_dir.rglob("*"):
-        relative = path.relative_to(plugin_dir)
-        if any(part in EXCLUDED_PARTS for part in relative.parts):
-            continue
-        if is_link(path):
-            raise ValueError(f"plugin package must not contain symbolic links: {relative.as_posix()}")
-        if path.is_file():
+    total_bytes = 0
+    source_entries = 0
+    # Prune ignored source trees before visiting their contents. A committed
+    # node_modules/.git tree is deliberately not a package input and must not
+    # turn preflight itself into a privileged runner DoS.
+    for current, directories, names in os.walk(plugin_dir, topdown=True, followlinks=False):
+        current_path = Path(current)
+        retained_directories: list[str] = []
+        for name in directories:
+            path = current_path / name
+            relative = path.relative_to(plugin_dir)
+            if name in EXCLUDED_PARTS:
+                continue
+            if is_link(path):
+                raise ValueError(f"plugin package must not contain symbolic links: {relative.as_posix()}")
+            source_entries += 1
+            if source_entries > MAX_SOURCE_TREE_ENTRIES:
+                raise ValueError("plugin source tree contains too many files or directories")
+            retained_directories.append(name)
+        directories[:] = retained_directories
+        for name in names:
+            path = current_path / name
+            relative = path.relative_to(plugin_dir)
+            if any(part in EXCLUDED_PARTS for part in relative.parts):
+                continue
+            if is_link(path):
+                raise ValueError(f"plugin package must not contain symbolic links: {relative.as_posix()}")
+            source_entries += 1
+            if source_entries > MAX_SOURCE_TREE_ENTRIES:
+                raise ValueError("plugin source tree contains too many files or directories")
+            if not path.is_file():
+                continue
+            if len(files) >= MAX_PACKAGE_ENTRIES:
+                raise ValueError("plugin package contains too many files")
+            size = path.stat().st_size
+            if size > MAX_PACKAGE_FILE_BYTES:
+                raise ValueError(f"plugin package file is too large: {relative.as_posix()}")
+            total_bytes += size
+            if total_bytes > MAX_PACKAGE_TOTAL_BYTES:
+                raise ValueError("plugin package is too large")
             files.append(path)
+    require_portable_package_paths(plugin_dir, files)
     return files
+
+
+def portable_target_filesystem_path(relative: str) -> str:
+    """Return Desktop's normalized target path or reject an unsafe member name."""
+
+    if not relative.isascii():
+        raise ValueError(f"plugin package path must use portable ASCII characters: {relative}")
+    parts = relative.split("/")
+    if not parts or any(not part or part in {".", ".."} for part in parts):
+        raise ValueError(f"plugin package path is unsafe: {relative}")
+    normalized_parts: list[str] = []
+    for part in parts:
+        if part.endswith((".", " ")):
+            raise ValueError(f"plugin package path has a Windows trailing-dot or trailing-space alias: {relative}")
+        if ":" in part:
+            raise ValueError(f"plugin package path has a Windows NTFS stream alias: {relative}")
+        if any(ord(character) <= 0x1F or character in WINDOWS_FORBIDDEN_COMPONENT_CHARACTERS for character in part):
+            raise ValueError(f"plugin package path has a Windows-forbidden character: {relative}")
+        device_name = part.split(".", 1)[0].lower()
+        if device_name in WINDOWS_RESERVED_DEVICE_NAMES:
+            raise ValueError(f"plugin package path has a Windows reserved device name: {relative}")
+        normalized_parts.append(part.lower())
+    return "/".join(normalized_parts)
+
+
+def require_portable_package_paths(plugin_dir: Path, files: list[Path]) -> None:
+    """Match Desktop's portable ZIP-name admission policy before signing bytes.
+
+    Source files have no explicit ZIP directory entries, so every normalized
+    member is a file. Detect both exact aliases and a file used as the
+    case-folded ancestor of another member before any copy or ZIP work.
+    """
+
+    target_paths: dict[str, str] = {}
+    for path in files:
+        relative = path.relative_to(plugin_dir).as_posix()
+        target = portable_target_filesystem_path(relative)
+        existing = target_paths.get(target)
+        if existing is not None:
+            raise ValueError(
+                "plugin package paths collide on case-insensitive filesystems: "
+                f"{existing} and {relative}"
+            )
+        target_paths[target] = relative
+    for target, relative in target_paths.items():
+        parts = target.split("/")
+        for length in range(1, len(parts)):
+            ancestor = "/".join(parts[:length])
+            existing = target_paths.get(ancestor)
+            if existing is not None:
+                raise ValueError(
+                    "plugin package paths have a file/directory collision on case-insensitive filesystems: "
+                    f"{existing} and {relative}"
+                )
 
 
 def archive_bytes(path: Path) -> bytes:

@@ -328,6 +328,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("github.ref_protected", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("XSEC_MARKETPLACE_PUBLISH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}", workflow)
+        self.assertIn("actions/create-github-app-token@v2", workflow)
+        self.assertIn("permission-contents: read", workflow)
         self.assertNotIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertIn("token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}", workflow)
         self.assertIn("ref: refs/heads/main", workflow)
@@ -369,8 +371,14 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("--event workflow_dispatch", workflow)
         self.assertIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
         self.assertIn('pull_number="$(gh pr view "$pull_url" --json number --jq .number)"', workflow)
-        self.assertIn('-f commit_title="chore: publish marketplace beta release"', workflow)
-        self.assertIn('branch="xsec-marketplace/publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
+        # The protected workflow selects a title/prefix based on whether the
+        # request is built-in or an approved external Factory publication.
+        # Keep the legacy built-in values and ensure the dynamic values are
+        # the ones handed to GitHub's merge API and generated branch name.
+        self.assertIn('echo "commit_title=chore: publish marketplace beta release"', workflow)
+        self.assertIn('COMMIT_TITLE: ${{ steps.request.outputs.commit_title }}', workflow)
+        self.assertIn('-f commit_title="$COMMIT_TITLE"', workflow)
+        self.assertIn('branch="xsec-marketplace/${BRANCH_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
         self.assertIn("workflow_dispatch:", validation_workflow)
 
     def test_stable_promotion_workflow_only_moves_an_existing_pointer(self) -> None:

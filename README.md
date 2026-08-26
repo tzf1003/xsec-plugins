@@ -48,6 +48,71 @@ Desktop `dev_revision` is intentionally separate: it permits same-version hot
 reload while debugging a private workspace, but never creates a marketplace
 release, artifact, channel update, or cloud upload.
 
+## Official external-source Factory
+
+`xsec-plugins` is also the **official signed Marketplace Factory** for an
+approved external plugin repository. It is not the external plugin's active
+development repository. The external repository owns its code and uses its
+protected `beta` branch for a candidate and protected `main` branch for the
+same candidate promoted to Stable. This Factory retains only a reviewed,
+publishable snapshot in `plugins/<plugin-id>/`, its immutable artifacts and
+release history, and source provenance in
+`.xsec-factory/official-publications/<plugin-id>.json`.
+
+An administrator first reviews an allowlist entry in
+`.xsec-factory/official-registry.json`. An entry fixes a GitHub
+`owner/repository`, an optional repository-relative plugin path, and exactly
+`refs/heads/beta` / `refs/heads/main`; it can grant only `AVAILABLE` and
+`ON_INSTALL`, never default-install privilege. External source packages also
+cannot use the Desktop-owned `com.xsec` namespace (including any future
+internal package IDs) or reserved official workspace/MCP routes.
+Their archive member paths must also meet Desktop's portable Windows/macOS
+rules: ASCII only; no case-fold, file/directory, trailing-dot/space, NTFS
+stream, forbidden-character, or device-name alias. Source file count and sizes
+are bounded before snapshotting, so a signed Factory artifact is installable
+without making the protected runner process an unbounded tree.
+Because Desktop grants an official-marketplace package's declared capabilities
+without the normal third-party confirmation flow, external Factory packages are
+also limited to a conservative browser-sandbox capability set (read-only
+workspace/session access, plugin-owned data/secrets, workspace navigation,
+network requests, notifications, and non-reserved agent-tool registration).
+They cannot add shell/process/native execution, workspace writes, browser or
+clipboard control, MCP server registration, or any other high-privilege
+capability merely by changing external source or registry metadata.
+
+Desktop developer tools explicitly dispatch the existing protected
+`publish.yml` at this repository's `main` branch; pushing arbitrary source code
+does not itself acquire publication credentials. Its only external-source
+inputs are:
+
+```text
+channel=beta|stable
+plugin_id=<registered ID>
+source_sha=<exact lowercase external commit SHA>
+release_id=<existing Beta releaseId; Stable only>
+```
+
+For Beta, the workflow validates the registry *before* source access, creates
+a read-only GitHub App token, checks out exactly `source_sha` into an isolated
+directory, and proves it is reachable from the registered `beta` branch. It
+then statically snapshots and deterministically packages the source without
+running plugin code, hooks, package-manager scripts, or build scripts. For
+Stable, it proves reachability from registered `main`, rebuilds the exact
+selected Beta `releaseId`, and changes only `channels.stable.releaseId` plus
+auditable main-source evidence. A different byte at the same SemVer fails; a
+byte-identical Stable retry makes no KMS request, PR, or Desktop dispatch.
+
+Configure the read-only source App only in the protected production
+environment as `XSEC_MARKETPLACE_SOURCE_APP_ID` and
+`XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY`. It needs source repository metadata
+and contents read access only. It is distinct from the Factory publisher token
+and from the non-exportable KMS key. The Cloud broker allowlists the existing
+protected `publish.yml` on `xsec-plugins/main`; therefore the KMS
+`source_revision` remains the checked-out protected Factory `main` SHA, while
+the external SHA lives only in immutable Factory provenance. The later Desktop
+smoke dispatch likewise identifies the Factory revision, not an untrusted
+external source revision.
+
 The protected `Publish immutable marketplace beta release` workflow runs after a normal main
 change. It preserves every existing record and artifact, appends a new record
 only when the current deterministic package is new, and moves **only** the
@@ -64,6 +129,9 @@ manual workflow. Give it a plugin ID and an existing `releaseId` to promote or
 roll back. It changes only `channels.stable.releaseId`, never rebuilds an
 archive and never changes an artifact SHA-256. A fresh KMS sidecar is produced
 for the edited index and the update is again merged through a protected PR.
+It remains the legacy built-in path: a registered external plugin must use the
+external Stable request to `publish.yml`, so its source-main proof cannot be
+bypassed.
 
 Both workflows dispatch the resulting immutable revision to Desktop with an
 explicit `channel` (`beta` or `stable`). Desktop defaults to stable; opting
@@ -117,3 +185,17 @@ line-ending mismatch.
 
 See [the remote Desktop smoke-test contract](docs/desktop-remote-marketplace-smoke-contract.md)
 for the cross-platform release hand-off.
+
+## User Marketplace Factory template
+
+The official KMS-signed marketplace above is intentionally separate from the
+user-owned Factory template in [`factory-template/`](factory-template/). A
+Factory keeps third-party plugin source in its own Git repositories, generates
+Desktop-compatible metadata snapshots under `plugins/<id>/`, and publishes
+confirmation-driven Beta/Stable releases from exact Git commits. It never
+inherits the official signing key, trusted-source status, or default-install
+privileges, and it is not an alternative way to approve an official source
+repository. Its write-capable release jobs require a reviewer-gated
+`production` GitHub Environment in addition to protected `main`; a protected
+ref alone does not authorize a workflow dispatcher. See [the Factory template
+contract](docs/marketplace-factory-template.md).
