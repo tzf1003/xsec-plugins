@@ -2033,6 +2033,26 @@ def validate_status(
             source_sha=beta_sha,
         ):
             fail("in-flight Factory status must match immutable Beta provenance")
+        # A waiting status only says that a specific Beta has been accepted by
+        # Factory.  It must not make the consumer-visible sidecar look as if
+        # Stable or Desktop smoke evidence already exists.  Conversely, the
+        # controlled manual-recovery state is allowed to describe Stable, but
+        # only after its exact immutable Stable provenance was appended.
+        if state == "waiting_for_smoke":
+            if stable_sha is not None or smoke_run_url is not None or marketplace_revision is not None:
+                fail("waiting Factory status must not claim Stable or smoke evidence")
+        elif state == "promoting_stable":
+            if stable_id is None or stable_sha is None:
+                fail("promoting Factory status must retain a Stable release ID and source SHA")
+            if smoke_run_url is not None or marketplace_revision is not None:
+                fail("promoting Factory status must not claim Desktop smoke evidence")
+            if not evidence_event_matches(
+                events,
+                channel="stable",
+                release_id_value=stable_id,
+                source_sha=stable_sha,
+            ):
+                fail("promoting Factory status must match immutable Stable provenance")
     # ``published`` is a terminal smoke result, never a cosmetic synonym for
     # a signed Beta. Validate all of the data written exclusively by the
     # smoke-gated Stable path before accepting the status sidecar; immutable
@@ -2511,6 +2531,94 @@ def status_beta_identity(
     return state, beta_release_id, beta_sha
 
 
+def published_status_identity(
+    root: Path,
+    registration: Registration,
+    *,
+    state_label: str,
+) -> tuple[str, tuple[str, str, str, str, str, str]] | None:
+    """Return a canonical published sidecar and its smoke-bound identity.
+
+    The status file is ordinary generated content, so it cannot replace the
+    append-only KMS proof.  It nevertheless represents the *current* consumer
+    outcome.  A protected baseline may retain it verbatim, or replace it only
+    with a tuple represented by a smoke outcome appended after that baseline.
+    Keeping the full canonical document here also prevents a normal PR from
+    silently rewriting delivery or observability fields for the same outcome.
+    """
+
+    path = status_path(root, registration.plugin_id)
+    if is_link(path):
+        fail(f"{state_label} Factory status for {registration.plugin_id} must not use a symbolic link")
+    if not path.exists():
+        return None
+    if not path.is_file():
+        fail(f"{state_label} Factory status for {registration.plugin_id} must be a regular file")
+    status = read_json(path, f"{state_label} Factory status for {registration.plugin_id}")
+    source = require_object(status.get("source"), f"{state_label} Factory status source")
+    release = require_object(status.get("release"), f"{state_label} Factory status release")
+    publication = require_object(status.get("publication"), f"{state_label} Factory status publication")
+    if publication.get("state") != "published":
+        return None
+    beta_release_id = release.get("betaReleaseId")
+    stable_release_id = release.get("stableReleaseId")
+    if (
+        not isinstance(beta_release_id, str)
+        or not RELEASE_ID_PATTERN.fullmatch(beta_release_id)
+        or not isinstance(stable_release_id, str)
+        or not RELEASE_ID_PATTERN.fullmatch(stable_release_id)
+    ):
+        fail(f"{state_label} published Factory status for {registration.plugin_id} has invalid release IDs")
+    beta_sha = safe_sha(source.get("betaSha"), f"{state_label} published Factory status betaSha")
+    stable_sha = safe_sha(source.get("stableSha"), f"{state_label} published Factory status stableSha")
+    smoke_run_url = optional_url(publication.get("smokeRunUrl"), f"{state_label} published Factory status smokeRunUrl")
+    marketplace_revision = optional_sha(
+        publication.get("marketplaceRevision"),
+        f"{state_label} published Factory status marketplaceRevision",
+    )
+    if smoke_run_url is None or marketplace_revision is None:
+        fail(f"{state_label} published Factory status for {registration.plugin_id} has incomplete smoke evidence")
+    document = json.dumps(status, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return document, (
+        beta_release_id,
+        stable_release_id,
+        beta_sha,
+        stable_sha,
+        smoke_run_url,
+        marketplace_revision,
+    )
+
+
+def latest_appended_smoke_outcome_matches(
+    baseline_outcomes: tuple[str, ...],
+    current_outcomes: tuple[str, ...],
+    *,
+    published_identity: tuple[str, str, str, str, str, str],
+) -> bool:
+    """Require the current terminal sidecar to name the newest appended result."""
+
+    appended = current_outcomes[len(baseline_outcomes) :]
+    if not appended:
+        return False
+    try:
+        outcome = json.loads(appended[-1])
+    except json.JSONDecodeError as error:
+        raise ExternalSourceFactoryError("current Factory smoke outcome provenance is invalid") from error
+    source = outcome.get("source") if isinstance(outcome, dict) else None
+    smoke = outcome.get("smoke") if isinstance(outcome, dict) else None
+    if not isinstance(source, dict) or not isinstance(smoke, dict):
+        return False
+    outcome_identity = (
+        outcome.get("betaReleaseId"),
+        outcome.get("stableReleaseId"),
+        source.get("betaSha"),
+        source.get("stableSha"),
+        smoke.get("runUrl"),
+        smoke.get("marketplaceRevision"),
+    )
+    return outcome_identity == published_identity
+
+
 def appended_beta_provenance_matches(
     baseline_events: tuple[str, ...],
     current_events: tuple[str, ...],
@@ -2699,6 +2807,8 @@ def validate_trusted_baseline_continuity(
         # so the first smoke completion (which adds the optional field) and
         # subsequent source releases both pass while deletion/rewrite fails.
         baseline_evidence = publication_path(baseline, plugin_id)
+        baseline_outcomes: tuple[str, ...] = ()
+        current_outcomes: tuple[str, ...] = ()
         if baseline_evidence.exists() or is_link(baseline_evidence):
             baseline_outcomes = publication_smoke_outcome_history(
                 baseline,
@@ -2769,10 +2879,36 @@ def validate_trusted_baseline_continuity(
             )
         if baseline_status is not None and baseline_status[0] == "published":
             if current_status is not None and current_status[0] == "published":
-                # A later smoke-gated Stable promotion legitimately replaces
-                # the one current Desktop status with a newer terminal tuple;
-                # its old KMS outcome remains append-only above.
-                continue
+                baseline_published = published_status_identity(
+                    baseline,
+                    baseline_registration,
+                    state_label="trusted Factory baseline",
+                )
+                current_published = published_status_identity(
+                    root,
+                    registration,
+                    state_label="current Factory",
+                )
+                if baseline_published is not None and current_published is not None:
+                    if (
+                        current_published[0] == baseline_published[0]
+                        and current_outcomes == baseline_outcomes
+                    ):
+                        # The preserved current outcome is byte-for-byte the
+                        # one users saw at the trusted baseline, including
+                        # delivery observability fields.
+                        continue
+                    if latest_appended_smoke_outcome_matches(
+                        baseline_outcomes,
+                        current_outcomes,
+                        published_identity=current_published[1],
+                    ):
+                        # A later smoke-gated Stable promotion legitimately
+                        # replaces the one current Desktop status only when
+                        # its exact terminal tuple was appended after the
+                        # baseline.  Selecting an older valid outcome would
+                        # otherwise be an unaudited rollback.
+                        continue
             if (
                 current_status is not None
                 and current_status[0] == "waiting_for_smoke"

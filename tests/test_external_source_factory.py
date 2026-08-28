@@ -1448,6 +1448,131 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                     marketplace_revision="c" * 40,
                 )
 
+    def test_in_flight_status_cannot_claim_unbound_stable_or_smoke_evidence(self) -> None:
+        """Waiting and promoting sidecars must expose only their proven lifecycle fields."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-in-flight-status-fields-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, self.make_source(root / "source"))
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-delivery",
+            )
+            waiting_path = factory.status_path(root, PLUGIN_ID)
+            waiting = json.loads(waiting_path.read_text(encoding="utf-8"))
+            forged_waiting = json.loads(json.dumps(waiting))
+            forged_waiting["source"]["stableSha"] = STABLE_SHA
+            forged_waiting["publication"]["smokeRunUrl"] = "https://github.com/tzf1003/xSecDesktop/actions/runs/600"
+            forged_waiting["publication"]["marketplaceRevision"] = "c" * 40
+            write_json(waiting_path, forged_waiting)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "waiting Factory status must not claim Stable or smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(waiting_path, waiting)
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=None,
+                stable_sha=STABLE_SHA,
+                state="promoting_stable",
+                delivery_id="stable-delivery",
+            )
+            factory.validate_registry_and_snapshots(root)
+            promoting_path = factory.status_path(root, PLUGIN_ID)
+            promoting = json.loads(promoting_path.read_text(encoding="utf-8"))
+            forged_promoting = json.loads(json.dumps(promoting))
+            forged_promoting["source"]["stableSha"] = "d" * 40
+            write_json(promoting_path, forged_promoting)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "promoting Factory status must match immutable Stable provenance"):
+                factory.validate_registry_and_snapshots(root)
+
+            forged_promoting = json.loads(json.dumps(promoting))
+            forged_promoting["publication"]["smokeRunUrl"] = "https://github.com/tzf1003/xSecDesktop/actions/runs/601"
+            forged_promoting["publication"]["marketplaceRevision"] = "e" * 40
+            write_json(promoting_path, forged_promoting)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "promoting Factory status must not claim Desktop smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+    def test_published_baseline_cannot_roll_back_to_an_older_signed_smoke_outcome(self) -> None:
+        """A later valid smoke result cannot be replaced by a prior terminal tuple."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-published-outcome-rollback-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, self.make_source(root / "source"))
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="first-beta",
+            )
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+            factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="first-smoke",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/700",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, PLUGIN_ID)
+            baseline = workspace / "trusted-first-outcome"
+            shutil.copytree(root, baseline)
+            first_status = factory.status_path(root, PLUGIN_ID).read_bytes()
+
+            # A source-only Beta cycle may reproduce the same immutable
+            # release. It still gets distinct Beta/Stable provenance and a
+            # distinct KMS-bound smoke result.
+            next_beta_sha = "d" * 40
+            next_stable_sha = "e" * 40
+            factory.record_beta(root, PLUGIN_ID, next_beta_sha, "test-publisher")
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=next_beta_sha,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="second-beta",
+            )
+            write_publication_proof(root, PLUGIN_ID, source_revision=next_beta_sha)
+            factory.record_stable(root, PLUGIN_ID, next_stable_sha, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID, source_revision=next_stable_sha)
+            factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=next_stable_sha,
+                delivery_id="second-smoke",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/701",
+                marketplace_revision="f" * 40,
+            )
+            write_publication_proof(root, PLUGIN_ID, source_revision=next_stable_sha)
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+            # Both smoke outcomes remain KMS-signed and valid, but the first
+            # is not the current published result after the second was
+            # appended. A normal PR cannot roll the readable sidecar back.
+            factory.status_path(root, PLUGIN_ID).write_bytes(first_status)
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "must retain its terminal published status unless an exact new Beta smoke cycle",
+            ):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_published_baseline_allows_a_distinct_beta_to_begin_its_next_smoke_cycle(self) -> None:
         """A terminal status protects its own tuple, not every future Beta."""
 

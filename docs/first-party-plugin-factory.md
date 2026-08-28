@@ -170,7 +170,9 @@ gate 会逐项把状态与该 outcome、Beta/Stable source event 对齐。仅填
 revision 的普通 PR 因没有匹配的 KMS proof 而失败，adoption 也不能单独宣称已 smoke/published。
 即使此前从未写过 status，`waiting_for_smoke` 与 `promoting_stable` 也必须同时带有当前 Beta releaseId/
 source SHA，并精确匹配已 KMS 签名的 Beta provenance event；不能仅靠首次创建可读 status 文件伪造一个
-Desktop 可见的 in-flight 发布周期。
+Desktop 可见的 in-flight 发布周期。`waiting_for_smoke` 的 `stableSha`、smoke URL 和 Marketplace
+revision 必须为 `null`；`promoting_stable` 必须再带精确匹配 KMS Stable event 的 Stable releaseId/source
+SHA，且仍不得声称 smoke/revision。
 当 `reconcile-smoke` 接受 Desktop 的 Beta smoke 成功回调并触发可重建的 Stable
 推广时，会把该回调的精确 Factory revision 和 Desktop Actions URL 带入 Stable 生成
 PR；只有该 PR 的指针/证据校验通过后，状态才成为终态 `published`。重复 Beta delivery
@@ -183,7 +185,8 @@ release），publisher 也会幂等写入/保留该 Stable source event；这样
 复用最早的 KMS-signed smoke outcome（包含 URL 与 Factory revision），不会把一个尚未签名的新
 revision 写入 `published` status。source gate 对 source provenance 与 smoke outcome 各自执行
 受信基线的 append-only continuity；一旦基线已有 `published` status，普通 PR 也不能删除或把
-同一 Beta release/source tuple 的 Desktop 终态降级。随后一个**不同**的 Beta release 或 source SHA
+同一 Beta release/source tuple 的 Desktop 终态降级，或改回任何较早、虽有效但并非基线后新增的 smoke
+outcome。终态 sidecar 必须原样保留，或精确匹配基线之后追加的 KMS-signed outcome。随后一个**不同**的 Beta release 或 source SHA
 会在其精确 `(releaseId, source SHA)` 已作为新的 Beta provenance event 追加到受信基线之后，合法开始新的
 `waiting_for_smoke` 周期；仅改 status 文件不能伪造该转换，旧 terminal smoke outcome 仍保留在 append-only
 证据中。
