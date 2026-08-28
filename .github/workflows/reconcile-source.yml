@@ -1,0 +1,146 @@
+name: Reconcile official plugin source event
+
+on:
+  workflow_dispatch:
+    inputs:
+      trigger_kind:
+        description: source_event or smoke_callback
+        required: false
+        type: string
+      delivery_key:
+        description: Immutable Cloud delivery identity
+        required: false
+        type: string
+      plugin_id:
+        description: Source-event plugin ID; empty for smoke callbacks
+        required: false
+        type: string
+      source_repository:
+        description: Source-event repository; empty for smoke callbacks
+        required: false
+        type: string
+      source_ref:
+        description: Source-event beta/main ref; empty for smoke callbacks
+        required: false
+        type: string
+      source_sha:
+        description: Source-event exact commit; empty for smoke callbacks
+        required: false
+        type: string
+      marketplace_revision:
+        description: Smoke-tested Factory revision; empty for source events
+        required: false
+        type: string
+      channel:
+        description: Smoke channel; empty for source events
+        required: false
+        type: string
+      smoke_workflow_run_id:
+        description: Desktop smoke run ID; empty for source events
+        required: false
+        type: string
+      smoke_workflow_run_attempt:
+        description: Desktop smoke run attempt; empty for source events
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: xsec-marketplace-reconcile-source-${{ inputs.plugin_id || inputs.marketplace_revision }}
+  cancel-in-progress: false
+
+jobs:
+  enforce-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the dedicated Cloud dispatcher App and protected Factory main
+        env:
+          ACTOR: ${{ github.actor }}
+          EXPECTED_ACTOR: ${{ vars.XSEC_FACTORY_DISPATCHER_ACTOR }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [ -n "$EXPECTED_ACTOR" ] || { echo "Configure XSEC_FACTORY_DISPATCHER_ACTOR to the dedicated GitHub App bot login." >&2; exit 1; }
+          [ "$ACTOR" = "$EXPECTED_ACTOR" ] || { echo "Only the dedicated Cloud Factory dispatcher App may reconcile source events." >&2; exit 1; }
+          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || { echo "Reconciliation requires protected Factory main." >&2; exit 1; }
+          case "${{ inputs.trigger_kind }}" in
+            source_event|smoke_callback) ;;
+            *) echo "Unexpected reconciliation trigger kind." >&2; exit 1 ;;
+          esac
+  validate-and-dispatch:
+    needs: enforce-dispatch
+    if: ${{ inputs.trigger_kind == 'source_event' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate the complete Cloud source-event payload against protected Registry v2
+        id: request
+        env:
+          TRIGGER_KIND: ${{ inputs.trigger_kind }}
+          DELIVERY_KEY: ${{ inputs.delivery_key }}
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          MARKETPLACE_REVISION: ${{ inputs.marketplace_revision }}
+          CHANNEL: ${{ inputs.channel }}
+          SMOKE_RUN_ID: ${{ inputs.smoke_workflow_run_id }}
+          SMOKE_RUN_ATTEMPT: ${{ inputs.smoke_workflow_run_attempt }}
+        run: |
+          set -euo pipefail
+          [ "$TRIGGER_KIND" = "source_event" ] || { echo "Unexpected reconciliation trigger kind." >&2; exit 1; }
+          [ -z "$MARKETPLACE_REVISION" ] && [ -z "$CHANNEL" ] && [ -z "$SMOKE_RUN_ID" ] && [ -z "$SMOKE_RUN_ATTEMPT" ] || { echo "Source events must not carry smoke fields." >&2; exit 1; }
+          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-reconcile-source \
+            --delivery-key "$DELIVERY_KEY" --plugin-id "$PLUGIN_ID" --source-repository "$SOURCE_REPOSITORY" \
+            --source-ref "$SOURCE_REF" --source-sha "$SOURCE_SHA"
+      - name: Reject stale delivery before starting a Factory publication
+        env:
+          SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
+          SOURCE_REF: ${{ steps.request.outputs.source_ref }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          # All official split sources are public.  This fixed HTTPS query is
+          # only a stale-event gate; publish.yml repeats the authenticated,
+          # redirect-hardened checkout/reachability proof before packaging.
+          head_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_REF" | awk 'NR == 1 { print $1 }')"
+          [ "$head_sha" = "$SOURCE_SHA" ] || { echo "Source delivery is stale; the registered branch head changed." >&2; exit 1; }
+      - name: Publish the exact current beta source or leave main for smoke-gated promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ steps.request.outputs.channel }}
+          PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$CHANNEL" = "stable" ]; then
+            echo "Registered main is current. Stable promotion is deliberately deferred until reconcile-smoke validates a Beta smoke callback."
+            exit 0
+          fi
+          gh workflow run publish.yml --ref main \
+            -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$SOURCE_SHA"
+  reconcile-smoke:
+    needs: enforce-dispatch
+    if: ${{ inputs.trigger_kind == 'smoke_callback' }}
+    uses: ./.github/workflows/reconcile-smoke.yml
+    with:
+      trigger_kind: ${{ inputs.trigger_kind }}
+      delivery_key: ${{ inputs.delivery_key }}
+      plugin_id: ${{ inputs.plugin_id }}
+      source_repository: ${{ inputs.source_repository }}
+      source_ref: ${{ inputs.source_ref }}
+      source_sha: ${{ inputs.source_sha }}
+      marketplace_revision: ${{ inputs.marketplace_revision }}
+      channel: ${{ inputs.channel }}
+      smoke_workflow_run_id: ${{ inputs.smoke_workflow_run_id }}
+      smoke_workflow_run_attempt: ${{ inputs.smoke_workflow_run_attempt }}

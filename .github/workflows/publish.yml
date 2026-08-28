@@ -23,6 +23,18 @@ on:
         description: Existing external Beta releaseId. Required only for an external Stable promotion.
         required: false
         type: string
+      expected_beta_sha:
+        description: Exact Beta source SHA bound to a successful Desktop smoke callback. Required with smoke-gated external Stable promotion.
+        required: false
+        type: string
+      smoke_run_url:
+        description: Exact Desktop smoke Actions URL. Accepted only for a smoke-gated external Stable promotion.
+        required: false
+        type: string
+      smoke_marketplace_revision:
+        description: Exact Factory revision that Desktop smoke verified. Accepted only for a smoke-gated external Stable promotion.
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -51,6 +63,9 @@ jobs:
           PLUGIN_ID: ${{ inputs.plugin_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
+          SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
+          SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
@@ -69,17 +84,26 @@ jobs:
           if [ -n "$PLUGIN_ID" ]; then
             [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit protected-main dispatch." >&2; exit 1; }
             [ -n "$SOURCE_SHA" ] || { echo "External source publication requires source_sha." >&2; exit 1; }
-            if [ "$channel" = "beta" ] && [ -n "$RELEASE_ID" ]; then
-              echo "release_id is only valid for an external Stable promotion." >&2
+            if [ "$channel" = "beta" ] && { [ -n "$RELEASE_ID" ] || [ -n "$EXPECTED_BETA_SHA" ]; }; then
+              echo "release_id and expected_beta_sha are only valid for an external Stable promotion." >&2
               exit 1
             fi
             if [ "$channel" = "stable" ] && [ -z "$RELEASE_ID" ]; then
               echo "External Stable promotion requires release_id." >&2
               exit 1
             fi
+            if [ -n "$SMOKE_RUN_URL" ] || [ -n "$SMOKE_MARKETPLACE_REVISION" ]; then
+              [ "$channel" = "stable" ] && [ -n "$SMOKE_RUN_URL" ] && [ -n "$SMOKE_MARKETPLACE_REVISION" ] && [ -n "$EXPECTED_BETA_SHA" ] || {
+                echo "Smoke outcome metadata and expected_beta_sha are valid only as a complete external Stable promotion binding." >&2
+                exit 1
+              }
+            elif [ -n "$EXPECTED_BETA_SHA" ]; then
+              echo "expected_beta_sha requires the complete Desktop smoke outcome binding." >&2
+              exit 1
+            fi
           else
-            [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] && [ "$channel" = "beta" ] || {
-              echo "Built-in publication accepts no source_sha/release_id and only the beta channel; provide plugin_id for an external publication." >&2
+            [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] && [ -z "$EXPECTED_BETA_SHA" ] && [ -z "$SMOKE_RUN_URL" ] && [ -z "$SMOKE_MARKETPLACE_REVISION" ] && [ "$channel" = "beta" ] || {
+              echo "Built-in publication accepts no source_sha/release_id/expected_beta_sha and only the beta channel; provide plugin_id for an external publication." >&2
               exit 1
             }
           fi
@@ -196,7 +220,7 @@ jobs:
           persist-credentials: false
           submodules: false
           lfs: false
-      - name: Prove the exact external commit remains reachable from its registered branch
+      - name: Prove the exact external commit still heads its registered branch
         if: ${{ steps.request.outputs.external == 'true' }}
         env:
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
@@ -239,6 +263,10 @@ jobs:
           # uses only a fixed HTTPS URL, ignores system/global Git config,
           # refuses redirects and all protocols except HTTPS, and writes to a
           # local verified ref rather than a source-controlled remote name.
+          # This job starts only after the shared publication slot is acquired.
+          # A commit that was current when reconcile-source dispatched it must
+          # still be the exact ref head now; ancestry alone would permit a
+          # delayed old Beta to replace a newer delivery.
           env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
             -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
             -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
@@ -256,6 +284,11 @@ jobs:
           unset token_header
           [ "$(git -C .xsec-factory-source rev-parse HEAD)" = "$SOURCE_SHA" ]
           git -C .xsec-factory-source cat-file -e "$SOURCE_SHA^{commit}"
+          verified_head="$(git -C .xsec-factory-source rev-parse refs/remotes/xsec-factory-source/verified)"
+          [ "$verified_head" = "$SOURCE_SHA" ] || {
+            echo "The requested external source SHA no longer heads its registered branch." >&2
+            exit 1
+          }
           git -C .xsec-factory-source merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/xsec-factory-source/verified
           if git -C .xsec-factory-source config --local --no-includes --get-regexp '^http\..*\.extraheader$' >/dev/null; then
             echo "The isolated external checkout retained an HTTP credential." >&2
@@ -272,18 +305,26 @@ jobs:
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
         run: |
           set -euo pipefail
-          python scripts/external_source_factory.py verify-stable \
-            --plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source --release-id "$RELEASE_ID"
+          args=(--plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source --release-id "$RELEASE_ID")
+          if [ -n "$EXPECTED_BETA_SHA" ]; then
+            args+=(--expected-beta-sha "$EXPECTED_BETA_SHA")
+          fi
+          python scripts/external_source_factory.py verify-stable "${args[@]}"
           python scripts/promote_release.py --root . --plugin-id "$PLUGIN_ID" --release-id "$RELEASE_ID"
           if git diff --quiet -- plugins; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Record immutable external Stable provenance after moving the pointer
-        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' && steps.external-stable.outputs.changed == 'true' }}
+      - name: Record immutable external Stable provenance after verification
+        # ``promote_release.py`` reports no diff when Stable already selected
+        # this exact Beta. The smoke path still needs a Stable source event
+        # before it can bind a terminal outcome, so record (or idempotently
+        # retain) the verified provenance regardless of pointer movement.
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
@@ -305,17 +346,61 @@ jobs:
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
           PUBLISHER: ${{ github.actor }}
         run: python scripts/external_source_factory.py record-beta --plugin-id "$PLUGIN_ID" --source-sha "$SOURCE_SHA" --publisher "$PUBLISHER"
+      - name: Record Factory Beta state for Desktop status consumers
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
+          FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
+            --beta-sha "$SOURCE_SHA" --state waiting_for_smoke --delivery-id "$DELIVERY_ID" \
+            --factory-run-url "$FACTORY_RUN_URL"
+      - name: Record terminal smoke-verified Factory state for Desktop status consumers
+        # This runs even when channels.stable already points at the selected
+        # release. A duplicate/late smoke callback must repair a prior
+        # waiting_for_smoke state, while complete-smoke-status keeps an
+        # already-published identical outcome idempotent.
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
+          FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
+          SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SMOKE_RUN_URL" ]; then
+            python scripts/external_source_factory.py complete-smoke-status --plugin-id "$PLUGIN_ID" \
+              --beta-release-id "$RELEASE_ID" --stable-sha "$SOURCE_SHA" --delivery-id "$DELIVERY_ID" \
+              --smoke-run-url "$SMOKE_RUN_URL" --marketplace-revision "$SMOKE_MARKETPLACE_REVISION"
+          else
+            # The guarded manual recovery path remains observable but must
+            # never claim a verified Desktop smoke outcome.
+            python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
+              --stable-sha "$SOURCE_SHA" --state promoting_stable --delivery-id "$DELIVERY_ID" \
+              --factory-run-url "$FACTORY_RUN_URL"
+          fi
       - name: Skip a byte-identical external Stable retry without KMS or dispatch
         id: publication-decision
         env:
           EXTERNAL: ${{ steps.request.outputs.external }}
           CHANNEL: ${{ steps.request.outputs.channel }}
           STABLE_CHANGED: ${{ steps.external-stable.outputs.changed }}
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
         run: |
           set -euo pipefail
-          if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ] && [ "$STABLE_CHANGED" != "true" ]; then
+          if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ] && [ "$STABLE_CHANGED" != "true" ] \
+            && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory)"; then
             # A no-op must still prove the already-selected pointer has
             # immutable Factory evidence, but it must leave no output to sign.
+            # In particular, a late smoke callback that turned the status
+            # terminal is a real, signed Factory update even when the Stable
+            # pointer was already selected.
             python scripts/external_source_factory.py validate
             git diff --exit-code
             test -z "$(git status --porcelain --untracked-files=all)" || {
@@ -324,6 +409,23 @@ jobs:
               exit 1
             }
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "beta" ] && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory)"; then
+            # A duplicate source delivery has neither changed the immutable
+            # beta record/provenance nor its UI state.  Do not request a new
+            # KMS signature or produce a metadata commit for it.  The prior
+            # metadata merge may nevertheless have reached main just before a
+            # transient Desktop dispatch failure, so replay only the exact
+            # current waiting-for-smoke tuple without mutating Factory state.
+            python scripts/external_source_factory.py validate
+            redispatch="$(python scripts/external_source_factory.py needs-smoke-redispatch \
+              --plugin-id "$PLUGIN_ID" --beta-sha "$SOURCE_SHA")"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            if [ "$redispatch" = "redispatch=true" ]; then
+              echo "smoke_redispatch=true" >> "$GITHUB_OUTPUT"
+              echo "marketplace_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            else
+              echo "smoke_redispatch=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
@@ -434,10 +536,10 @@ jobs:
           echo "marketplace_revision=$(printf '%s' "$merge_result" | jq -r .sha)" >> "$GITHUB_OUTPUT"
           echo "published=true" >> "$GITHUB_OUTPUT"
       - name: Dispatch the immutable marketplace revision to the Desktop smoke gate
-        if: ${{ steps.publication-decision.outputs.should_publish == 'true' && steps.publish.outputs.published == 'true' }}
+        if: ${{ (steps.publication-decision.outputs.should_publish == 'true' && steps.publish.outputs.published == 'true') || steps.publication-decision.outputs.smoke_redispatch == 'true' }}
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
-          MARKETPLACE_REVISION: ${{ steps.publish.outputs.marketplace_revision }}
+          MARKETPLACE_REVISION: ${{ steps.publish.outputs.marketplace_revision || steps.publication-decision.outputs.marketplace_revision }}
           MARKETPLACE_CHANNEL: ${{ steps.request.outputs.channel }}
         run: |
           if [ -z "$XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN" ] || [ -z "$MARKETPLACE_REVISION" ]; then

@@ -16,7 +16,9 @@ development authority.  Its provenance is kept separately in
 from __future__ import annotations
 
 import argparse
+import base64
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -41,7 +43,9 @@ from build_market import (
 from kms_marketplace_publisher import (
     MarketplaceDocument,
     MarketplaceKmsPublisherError,
+    OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH,
     OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH,
+    official_adoption_provenance_document,
     official_publication_provenance_document,
     sidecar_path_for,
     verify_historical_sidecar_signature,
@@ -51,6 +55,8 @@ from kms_marketplace_publisher import (
 REGISTRY_RELATIVE_PATH = Path(".xsec-factory") / "official-registry.json"
 PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publications"
 PUBLICATION_PROOFS_RELATIVE_PATH = OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH
+ADOPTIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoptions"
+ADOPTION_PROOFS_RELATIVE_PATH = OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH
 PLUGIN_ROOT_RELATIVE_PATH = Path("plugins")
 GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 # Keep this in lockstep with Desktop's package/catalog validator: ASCII
@@ -253,6 +259,28 @@ EXTERNAL_FACTORY_ALLOWED_CAPABILITIES = frozenset(
     }
 )
 
+# The only source identities allowed to retain the Desktop's built-in
+# namespace and automatic-install capability after the split.  This is a
+# static compiler-like allowlist: registry metadata cannot create a new
+# privileged package simply by declaring ``trustTier: first-party``.
+FIRST_PARTY_APPROVED_SOURCES = {
+    "com.xsec.asset-discovery": "tzf1003/xsec-plugin-asset-discovery",
+    "com.xsec.attack-path": "tzf1003/xsec-plugin-attack-path",
+    "com.xsec.project-workspace": "tzf1003/xsec-plugin-project-workspace",
+    "com.xsec.system-terminal": "tzf1003/xsec-plugin-system-terminal",
+    "com.xsec.workspace.approvals": "tzf1003/xsec-plugin-approvals",
+    "com.xsec.workspace.browser": "tzf1003/xsec-plugin-browser",
+    "com.xsec.workspace.conversation-tree": "tzf1003/xsec-plugin-conversation-tree",
+    "com.xsec.workspace.files": "tzf1003/xsec-plugin-files",
+    "com.xsec.workspace.project-outcomes": "tzf1003/xsec-plugin-project-outcomes",
+    "com.xsec.workspace.sub-agent": "tzf1003/xsec-plugin-sub-agent",
+    "com.xsec.workspace.traffic": "tzf1003/xsec-plugin-traffic",
+}
+TRUST_TIERS = frozenset({"external", "first-party"})
+PUBLICATION_STATES = frozenset(
+    {"waiting_for_beta", "building_beta", "waiting_for_smoke", "promoting_stable", "published", "failed"}
+)
+
 
 class ExternalSourceFactoryError(ValueError):
     """The approved-source bridge must stop before marketplace signing."""
@@ -444,6 +472,7 @@ def require_link_free_tree(root: Path, label: str, *, excluded_names: frozenset[
 @dataclass(frozen=True)
 class Registration:
     plugin_id: str
+    trust_tier: str
     repository: str
     source_path: PurePosixPath
     beta_ref: str
@@ -462,10 +491,19 @@ class Registration:
 
 
 def parse_registration(value: object, index: int) -> Registration:
-    label = f"official external registry plugin at index {index}"
+    label = f"official Factory registry plugin at index {index}"
     entry = require_object(value, label)
-    require_exact_keys(entry, {"pluginId", "source", "policy", "category", "status"}, label)
-    plugin_id = safe_external_plugin_id(entry.get("pluginId"), f"{label}.pluginId")
+    require_exact_keys(entry, {"pluginId", "trustTier", "source", "policy", "category", "status"}, label)
+    trust_tier = entry.get("trustTier")
+    if trust_tier not in TRUST_TIERS:
+        fail(f"{label}.trustTier must be external or first-party")
+    raw_plugin_id = entry.get("pluginId")
+    if trust_tier == "external":
+        plugin_id = safe_external_plugin_id(raw_plugin_id, f"{label}.pluginId")
+    else:
+        plugin_id = safe_plugin_id(raw_plugin_id, f"{label}.pluginId")
+        if plugin_id not in FIRST_PARTY_APPROVED_SOURCES:
+            fail(f"{label}.pluginId is not an approved first-party plugin")
     source = require_object(entry.get("source"), f"{label}.source")
     require_exact_keys(source, {"repository", "path", "refs"}, f"{label}.source")
     repository = safe_repository(source.get("repository"), f"{label}.source.repository")
@@ -476,44 +514,84 @@ def parse_registration(value: object, index: int) -> Registration:
         fail(f"{label}.source.refs must map beta to refs/heads/beta and stable to refs/heads/main")
     policy = require_object(entry.get("policy"), f"{label}.policy")
     require_exact_keys(policy, {"installation", "authentication"}, f"{label}.policy")
-    # The installed-by-default official set is compiled into Desktop. An
-    # external registry edit must never silently extend that set.
-    if policy.get("installation") != "AVAILABLE":
-        fail(f"{label}.policy.installation must be AVAILABLE")
+    if trust_tier == "external":
+        # The installed-by-default official set is compiled into Desktop. An
+        # external registry edit must never silently extend that set.
+        if policy.get("installation") != "AVAILABLE":
+            fail(f"{label}.policy.installation must be AVAILABLE")
+    else:
+        expected_repository = FIRST_PARTY_APPROVED_SOURCES[plugin_id]
+        if repository != expected_repository:
+            fail(f"{label}.source.repository does not match the approved first-party source")
+        if source_path != PurePosixPath("plugins") / plugin_id:
+            fail(f"{label}.source.path must be plugins/{plugin_id} for a first-party plugin")
+        if policy.get("installation") != "INSTALLED_BY_DEFAULT":
+            fail(f"{label}.policy.installation must be INSTALLED_BY_DEFAULT")
     if policy.get("authentication") != "ON_INSTALL":
         fail(f"{label}.policy.authentication must be ON_INSTALL")
     category = require_text(entry.get("category"), f"{label}.category", maximum=80)
     status = entry.get("status")
-    if status not in {"active", "disabled"}:
-        fail(f"{label}.status must be active or disabled")
+    allowed_statuses = {"active", "disabled"}
+    if trust_tier == "first-party":
+        # A protected migration first registers a retained built-in snapshot
+        # as pending, then the production adoption workflow creates and signs
+        # its proof in the same generated activation PR.  External packages
+        # never get this transitional trust state.
+        allowed_statuses.add("pending-adoption")
+    if status not in allowed_statuses:
+        fail(f"{label}.status is invalid for its trust tier")
     return Registration(
         plugin_id=plugin_id,
+        trust_tier=str(trust_tier),
         repository=repository,
         source_path=source_path,
         beta_ref="refs/heads/beta",
         stable_ref="refs/heads/main",
-        installation="AVAILABLE",
-        authentication="ON_INSTALL",
+        installation=str(policy["installation"]),
+        authentication=str(policy["authentication"]),
         category=category,
         status=status,
     )
 
 
-def load_registry(root: Path) -> tuple[Registration, ...]:
+def load_registry(root: Path, *, allow_legacy_v1: bool = False) -> tuple[Registration, ...]:
+    """Load current Registry v2, optionally reading a trusted v1 baseline.
+
+    The protected source gate compares a proposed v2 migration with the
+    previous protected commit.  That parent legitimately has Registry v1,
+    whose rows are exactly the old restrictive external shape.  Current
+    Factory input must still be v2; this narrow compatibility path exists
+    only for a separately materialized trusted baseline.
+    """
+
     path = root / REGISTRY_RELATIVE_PATH
     if is_link(path.parent):
         fail("official external registry directory must not be a symbolic link")
-    document = read_json(path, "official external registry")
-    require_exact_keys(document, {"schemaVersion", "plugins"}, "official external registry")
-    if document.get("schemaVersion") != 1:
-        fail("official external registry schemaVersion must be 1")
+    document = read_json(path, "official Factory registry")
+    require_exact_keys(document, {"schemaVersion", "plugins"}, "official Factory registry")
+    schema_version = document.get("schemaVersion")
+    if schema_version not in {1, 2}:
+        fail("official Factory registry schemaVersion must be 2")
+    if schema_version == 1 and not allow_legacy_v1:
+        fail("official Factory registry schemaVersion must be 2")
     raw_plugins = document.get("plugins")
     if not isinstance(raw_plugins, list):
-        fail("official external registry plugins must be a list")
-    registrations = tuple(parse_registration(item, index) for index, item in enumerate(raw_plugins))
+        fail("official Factory registry plugins must be a list")
+    if schema_version == 1:
+        def legacy_entry(value: object, index: int) -> Registration:
+            legacy_label = f"trusted Factory baseline Registry v1 plugin at index {index}"
+            entry = require_object(value, legacy_label)
+            require_exact_keys(entry, {"pluginId", "source", "policy", "category", "status"}, legacy_label)
+            v2_entry = dict(entry)
+            v2_entry["trustTier"] = "external"
+            return parse_registration(v2_entry, index)
+
+        registrations = tuple(legacy_entry(item, index) for index, item in enumerate(raw_plugins))
+    else:
+        registrations = tuple(parse_registration(item, index) for index, item in enumerate(raw_plugins))
     identifiers = [item.plugin_id for item in registrations]
     if len(identifiers) != len(set(identifiers)):
-        fail("official external registry contains duplicate plugin IDs")
+        fail("official Factory registry contains duplicate plugin IDs")
     return registrations
 
 
@@ -522,7 +600,9 @@ def registration_for(root: Path, plugin_id: str, *, active: bool = True) -> Regi
     for registration in load_registry(root):
         if registration.plugin_id == identifier:
             if active and registration.status != "active":
-                fail(f"official external plugin {identifier} is disabled")
+                if registration.status == "disabled":
+                    fail(f"official external plugin {identifier} is disabled")
+                fail(f"official Factory plugin {identifier} is not active")
             return registration
     fail(f"official external plugin {identifier} is not registered")
 
@@ -570,6 +650,116 @@ def release_path(root: Path, plugin_id: str) -> Path:
 
 def publication_path(root: Path, plugin_id: str) -> Path:
     return root / PUBLICATIONS_RELATIVE_PATH / f"{safe_plugin_id(plugin_id)}.json"
+
+
+def adoption_path(root: Path, plugin_id: str) -> Path:
+    return root / ADOPTIONS_RELATIVE_PATH / f"{safe_plugin_id(plugin_id)}.json"
+
+
+def status_path(root: Path, plugin_id: str) -> Path:
+    return root / ".xsec-factory" / "official-status" / f"{safe_plugin_id(plugin_id)}.json"
+
+
+def optional_sha(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return safe_sha(value, label)
+
+
+def release_pointer(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    pointer = require_object(value, label)
+    require_exact_keys(pointer, {"releaseId"}, label)
+    identifier = pointer.get("releaseId")
+    if not isinstance(identifier, str) or not RELEASE_ID_PATTERN.fullmatch(identifier):
+        fail(f"{label}.releaseId must be canonical")
+    return identifier
+
+
+def safe_delivery_key(value: object, label: str = "delivery key") -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", value):
+        fail(f"{label} must be a bounded delivery identifier")
+    return value
+
+
+def prepare_reconcile_source(
+    root: Path,
+    *,
+    delivery_key: str,
+    plugin_id: str,
+    source_repository: str,
+    source_ref: str,
+    source_sha: str,
+) -> dict[str, str]:
+    """Validate Cloud's source-event payload before any source-network access.
+
+    The workflow still resolves the branch head itself after acquiring its
+    publication slot.  This parser only accepts a fully-bound allowlist
+    request, so untrusted delivery fields never decide a repository, ref or
+    Factory publication mode.
+    """
+
+    registration = registration_for(root, plugin_id)
+    if source_repository != registration.repository:
+        fail("reconcile source repository does not match the official registry")
+    ref = require_text(source_ref, "reconcile source ref", maximum=128)
+    channel = "beta" if ref == registration.beta_ref else "stable" if ref == registration.stable_ref else None
+    if channel is None:
+        fail("reconcile source ref does not match a registered beta or stable branch")
+    return {
+        "delivery_key": safe_delivery_key(delivery_key),
+        "plugin_id": registration.plugin_id,
+        "trust_tier": registration.trust_tier,
+        "source_repository": registration.repository,
+        "source_ref": ref,
+        "source_sha": safe_sha(source_sha, "reconcile source SHA"),
+        "channel": channel,
+    }
+
+
+def prepare_adoption(root: Path, plugin_id: str, beta_sha: str, stable_sha: str) -> dict[str, str]:
+    """Resolve a pending first-party migration without accepting caller metadata."""
+
+    registration = registration_for(root, plugin_id, active=False)
+    if registration.trust_tier != "first-party" or registration.status != "pending-adoption":
+        fail("only a pending first-party registration can be adopted")
+    owner, repository = registration.repository.split("/", 1)
+    return {
+        "plugin_id": registration.plugin_id,
+        "source_repository": registration.repository,
+        "source_owner": owner,
+        "source_repo": repository,
+        "beta_ref": registration.beta_ref,
+        "stable_ref": registration.stable_ref,
+        "beta_sha": safe_sha(beta_sha, "first-party adoption beta SHA"),
+        "stable_sha": safe_sha(stable_sha, "first-party adoption stable SHA"),
+    }
+
+
+def prepare_reconcile_smoke(
+    *,
+    delivery_key: str,
+    marketplace_revision: str,
+    channel: str,
+    smoke_workflow_run_id: str,
+    smoke_workflow_run_attempt: str,
+) -> dict[str, str]:
+    """Validate the narrow Desktop callback shape before stable reconciliation."""
+
+    if channel not in {"beta", "stable"}:
+        fail("reconcile smoke channel must be beta or stable")
+    run_id = require_text(smoke_workflow_run_id, "reconcile smoke workflow run ID", maximum=32)
+    attempt = require_text(smoke_workflow_run_attempt, "reconcile smoke workflow run attempt", maximum=16)
+    if not run_id.isdecimal() or not attempt.isdecimal() or int(run_id) <= 0 or int(attempt) <= 0:
+        fail("reconcile smoke workflow run identity is invalid")
+    return {
+        "delivery_key": safe_delivery_key(delivery_key),
+        "marketplace_revision": safe_sha(marketplace_revision, "reconcile smoke marketplace revision"),
+        "channel": channel,
+        "smoke_workflow_run_id": run_id,
+        "smoke_workflow_run_attempt": attempt,
+    }
 
 
 def reserved_external_agent_tool(name: str) -> bool:
@@ -776,8 +966,13 @@ def source_manifest(source_dir: Path, registration: Registration) -> dict[str, o
         require_release_engines(engines, "external plugin manifest")
     except ValueError as error:
         raise ExternalSourceFactoryError(str(error)) from error
-    reject_reserved_external_contributions(desktop, registration.plugin_id)
-    reject_unapproved_external_permissions(desktop, registration.plugin_id)
+    # First-party registrations are a closed, compiled allowlist above.  They
+    # deliberately retain the Desktop-owned routes/tools and capabilities in
+    # their current manifests.  Every other registration remains on the
+    # original restrictive external path.
+    if registration.trust_tier == "external":
+        reject_reserved_external_contributions(desktop, registration.plugin_id)
+        reject_unapproved_external_permissions(desktop, registration.plugin_id)
     if not isinstance(entrypoints, dict) or not entrypoints:
         fail("external plugin manifest must declare XSEC Desktop entrypoints")
     for name, raw_path in entrypoints.items():
@@ -864,6 +1059,14 @@ def marketplace_entry(registration: Registration) -> dict[str, object]:
 def require_owned_publication(root: Path, registration: Registration) -> None:
     """Refuse to claim an already discoverable plugin without Factory evidence."""
 
+    if registration.trust_tier == "first-party":
+        # A split built-in begins with its signed adoption rather than a
+        # synthetic external-source evidence event.  The adoption locks the
+        # retained release history and source identity before beta can replace
+        # the snapshot; later source publications add normal evidence.
+        validate_adoption(root, registration)
+        return
+
     path = publication_path(root, registration.plugin_id)
     if not path.exists():
         fail(
@@ -872,11 +1075,12 @@ def require_owned_publication(root: Path, registration: Registration) -> None:
         )
     evidence = read_json(path, f"official external publication evidence for {registration.plugin_id}")
     if (
-        set(evidence) != {"schemaVersion", "pluginId", "events"}
+        set(evidence) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"})
         or evidence.get("schemaVersion") != 1
         or evidence.get("pluginId") != registration.plugin_id
         or not isinstance(evidence.get("events"), list)
         or not evidence["events"]
+        or "smokeOutcomes" in evidence and not isinstance(evidence["smokeOutcomes"], list)
     ):
         fail(f"official external publication evidence for {registration.plugin_id} has invalid ownership metadata")
 
@@ -896,7 +1100,16 @@ def update_marketplace_entry(root: Path, registration: Registration) -> None:
         # looking structurally like an external entry is not ownership: that
         # would allow a later registry edit to replace another publisher's
         # snapshot below the same local path.
-        require_owned_publication(root, registration)
+        if registration.trust_tier == "first-party":
+            # stage_beta already validated the prior snapshot/adoption before
+            # replacing it.  At this point the new source has not yet been
+            # packaged, so re-validating the old beta artifact against the
+            # staged snapshot would reject every legitimate next release.
+            proof = adoption_path(root, registration.plugin_id)
+            if is_link(proof) or not proof.is_file():
+                fail("first-party Factory snapshot is missing its adoption proof")
+        else:
+            require_owned_publication(root, registration)
         plugins[found[0]] = expected
     else:
         plugins.append(expected)
@@ -973,14 +1186,20 @@ def publication_event(registration: Registration, channel: str, source_sha: str,
 
 def append_evidence(root: Path, registration: Registration, event: dict[str, object]) -> None:
     path = publication_path(root, registration.plugin_id)
+    smoke_outcomes: list[object] | None = None
     if path.exists():
         document = read_json(path, f"official external publication evidence for {registration.plugin_id}")
-        require_exact_keys(document, {"schemaVersion", "pluginId", "events"}, f"official external publication evidence for {registration.plugin_id}")
+        if set(document) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+            fail(f"official external publication evidence for {registration.plugin_id} has invalid keys")
         if document.get("schemaVersion") != 1 or document.get("pluginId") != registration.plugin_id:
             fail("official external publication evidence has invalid identity")
         events = document.get("events")
         if not isinstance(events, list):
             fail("official external publication evidence events must be a list")
+        if "smokeOutcomes" in document:
+            smoke_outcomes = document.get("smokeOutcomes")
+            if not isinstance(smoke_outcomes, list):
+                fail("official external publication evidence smoke outcomes must be a list")
     else:
         events = []
     # A retry can be started by a different GitHub actor. Its immutable
@@ -1002,12 +1221,134 @@ def append_evidence(root: Path, registration: Registration, event: dict[str, obj
         if existing_identity == identity:
             return
     events.append(event)
+    result: dict[str, object] = {"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events}
+    if smoke_outcomes is not None:
+        result["smokeOutcomes"] = smoke_outcomes
+    stable_write(root, path, result, f"official external publication evidence for {registration.plugin_id}")
+
+
+def smoke_outcome(
+    registration: Registration,
+    *,
+    beta_release_id: str,
+    stable_release_id: str,
+    beta_sha: str,
+    stable_sha: str,
+    smoke_run_url: str,
+    marketplace_revision: str,
+) -> dict[str, object]:
+    """Build the KMS-bound record that proves one terminal smoke result.
+
+    The status sidecar remains deliberately small and Desktop-readable, but it
+    is authored in an ordinary generated Factory commit.  A terminal state
+    therefore must also have this exact tuple inside the already KMS-signed
+    publication evidence.  That makes a later hand-written status edit fail
+    closed without giving the status file itself a second signing protocol.
+    """
+
+    if not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id):
+        fail("smoke outcome Beta release ID must be canonical")
+    if not isinstance(stable_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(stable_release_id):
+        fail("smoke outcome Stable release ID must be canonical")
+    return {
+        "betaReleaseId": beta_release_id,
+        "stableReleaseId": stable_release_id,
+        "source": {
+            "betaSha": safe_sha(beta_sha, "smoke outcome Beta source SHA"),
+            "stableSha": safe_sha(stable_sha, "smoke outcome Stable source SHA"),
+        },
+        "smoke": {
+            "runUrl": optional_url(smoke_run_url, "smoke outcome run URL"),
+            "marketplaceRevision": safe_sha(marketplace_revision, "smoke outcome Marketplace revision"),
+        },
+    }
+
+
+def evidence_event_matches(
+    events: list[object],
+    *,
+    channel: str,
+    release_id_value: str,
+    source_sha: str,
+) -> bool:
+    """Return whether signed provenance has the exact source/release tuple."""
+
+    return any(
+        isinstance(event, dict)
+        and event.get("channel") == channel
+        and event.get("releaseId") == release_id_value
+        and isinstance(event.get("source"), dict)
+        and event["source"].get("sha") == source_sha
+        for event in events
+    )
+
+
+def append_smoke_outcome(
+    root: Path,
+    registration: Registration,
+    *,
+    beta_release_id: str,
+    stable_release_id: str,
+    beta_sha: str,
+    stable_sha: str,
+    smoke_run_url: str,
+    marketplace_revision: str,
+) -> dict[str, object]:
+    """Append one immutable, KMS-signed terminal smoke evidence record."""
+
+    path = publication_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail("completed smoke status requires immutable publication evidence")
+    document = read_json(path, f"official external publication evidence for {registration.plugin_id}")
+    if set(document) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+        fail("completed smoke status publication evidence has invalid keys")
+    if document.get("schemaVersion") != 1 or document.get("pluginId") != registration.plugin_id:
+        fail("completed smoke status publication evidence has invalid identity")
+    events = document.get("events")
+    if not isinstance(events, list):
+        fail("completed smoke status publication evidence events are invalid")
+    outcome = smoke_outcome(
+        registration,
+        beta_release_id=beta_release_id,
+        stable_release_id=stable_release_id,
+        beta_sha=beta_sha,
+        stable_sha=stable_sha,
+        smoke_run_url=smoke_run_url,
+        marketplace_revision=marketplace_revision,
+    )
+    source = require_object(outcome["source"], "smoke outcome source")
+    if not evidence_event_matches(events, channel="beta", release_id_value=beta_release_id, source_sha=str(source["betaSha"])):
+        fail("completed smoke status Beta source is not recorded in immutable publication evidence")
+    if not evidence_event_matches(events, channel="stable", release_id_value=stable_release_id, source_sha=str(source["stableSha"])):
+        fail("completed smoke status Stable source is not recorded in immutable publication evidence")
+    outcomes = document.get("smokeOutcomes", [])
+    if not isinstance(outcomes, list):
+        fail("completed smoke status publication evidence smoke outcomes are invalid")
+    identity = (beta_release_id, stable_release_id, str(source["betaSha"]), str(source["stableSha"]))
+    for existing in outcomes:
+        if not isinstance(existing, dict):
+            continue
+        existing_source = existing.get("source")
+        existing_identity = (
+            existing.get("betaReleaseId"),
+            existing.get("stableReleaseId"),
+            existing_source.get("betaSha") if isinstance(existing_source, dict) else None,
+            existing_source.get("stableSha") if isinstance(existing_source, dict) else None,
+        )
+        if existing_identity == identity:
+            # GitHub can redeliver the same accepted smoke completion with a
+            # different run attempt URL. The original KMS-bound outcome is
+            # the immutable audit record, so keep it rather than either
+            # replacing it or treating the retry as a publication failure.
+            return existing
+    outcomes.append(outcome)
     stable_write(
         root,
         path,
-        {"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events},
+        {"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events, "smokeOutcomes": outcomes},
         f"official external publication evidence for {registration.plugin_id}",
     )
+    return outcome
 
 
 def record_beta(root: Path, plugin_id: str, source_sha: str, publisher: str) -> dict[str, str]:
@@ -1036,13 +1377,34 @@ def candidate_release_id(source_dir: Path, registration: Registration) -> str:
         )
 
 
-def verify_stable(root: Path, plugin_id: str, source_root: Path, release_id_value: str) -> dict[str, str]:
+def verify_stable(
+    root: Path,
+    plugin_id: str,
+    source_root: Path,
+    release_id_value: str,
+    *,
+    expected_beta_sha: str | None = None,
+) -> dict[str, str]:
     registration = registration_for(root, plugin_id)
     if not isinstance(release_id_value, str) or not RELEASE_ID_PATTERN.fullmatch(release_id_value):
         fail("stable promotion release ID must be canonical")
     source_dir = resolve_source_directory(source_root, registration.source_path, f"external stable source for {registration.plugin_id}")
     candidate = candidate_release_id(source_dir, registration)
-    document, _ = current_beta_record(root, registration.plugin_id)
+    document, current_beta = current_beta_record(root, registration.plugin_id)
+    if current_beta.get("releaseId") != release_id_value:
+        fail("stable promotion release ID does not match the current Beta pointer")
+    if expected_beta_sha is not None:
+        expected = safe_sha(expected_beta_sha, "smoke-verified Beta source SHA")
+        # This recheck runs in publish.yml after it acquired the shared
+        # publication slot and checked out current protected Factory main.
+        # A later beta commit can have identical artifact bytes/releaseId, so
+        # releaseId alone cannot bind an older Desktop smoke callback.
+        validate_status(root, registration)
+        status = read_json(status_path(root, registration.plugin_id), f"official Factory status for {registration.plugin_id}")
+        source = require_object(status.get("source"), "smoke-verified Factory status source")
+        status_release = require_object(status.get("release"), "smoke-verified Factory status release")
+        if source.get("betaSha") != expected or status_release.get("betaReleaseId") != release_id_value:
+            fail("current Beta source SHA does not match the smoke-verified Beta")
     selected = release_record(document, release_id_value)
     if candidate != release_id_value:
         fail("external main source does not deterministically rebuild the selected Beta releaseId")
@@ -1055,7 +1417,9 @@ def record_stable(root: Path, plugin_id: str, source_sha: str, release_id_value:
     registration = registration_for(root, plugin_id)
     if not isinstance(release_id_value, str) or not RELEASE_ID_PATTERN.fullmatch(release_id_value):
         fail("stable promotion release ID must be canonical")
-    document, _ = current_beta_record(root, registration.plugin_id)
+    document, current_beta = current_beta_record(root, registration.plugin_id)
+    if current_beta.get("releaseId") != release_id_value:
+        fail("stable provenance can be recorded only for the current Beta release")
     channels = document.get("channels")
     stable = channels.get("stable") if isinstance(channels, dict) else None
     if not isinstance(stable, dict) or stable.get("releaseId") != release_id_value:
@@ -1065,12 +1429,682 @@ def record_stable(root: Path, plugin_id: str, source_sha: str, release_id_value:
     return {"plugin_id": registration.plugin_id, "release_id": release_id_value, "channel": "stable"}
 
 
-def validate_evidence(root: Path, registration: Registration, document: dict[str, object]) -> None:
+def release_channels(document: dict[str, object]) -> tuple[str, str | None]:
+    channels = document.get("channels")
+    if not isinstance(channels, dict) or set(channels) != {"beta", "stable"}:
+        fail("release metadata has invalid channels")
+    beta = release_pointer(channels.get("beta"), "release metadata channels.beta")
+    stable = release_pointer(channels.get("stable"), "release metadata channels.stable")
+    if beta is None:
+        fail("release metadata beta pointer is unavailable")
+    return beta, stable
+
+
+def adoption_document(
+    root: Path,
+    registration: Registration,
+    *,
+    beta_sha: str,
+    stable_sha: str,
+    factory_revision: str,
+) -> dict[str, object]:
+    """Build the exact first-party migration assertion before KMS signing.
+
+    This records no new release and never writes a channel pointer.  It binds
+    the pre-existing immutable Factory history to two exact source heads so a
+    later registry/source rewrite cannot silently claim those releases.
+    """
+
+    if registration.trust_tier != "first-party":
+        fail("only a first-party registration can create an adoption proof")
+    release = release_path(root, registration.plugin_id)
+    try:
+        document = load_release_document(release, registration.plugin_id)
+    except ValueError as error:
+        raise ExternalSourceFactoryError(str(error)) from error
+    releases = document.get("releases")
+    if not isinstance(releases, list) or not releases:
+        fail("first-party adoption requires immutable release history")
+    release_ids: list[str] = []
+    for index, record in enumerate(releases):
+        if not isinstance(record, dict):
+            fail(f"first-party adoption release {index} is invalid")
+        identifier = record.get("releaseId")
+        if not isinstance(identifier, str) or not RELEASE_ID_PATTERN.fullmatch(identifier):
+            fail(f"first-party adoption release {index} has an invalid releaseId")
+        release_ids.append(identifier)
+    if len(release_ids) != len(set(release_ids)):
+        fail("first-party adoption release history contains duplicate release IDs")
+    beta, stable = release_channels(document)
+    return {
+        "schemaVersion": 1,
+        "pluginId": registration.plugin_id,
+        "trustTier": "first-party",
+        "source": {
+            "repository": registration.repository,
+            "path": registration.source_path.as_posix(),
+            "refs": {"beta": registration.beta_ref, "stable": registration.stable_ref},
+            "betaSha": safe_sha(beta_sha, "first-party adoption beta SHA"),
+            "stableSha": safe_sha(stable_sha, "first-party adoption stable SHA"),
+        },
+        "legacy": {
+            "factoryRevision": safe_sha(factory_revision, "first-party adoption Factory revision"),
+            "releaseDocumentSha256": sha256(release),
+            "releaseDocumentB64": base64.b64encode(release.read_bytes()).decode("ascii"),
+            "releaseIds": release_ids,
+            "releaseRecords": releases,
+        },
+        "channels": {
+            "beta": {"releaseId": beta},
+            "stable": None if stable is None else {"releaseId": stable},
+        },
+    }
+
+
+def create_adoption(
+    root: Path,
+    plugin_id: str,
+    *,
+    beta_sha: str,
+    stable_sha: str,
+    factory_revision: str,
+) -> dict[str, str]:
+    registration = registration_for(root, plugin_id, active=False)
+    if registration.status != "pending-adoption":
+        fail("first-party adoption can be created only from a pending-adoption registration")
+    document = adoption_document(
+        root,
+        registration,
+        beta_sha=beta_sha,
+        stable_sha=stable_sha,
+        factory_revision=factory_revision,
+    )
+    path = adoption_path(root, registration.plugin_id)
+    if path.exists():
+        existing = read_json(path, f"first-party adoption proof for {registration.plugin_id}")
+        if existing != document:
+            fail("first-party adoption proof is immutable; create a new source publication instead")
+    else:
+        stable_write(root, path, document, f"first-party adoption proof for {registration.plugin_id}")
+    return {"plugin_id": registration.plugin_id, "trust_tier": registration.trust_tier, "adoption": "created"}
+
+
+def activate_first_party(root: Path, plugin_id: str) -> dict[str, str]:
+    """Move one KMS-staged first-party registration to its active state."""
+
+    registration = registration_for(root, plugin_id, active=False)
+    if registration.trust_tier != "first-party" or registration.status != "pending-adoption":
+        fail("only a pending first-party registration can be activated")
+    proof = adoption_path(root, registration.plugin_id)
+    if is_link(proof) or not proof.is_file():
+        fail("first-party adoption proof must be staged before activation")
+    registry_path = root / REGISTRY_RELATIVE_PATH
+    registry = read_json(registry_path, "official Factory registry")
+    plugins = registry.get("plugins")
+    if not isinstance(plugins, list):
+        fail("official Factory registry plugins must be a list")
+    changed = False
+    for entry in plugins:
+        if isinstance(entry, dict) and entry.get("pluginId") == registration.plugin_id:
+            entry["status"] = "active"
+            changed = True
+    if not changed:
+        fail("pending first-party registration disappeared before activation")
+    stable_write(root, registry_path, registry, "official Factory registry")
+    return {"plugin_id": registration.plugin_id, "status": "active"}
+
+
+def validate_adoption(root: Path, registration: Registration, *, require_kms_proof: bool = True) -> None:
+    if registration.trust_tier != "first-party":
+        return
+    path = adoption_path(root, registration.plugin_id)
+    if not path.exists() or is_link(path) or not path.is_file():
+        fail(f"first-party plugin {registration.plugin_id} has no KMS adoption proof")
+    proof = read_json(path, f"first-party adoption proof for {registration.plugin_id}")
+    require_exact_keys(proof, {"schemaVersion", "pluginId", "trustTier", "source", "legacy", "channels"}, "first-party adoption proof")
+    if proof.get("schemaVersion") != 1 or proof.get("pluginId") != registration.plugin_id or proof.get("trustTier") != "first-party":
+        fail("first-party adoption proof has an invalid identity")
+    source = require_object(proof.get("source"), "first-party adoption proof source")
+    require_exact_keys(source, {"repository", "path", "refs", "betaSha", "stableSha"}, "first-party adoption proof source")
+    refs = require_object(source.get("refs"), "first-party adoption proof source.refs")
+    require_exact_keys(refs, {"beta", "stable"}, "first-party adoption proof source.refs")
+    if (
+        source.get("repository") != registration.repository
+        or source.get("path") != registration.source_path.as_posix()
+        or refs.get("beta") != registration.beta_ref
+        or refs.get("stable") != registration.stable_ref
+    ):
+        fail("first-party adoption proof source does not match the official registry")
+    safe_sha(source.get("betaSha"), "first-party adoption proof beta SHA")
+    safe_sha(source.get("stableSha"), "first-party adoption proof stable SHA")
+    legacy = require_object(proof.get("legacy"), "first-party adoption proof legacy")
+    require_exact_keys(legacy, {"factoryRevision", "releaseDocumentSha256", "releaseDocumentB64", "releaseIds", "releaseRecords"}, "first-party adoption proof legacy")
+    safe_sha(legacy.get("factoryRevision"), "first-party adoption proof Factory revision")
+    digest = legacy.get("releaseDocumentSha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        fail("first-party adoption proof release history digest is invalid")
+    encoded_document = legacy.get("releaseDocumentB64")
+    if not isinstance(encoded_document, str) or not encoded_document or len(encoded_document) % 4:
+        fail("first-party adoption proof release history bytes are invalid")
+    try:
+        adopted_bytes = base64.b64decode(encoded_document, validate=True)
+    except ValueError as error:
+        raise ExternalSourceFactoryError("first-party adoption proof release history bytes are invalid") from error
+    if base64.b64encode(adopted_bytes).decode("ascii") != encoded_document or hashlib.sha256(adopted_bytes).hexdigest() != digest:
+        fail("first-party adoption proof release history digest does not match")
+    try:
+        release_document = load_release_document(release_path(root, registration.plugin_id), registration.plugin_id)
+    except ValueError as error:
+        raise ExternalSourceFactoryError(str(error)) from error
+    records = release_document.get("releases")
+    release_ids = [item.get("releaseId") for item in records] if isinstance(records, list) and all(isinstance(item, dict) for item in records) else []
+    legacy_records = legacy.get("releaseRecords")
+    if not isinstance(legacy_records, list) or not all(isinstance(item, dict) for item in legacy_records):
+        fail("first-party adoption proof legacy release records are invalid")
+    legacy_ids = legacy.get("releaseIds")
+    if not isinstance(legacy_ids, list) or legacy_ids != [item.get("releaseId") for item in legacy_records]:
+        fail("first-party adoption proof legacy release IDs are invalid")
+    if release_ids[: len(legacy_ids)] != legacy_ids or records[: len(legacy_records)] != legacy_records:
+        fail("first-party adoption proof release history does not match")
+    beta, _ = release_channels(release_document)
+    channels = require_object(proof.get("channels"), "first-party adoption proof channels")
+    require_exact_keys(channels, {"beta", "stable"}, "first-party adoption proof channels")
+    adopted_beta = release_pointer(channels.get("beta"), "first-party adoption proof channels.beta")
+    adopted_stable = release_pointer(channels.get("stable"), "first-party adoption proof channels.stable")
+    if adopted_beta not in legacy_ids or adopted_stable is not None and adopted_stable not in legacy_ids:
+        fail("first-party adoption proof channel pointer is not historical")
+    adopted_release_document = {
+        "schemaVersion": 2,
+        "pluginId": registration.plugin_id,
+        "releases": legacy_records,
+        "channels": {"beta": {"releaseId": adopted_beta}, "stable": None if adopted_stable is None else {"releaseId": adopted_stable}},
+    }
+    try:
+        if json.loads(adopted_bytes) != adopted_release_document:
+            fail("first-party adoption proof release history bytes do not match its semantic records")
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ExternalSourceFactoryError("first-party adoption proof release history bytes are invalid") from error
+    validate_disabled_snapshot_artifacts(root, registration, snapshot_directory(root, registration.plugin_id), release_document, release_record(release_document, beta))
+    release_sidecar = release_path(root, registration.plugin_id).with_name("releases.json.sig.jws.json")
+    if is_link(release_sidecar) or not release_sidecar.is_file():
+        fail(f"first-party plugin {registration.plugin_id} KMS release sidecar is unavailable")
+    release_subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
+    try:
+        verify_historical_sidecar_signature(
+            release_sidecar.read_bytes(),
+            MarketplaceDocument("xsec.plugin-marketplace.release", release_subject, release_path(root, registration.plugin_id)),
+        )
+    except (OSError, MarketplaceKmsPublisherError) as error:
+        raise ExternalSourceFactoryError(f"first-party plugin {registration.plugin_id} KMS release sidecar is invalid") from error
+    if not require_kms_proof:
+        return
+    try:
+        kms_document = official_adoption_provenance_document(root, registration.plugin_id)
+        sidecar = sidecar_path_for(kms_document)
+        if is_link(sidecar) or not sidecar.is_file():
+            fail(f"first-party plugin {registration.plugin_id} KMS adoption proof is unavailable")
+        verify_historical_sidecar_signature(sidecar.read_bytes(), kms_document)
+    except (OSError, MarketplaceKmsPublisherError) as error:
+        raise ExternalSourceFactoryError(f"first-party plugin {registration.plugin_id} KMS adoption proof is invalid") from error
+
+
+def adopted_release_ids(root: Path, registration: Registration, *, state_label: str) -> tuple[str, ...]:
+    """Read the immutable release prefix covered by a first-party adoption.
+
+    The adoption validator proves the complete record/byte binding. This
+    narrow reader is also used by the trusted-baseline continuity pass, which
+    must know when normal source-publication evidence becomes mandatory after
+    the adopted history rather than treating adoption as a perpetual substitute.
+    """
+
+    if registration.trust_tier != "first-party":
+        fail(f"{state_label} is not a first-party registration")
+    path = adoption_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail(f"{state_label} first-party adoption proof for {registration.plugin_id} is unavailable")
+    proof = read_json(path, f"{state_label} first-party adoption proof for {registration.plugin_id}")
+    legacy = require_object(proof.get("legacy"), f"{state_label} first-party adoption proof legacy")
+    identifiers = legacy.get("releaseIds")
+    if not isinstance(identifiers, list) or not identifiers or not all(
+        isinstance(identifier, str) and RELEASE_ID_PATTERN.fullmatch(identifier) for identifier in identifiers
+    ):
+        fail(f"{state_label} first-party adoption proof legacy release IDs are invalid")
+    if len(set(identifiers)) != len(identifiers):
+        fail(f"{state_label} first-party adoption proof legacy release IDs are duplicated")
+    return tuple(identifiers)
+
+
+def first_party_has_post_adoption_history(root: Path, registration: Registration, *, state_label: str) -> bool:
+    """Whether split-source provenance exists beyond the signed adoption.
+
+    A new source SHA may deterministically reproduce a retained adopted
+    artifact, so it does not necessarily append a new release ID.  Its
+    KMS-bound publication event is nevertheless the start of a new Beta
+    lifecycle and must be retained by the trusted-baseline gate.
+    """
+
+    adopted_ids = adopted_release_ids(root, registration, state_label=state_label)
+    try:
+        document = load_release_document(release_path(root, registration.plugin_id), registration.plugin_id)
+    except ValueError as error:
+        raise ExternalSourceFactoryError(str(error)) from error
+    records = document.get("releases")
+    if not isinstance(records, list) or not all(isinstance(record, dict) for record in records):
+        fail(f"{state_label} first-party release history is invalid")
+    release_ids = tuple(record.get("releaseId") for record in records)
+    if not all(isinstance(identifier, str) and RELEASE_ID_PATTERN.fullmatch(identifier) for identifier in release_ids):
+        fail(f"{state_label} first-party release history IDs are invalid")
+    if release_ids[: len(adopted_ids)] != adopted_ids:
+        fail(f"{state_label} first-party release history does not retain its adopted prefix")
+    evidence = publication_path(root, registration.plugin_id)
+    return len(release_ids) > len(adopted_ids) or evidence.exists() or is_link(evidence)
+
+
+def optional_url(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    text = require_text(value, label, maximum=512)
+    if not text.startswith("https://github.com/") or any(character in text for character in "\r\n\\"):
+        fail(f"{label} must be a GitHub HTTPS URL")
+    return text
+
+
+def status_document(
+    root: Path,
+    registration: Registration,
+    *,
+    beta_sha: str | None,
+    stable_sha: str | None,
+    state: str,
+    delivery_id: str,
+    factory_run_url: str | None = None,
+    smoke_run_url: str | None = None,
+    marketplace_revision: str | None = None,
+) -> dict[str, object]:
+    if state not in PUBLICATION_STATES:
+        fail("official Factory status state is invalid")
+    delivery = require_text(delivery_id, "official Factory status deliveryId", maximum=160)
+    beta: str | None = None
+    stable: str | None = None
+    release = release_path(root, registration.plugin_id)
+    if release.exists() and not is_link(release):
+        try:
+            document = load_release_document(release, registration.plugin_id)
+        except ValueError as error:
+            raise ExternalSourceFactoryError(str(error)) from error
+        beta, stable = release_channels(document)
+    return {
+        "schemaVersion": 1,
+        "pluginId": registration.plugin_id,
+        "trustTier": registration.trust_tier,
+        "source": {
+            "repository": registration.repository,
+            "path": registration.source_path.as_posix(),
+            "refs": {"beta": registration.beta_ref, "stable": registration.stable_ref},
+            "betaSha": optional_sha(beta_sha, "official Factory status betaSha"),
+            "stableSha": optional_sha(stable_sha, "official Factory status stableSha"),
+        },
+        "release": {
+            "betaReleaseId": beta,
+            "stableReleaseId": stable,
+        },
+        "publication": {
+            "state": state,
+            "deliveryId": delivery,
+            "factoryRunUrl": optional_url(factory_run_url, "official Factory status factoryRunUrl"),
+            "smokeRunUrl": optional_url(smoke_run_url, "official Factory status smokeRunUrl"),
+            "marketplaceRevision": optional_sha(marketplace_revision, "official Factory status marketplaceRevision"),
+        },
+    }
+
+
+def record_status(
+    root: Path,
+    plugin_id: str,
+    *,
+    beta_sha: str | None,
+    stable_sha: str | None,
+    state: str,
+    delivery_id: str,
+    factory_run_url: str | None = None,
+    smoke_run_url: str | None = None,
+    marketplace_revision: str | None = None,
+) -> dict[str, str]:
+    registration = registration_for(root, plugin_id, active=False)
+    path = status_path(root, registration.plugin_id)
+    existing: dict[str, object] | None = None
+    if path.exists():
+        existing = read_json(path, f"official Factory status for {registration.plugin_id}")
+        # A manual Stable recovery deliberately supplies only the newly
+        # verified main SHA. It is not a new Beta delivery, so clearing the
+        # already smoke-bound Beta SHA would make the later genuine smoke
+        # callback fail its exact-pointer recheck. Preserve only this missing
+        # value; a Beta publication always supplies a replacement explicitly
+        # and therefore still clears stale Stable metadata as intended.
+        if beta_sha is None:
+            existing_source = existing.get("source")
+            if isinstance(existing_source, dict):
+                beta_sha = optional_sha(existing_source.get("betaSha"), "existing official Factory status betaSha")
+    document = status_document(
+        root,
+        registration,
+        beta_sha=beta_sha,
+        stable_sha=stable_sha,
+        state=state,
+        delivery_id=delivery_id,
+        factory_run_url=factory_run_url,
+        smoke_run_url=smoke_run_url,
+        marketplace_revision=marketplace_revision,
+    )
+    if existing is not None:
+        # A redelivered Beta event may arrive after its exact immutable
+        # release has completed Desktop smoke and reached Stable.  Its
+        # generated waiting_for_smoke document intentionally has no Stable
+        # source/SHA or smoke fields, so comparing whole source/publication
+        # objects would regress an audited terminal state. Preserve it only
+        # when the current release pointers and Beta source SHA are exactly
+        # identical; a new Beta, pointer movement, or source revision still
+        # starts a new state transition.
+        if (
+            state == "waiting_for_smoke"
+            and existing.get("schemaVersion") == document["schemaVersion"]
+            and existing.get("pluginId") == document["pluginId"]
+            and existing.get("trustTier") == document["trustTier"]
+            and isinstance(existing.get("source"), dict)
+            and isinstance(document.get("source"), dict)
+            and existing["source"].get("repository") == document["source"].get("repository")
+            and existing["source"].get("path") == document["source"].get("path")
+            and existing["source"].get("refs") == document["source"].get("refs")
+            and existing["source"].get("betaSha") == document["source"].get("betaSha")
+            and existing.get("release") == document["release"]
+            and isinstance(existing.get("publication"), dict)
+            and existing["publication"].get("state") == "published"
+        ):
+            return {"plugin_id": registration.plugin_id, "state": "published", "unchanged": "true"}
+        # Delivery/run URLs are observability hints, not release identity.  A
+        # duplicate Cloud delivery must not create a fresh signed Factory
+        # commit merely because it has a new Actions run id.  Keep the first
+        # audited delivery whenever the source/release/state/revision tuple is
+        # unchanged; a meaningful state transition still overwrites it.
+        if (
+            existing.get("schemaVersion") == document["schemaVersion"]
+            and existing.get("pluginId") == document["pluginId"]
+            and existing.get("trustTier") == document["trustTier"]
+            and existing.get("source") == document["source"]
+            and existing.get("release") == document["release"]
+            and isinstance(existing.get("publication"), dict)
+            and isinstance(document.get("publication"), dict)
+            and existing["publication"].get("state") == document["publication"].get("state")
+            and existing["publication"].get("marketplaceRevision") == document["publication"].get("marketplaceRevision")
+        ):
+            return {"plugin_id": registration.plugin_id, "state": state, "unchanged": "true"}
+    stable_write(root, path, document, f"official Factory status for {registration.plugin_id}")
+    return {"plugin_id": registration.plugin_id, "state": state}
+
+
+def complete_smoke_status(
+    root: Path,
+    plugin_id: str,
+    *,
+    beta_release_id: str,
+    stable_sha: str | None,
+    delivery_id: str,
+    smoke_run_url: str,
+    marketplace_revision: str,
+) -> dict[str, str]:
+    """Write a terminal Beta-smoke status without accepting caller source data.
+
+    ``reconcile-smoke`` has already established that ``marketplace_revision``
+    is retained Factory main and that its Beta pointer still matches the
+    current one. This function repeats the local pointer/status binding so a
+    callback cannot overwrite the recorded Beta source SHA or Factory run URL
+    while merely supplying a plausible display record.  ``stable_sha`` is
+    supplied only by the protected Stable publisher after it has independently
+    rebuilt this exact Beta release from the registered source ``main`` head.
+    """
+
+    registration = registration_for(root, plugin_id)
+    if not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id):
+        fail("completed smoke Beta release ID must be canonical")
+    path = status_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail("completed smoke status requires the prior Factory Beta status")
+    existing = read_json(path, f"official Factory status for {registration.plugin_id}")
+    require_exact_keys(
+        existing,
+        {"schemaVersion", "pluginId", "trustTier", "source", "release", "publication"},
+        "completed smoke status",
+    )
+    if (
+        existing.get("schemaVersion") != 1
+        or existing.get("pluginId") != registration.plugin_id
+        or existing.get("trustTier") != registration.trust_tier
+    ):
+        fail("completed smoke status has an invalid identity")
+    source = require_object(existing.get("source"), "completed smoke status source")
+    require_exact_keys(source, {"repository", "path", "refs", "betaSha", "stableSha"}, "completed smoke status source")
+    refs = require_object(source.get("refs"), "completed smoke status source.refs")
+    require_exact_keys(refs, {"beta", "stable"}, "completed smoke status source.refs")
+    if (
+        source.get("repository") != registration.repository
+        or source.get("path") != registration.source_path.as_posix()
+        or refs.get("beta") != registration.beta_ref
+        or refs.get("stable") != registration.stable_ref
+    ):
+        fail("completed smoke status source does not match the official registry")
+    beta_sha = optional_sha(source.get("betaSha"), "completed smoke status betaSha")
+    prior_stable_sha = optional_sha(source.get("stableSha"), "completed smoke status stableSha")
+    if beta_sha is None:
+        fail("completed smoke status has no Beta source SHA")
+    release = require_object(existing.get("release"), "completed smoke status release")
+    require_exact_keys(release, {"betaReleaseId", "stableReleaseId"}, "completed smoke status release")
+    if release.get("betaReleaseId") != beta_release_id:
+        fail("completed smoke status Beta release does not match the current Factory status")
+    publication = require_object(existing.get("publication"), "completed smoke status publication")
+    require_exact_keys(
+        publication,
+        {"state", "deliveryId", "factoryRunUrl", "smokeRunUrl", "marketplaceRevision"},
+        "completed smoke status publication",
+    )
+    if publication.get("state") not in {"waiting_for_smoke", "promoting_stable", "published"}:
+        fail("completed smoke status does not represent a smoke-gated publication")
+    factory_run_url = optional_url(publication.get("factoryRunUrl"), "completed smoke status factoryRunUrl")
+    current_release = release_path(root, registration.plugin_id)
+    try:
+        current_document = load_release_document(current_release, registration.plugin_id)
+    except ValueError as error:
+        raise ExternalSourceFactoryError(str(error)) from error
+    current_beta, current_stable = release_channels(current_document)
+    if current_beta != beta_release_id:
+        fail("completed smoke status Beta release does not match immutable release metadata")
+    if current_stable != beta_release_id:
+        fail("completed smoke status requires the Stable pointer to match its smoke-verified Beta")
+    resolved_stable_sha = optional_sha(stable_sha, "completed smoke status stableSha") if stable_sha is not None else prior_stable_sha
+    if resolved_stable_sha is None:
+        fail("completed smoke status has no Stable source SHA")
+    signed_outcome = append_smoke_outcome(
+        root,
+        registration,
+        beta_release_id=beta_release_id,
+        stable_release_id=current_stable,
+        beta_sha=beta_sha,
+        stable_sha=resolved_stable_sha,
+        smoke_run_url=smoke_run_url,
+        marketplace_revision=marketplace_revision,
+    )
+    signed_source = require_object(signed_outcome.get("source"), "completed smoke signed outcome source")
+    signed_smoke = require_object(signed_outcome.get("smoke"), "completed smoke signed outcome")
+    signed_beta_sha = safe_sha(signed_source.get("betaSha"), "completed smoke signed outcome Beta source SHA")
+    signed_stable_sha = safe_sha(signed_source.get("stableSha"), "completed smoke signed outcome Stable source SHA")
+    signed_smoke_run_url = optional_url(signed_smoke.get("runUrl"), "completed smoke signed outcome run URL")
+    signed_marketplace_revision = optional_sha(
+        signed_smoke.get("marketplaceRevision"),
+        "completed smoke signed outcome Marketplace revision",
+    )
+    if signed_smoke_run_url is None or signed_marketplace_revision is None:
+        fail("completed smoke signed outcome is incomplete")
+    return record_status(
+        root,
+        registration.plugin_id,
+        beta_sha=signed_beta_sha,
+        stable_sha=signed_stable_sha,
+        state="published",
+        delivery_id=delivery_id,
+        factory_run_url=factory_run_url,
+        smoke_run_url=signed_smoke_run_url,
+        marketplace_revision=signed_marketplace_revision,
+    )
+
+
+def validate_status(
+    root: Path,
+    registration: Registration,
+    *,
+    require_publication_proofs: bool = True,
+) -> None:
+    path = status_path(root, registration.plugin_id)
+    if not path.exists():
+        return
+    status = read_json(path, f"official Factory status for {registration.plugin_id}")
+    require_exact_keys(status, {"schemaVersion", "pluginId", "trustTier", "source", "release", "publication"}, "official Factory status")
+    if status.get("schemaVersion") != 1 or status.get("pluginId") != registration.plugin_id or status.get("trustTier") != registration.trust_tier:
+        fail("official Factory status has an invalid identity")
+    source = require_object(status.get("source"), "official Factory status source")
+    require_exact_keys(source, {"repository", "path", "refs", "betaSha", "stableSha"}, "official Factory status source")
+    refs = require_object(source.get("refs"), "official Factory status source.refs")
+    require_exact_keys(refs, {"beta", "stable"}, "official Factory status source.refs")
+    if source.get("repository") != registration.repository or source.get("path") != registration.source_path.as_posix() or refs.get("beta") != registration.beta_ref or refs.get("stable") != registration.stable_ref:
+        fail("official Factory status source does not match the official registry")
+    beta_sha = optional_sha(source.get("betaSha"), "official Factory status betaSha")
+    stable_sha = optional_sha(source.get("stableSha"), "official Factory status stableSha")
+    release = require_object(status.get("release"), "official Factory status release")
+    require_exact_keys(release, {"betaReleaseId", "stableReleaseId"}, "official Factory status release")
+    beta_id = release.get("betaReleaseId")
+    stable_id = release.get("stableReleaseId")
+    if beta_id is not None and (not isinstance(beta_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_id)):
+        fail("official Factory status beta release ID is invalid")
+    if stable_id is not None and (not isinstance(stable_id, str) or not RELEASE_ID_PATTERN.fullmatch(stable_id)):
+        fail("official Factory status stable release ID is invalid")
+    release_file = release_path(root, registration.plugin_id)
+    if release_file.exists():
+        try:
+            releases = load_release_document(release_file, registration.plugin_id)
+        except ValueError as error:
+            raise ExternalSourceFactoryError(str(error)) from error
+        actual_beta, actual_stable = release_channels(releases)
+        if beta_id != actual_beta or stable_id != actual_stable:
+            fail("official Factory status release pointers do not match immutable release metadata")
+    elif beta_id is not None or stable_id is not None:
+        fail("official Factory status claims a release without immutable release metadata")
+    publication = require_object(status.get("publication"), "official Factory status publication")
+    require_exact_keys(publication, {"state", "deliveryId", "factoryRunUrl", "smokeRunUrl", "marketplaceRevision"}, "official Factory status publication")
+    if publication.get("state") not in PUBLICATION_STATES:
+        fail("official Factory status publication state is invalid")
+    state = publication["state"]
+    require_text(publication.get("deliveryId"), "official Factory status deliveryId", maximum=160)
+    optional_url(publication.get("factoryRunUrl"), "official Factory status factoryRunUrl")
+    smoke_run_url = optional_url(publication.get("smokeRunUrl"), "official Factory status smokeRunUrl")
+    marketplace_revision = optional_sha(publication.get("marketplaceRevision"), "official Factory status marketplaceRevision")
+    # In-flight status is consumer-visible release state, not a free-form
+    # progress label.  A status can be introduced after adoption without a
+    # prior baseline file, so bind every waiting/promoting tuple directly to
+    # KMS-signed Beta provenance instead of relying on a later diff check.
+    if state in {"waiting_for_smoke", "promoting_stable"}:
+        if beta_id is None or beta_sha is None:
+            fail("in-flight Factory status must retain a Beta release ID and source SHA")
+        if not release_file.exists():
+            fail("in-flight Factory status must match immutable Beta provenance")
+        if registration.trust_tier == "first-party":
+            validate_adoption(root, registration, require_kms_proof=require_publication_proofs)
+            adopted_ids = frozenset(adopted_release_ids(root, registration, state_label="in-flight Factory status"))
+        else:
+            adopted_ids = frozenset()
+        evidence_path = publication_path(root, registration.plugin_id)
+        if is_link(evidence_path) or not evidence_path.is_file():
+            fail("in-flight Factory status must match immutable Beta provenance")
+        evidence = validate_evidence(root, registration, releases, adopted_release_ids=adopted_ids)
+        if require_publication_proofs:
+            validate_publication_proof(root, registration)
+        events = evidence.get("events")
+        if not isinstance(events, list) or not evidence_event_matches(
+            events,
+            channel="beta",
+            release_id_value=beta_id,
+            source_sha=beta_sha,
+        ):
+            fail("in-flight Factory status must match immutable Beta provenance")
+        # A waiting status only says that a specific Beta has been accepted by
+        # Factory.  It must not make the consumer-visible sidecar look as if
+        # Stable or Desktop smoke evidence already exists.  Conversely, the
+        # controlled manual-recovery state is allowed to describe Stable, but
+        # only after its exact immutable Stable provenance was appended.
+        if state == "waiting_for_smoke":
+            if stable_sha is not None or smoke_run_url is not None or marketplace_revision is not None:
+                fail("waiting Factory status must not claim Stable or smoke evidence")
+        elif state == "promoting_stable":
+            if stable_id is None or stable_sha is None:
+                fail("promoting Factory status must retain a Stable release ID and source SHA")
+            if stable_id != beta_id:
+                fail("promoting Factory status must promote the current Beta release")
+            if smoke_run_url is not None or marketplace_revision is not None:
+                fail("promoting Factory status must not claim Desktop smoke evidence")
+            if not evidence_event_matches(
+                events,
+                channel="stable",
+                release_id_value=stable_id,
+                source_sha=stable_sha,
+            ):
+                fail("promoting Factory status must match immutable Stable provenance")
+    # ``published`` is a terminal smoke result, never a cosmetic synonym for
+    # a signed Beta. Validate all of the data written exclusively by the
+    # smoke-gated Stable path before accepting the status sidecar; immutable
+    # release provenance alone cannot establish that Desktop smoke completed.
+    if state == "published":
+        if beta_id is None or stable_id != beta_id:
+            fail("published Factory status must bind the smoke-verified Beta to the Stable pointer")
+        if beta_sha is None or stable_sha is None:
+            fail("published Factory status must retain both Beta and Stable source SHAs")
+        if marketplace_revision is None or smoke_run_url is None:
+            fail("published Factory status must retain Desktop smoke evidence and Marketplace revision")
+        if not smoke_run_url.startswith("https://github.com/tzf1003/xSecDesktop/actions/runs/"):
+            fail("published Factory status smoke evidence must name the approved Desktop smoke workflow")
+        # The readable status file is not itself a trust root. Bind every
+        # terminal field to the KMS-signed publication evidence produced only
+        # after reconcile-smoke accepted a retained Factory revision. The
+        # adoption proof still validates a first-party's legacy prefix, but
+        # it cannot on its own attest a later Desktop smoke run.
+        adopted_ids = frozenset()
+        if registration.trust_tier == "first-party":
+            validate_adoption(root, registration)
+            adopted_ids = frozenset(adopted_release_ids(root, registration, state_label="published Factory status"))
+        evidence = validate_evidence(root, registration, releases, adopted_release_ids=adopted_ids)
+        if require_publication_proofs:
+            validate_publication_proof(root, registration)
+        require_published_smoke_outcome(
+            evidence,
+            registration,
+            beta_release_id=beta_id,
+            stable_release_id=stable_id,
+            beta_sha=beta_sha,
+            stable_sha=stable_sha,
+            smoke_run_url=smoke_run_url,
+            marketplace_revision=marketplace_revision,
+        )
+
+
+def validate_evidence(
+    root: Path,
+    registration: Registration,
+    document: dict[str, object],
+    *,
+    adopted_release_ids: frozenset[str] = frozenset(),
+) -> dict[str, object]:
     path = publication_path(root, registration.plugin_id)
     if not path.exists():
         fail(f"external official plugin {registration.plugin_id} has no publication evidence")
     evidence = read_json(path, f"official external publication evidence for {registration.plugin_id}")
-    require_exact_keys(evidence, {"schemaVersion", "pluginId", "events"}, f"official external publication evidence for {registration.plugin_id}")
+    if set(evidence) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+        fail(f"official external publication evidence for {registration.plugin_id} has invalid keys")
     if evidence.get("schemaVersion") != 1 or evidence.get("pluginId") != registration.plugin_id:
         fail("official external publication evidence has invalid identity")
     events = evidence.get("events")
@@ -1113,12 +2147,98 @@ def validate_evidence(root: Path, registration: Registration, document: dict[str
             fail(f"{label} duplicates publication evidence")
         event_keys.add(key)
         (beta_seen if channel == "beta" else stable_seen).add(identifier)
-    if set(records).difference(beta_seen):
+    if set(records).difference(beta_seen).difference(adopted_release_ids):
         fail(f"external official plugin {registration.plugin_id} lacks Beta provenance")
     stable = channels.get("stable")
     stable_id = stable.get("releaseId") if isinstance(stable, dict) else None
-    if isinstance(stable_id, str) and stable_id not in stable_seen:
+    if isinstance(stable_id, str) and stable_id not in stable_seen and stable_id not in adopted_release_ids:
         fail(f"external official plugin {registration.plugin_id} lacks Stable provenance")
+    validate_smoke_outcomes(evidence, registration, records)
+    return evidence
+
+
+def validate_smoke_outcomes(
+    evidence: dict[str, object],
+    registration: Registration,
+    records: dict[object, dict[str, object]],
+) -> None:
+    """Validate immutable smoke outcomes embedded in KMS-signed provenance."""
+
+    raw_outcomes = evidence.get("smokeOutcomes", [])
+    if not isinstance(raw_outcomes, list):
+        fail(f"external official plugin {registration.plugin_id} smoke outcomes are invalid")
+    events = evidence.get("events")
+    if not isinstance(events, list):
+        fail(f"external official plugin {registration.plugin_id} evidence events are invalid")
+    identities: set[tuple[str, str, str, str]] = set()
+    for index, raw_outcome in enumerate(raw_outcomes):
+        label = f"official external publication smoke outcome {index}"
+        outcome = require_object(raw_outcome, label)
+        require_exact_keys(outcome, {"betaReleaseId", "stableReleaseId", "source", "smoke"}, label)
+        beta_release_id = outcome.get("betaReleaseId")
+        stable_release_id = outcome.get("stableReleaseId")
+        if (
+            not isinstance(beta_release_id, str)
+            or not RELEASE_ID_PATTERN.fullmatch(beta_release_id)
+            or not isinstance(stable_release_id, str)
+            or not RELEASE_ID_PATTERN.fullmatch(stable_release_id)
+            or beta_release_id not in records
+            or stable_release_id not in records
+        ):
+            fail(f"{label} has invalid release pointers")
+        source = require_object(outcome.get("source"), f"{label}.source")
+        require_exact_keys(source, {"betaSha", "stableSha"}, f"{label}.source")
+        beta_sha = safe_sha(source.get("betaSha"), f"{label}.source.betaSha")
+        stable_sha = safe_sha(source.get("stableSha"), f"{label}.source.stableSha")
+        smoke = require_object(outcome.get("smoke"), f"{label}.smoke")
+        require_exact_keys(smoke, {"runUrl", "marketplaceRevision"}, f"{label}.smoke")
+        run_url = optional_url(smoke.get("runUrl"), f"{label}.smoke.runUrl")
+        revision = optional_sha(smoke.get("marketplaceRevision"), f"{label}.smoke.marketplaceRevision")
+        if run_url is None or revision is None or not run_url.startswith("https://github.com/tzf1003/xSecDesktop/actions/runs/"):
+            fail(f"{label} does not contain approved Desktop smoke evidence")
+        if not evidence_event_matches(events, channel="beta", release_id_value=beta_release_id, source_sha=beta_sha):
+            fail(f"{label} Beta source is not bound to immutable publication evidence")
+        if not evidence_event_matches(events, channel="stable", release_id_value=stable_release_id, source_sha=stable_sha):
+            fail(f"{label} Stable source is not bound to immutable publication evidence")
+        identity = (beta_release_id, stable_release_id, beta_sha, stable_sha)
+        if identity in identities:
+            fail(f"{label} duplicates an immutable smoke outcome")
+        identities.add(identity)
+
+
+def require_published_smoke_outcome(
+    evidence: dict[str, object],
+    registration: Registration,
+    *,
+    beta_release_id: str,
+    stable_release_id: str,
+    beta_sha: str,
+    stable_sha: str,
+    smoke_run_url: str,
+    marketplace_revision: str,
+) -> None:
+    """Require a terminal status to be exactly represented in signed evidence."""
+
+    outcomes = evidence.get("smokeOutcomes", [])
+    if not isinstance(outcomes, list):
+        fail(f"published Factory status for {registration.plugin_id} has invalid smoke evidence")
+    for raw_outcome in outcomes:
+        if not isinstance(raw_outcome, dict):
+            continue
+        source = raw_outcome.get("source")
+        smoke = raw_outcome.get("smoke")
+        if (
+            raw_outcome.get("betaReleaseId") == beta_release_id
+            and raw_outcome.get("stableReleaseId") == stable_release_id
+            and isinstance(source, dict)
+            and source.get("betaSha") == beta_sha
+            and source.get("stableSha") == stable_sha
+            and isinstance(smoke, dict)
+            and smoke.get("runUrl") == smoke_run_url
+            and smoke.get("marketplaceRevision") == marketplace_revision
+        ):
+            return
+    fail(f"published Factory status for {registration.plugin_id} does not match KMS-bound smoke evidence")
 
 
 def validate_publication_proof(root: Path, registration: Registration) -> None:
@@ -1304,11 +2424,8 @@ def publication_evidence_history(root: Path, registration: Registration, *, stat
     if is_link(path) or not path.is_file():
         fail(f"{state_label} publication evidence for {registration.plugin_id} is unavailable")
     evidence = read_json(path, f"{state_label} publication evidence for {registration.plugin_id}")
-    require_exact_keys(
-        evidence,
-        {"schemaVersion", "pluginId", "events"},
-        f"{state_label} publication evidence for {registration.plugin_id}",
-    )
+    if set(evidence) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} has invalid keys")
     if evidence.get("schemaVersion") != 1 or evidence.get("pluginId") != registration.plugin_id:
         fail(f"{state_label} publication evidence for {registration.plugin_id} has an invalid identity")
     events = evidence.get("events")
@@ -1326,6 +2443,236 @@ def publication_evidence_history(root: Path, registration: Registration, *, stat
     if len(set(canonical_events)) != len(canonical_events):
         fail(f"{state_label} publication evidence for {registration.plugin_id} duplicates an immutable event")
     return canonical_events
+
+
+def publication_smoke_outcome_history(root: Path, registration: Registration, *, state_label: str) -> tuple[str, ...]:
+    """Return separately append-only terminal smoke evidence.
+
+    Publication events and smoke outcomes are stored in distinct ordered arrays:
+    a later Beta event may be appended after an earlier smoke outcome. Compare
+    their histories independently, otherwise a valid new event would appear to
+    insert before an older outcome in a synthetic flattened list.
+    """
+
+    path = publication_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail(f"{state_label} publication evidence for {registration.plugin_id} is unavailable")
+    evidence = read_json(path, f"{state_label} publication evidence for {registration.plugin_id}")
+    if set(evidence) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} has invalid keys")
+    outcomes = evidence.get("smokeOutcomes", [])
+    if not isinstance(outcomes, list):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} has an invalid smoke outcome list")
+    canonical_outcomes = tuple(
+        json.dumps(
+            require_object(outcome, f"{state_label} publication smoke outcome {index}"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for index, outcome in enumerate(outcomes)
+    )
+    if len(set(canonical_outcomes)) != len(canonical_outcomes):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} duplicates an immutable smoke outcome")
+    return canonical_outcomes
+
+
+def ownership_history(root: Path, registration: Registration, *, state_label: str) -> tuple[str, ...]:
+    """Return immutable source-ownership assertions for baseline continuity."""
+
+    if registration.trust_tier == "external":
+        return publication_evidence_history(root, registration, state_label=state_label)
+    path = adoption_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail(f"{state_label} first-party adoption proof for {registration.plugin_id} is unavailable")
+    proof = read_json(path, f"{state_label} first-party adoption proof for {registration.plugin_id}")
+    ownership = (json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":")),)
+    # Adoption authenticates only the retained legacy prefix. Once a split
+    # source records post-adoption provenance (including a new source SHA that
+    # reproduces an adopted artifact), append-only evidence is equally
+    # immutable and must survive every trusted-baseline comparison.
+    if first_party_has_post_adoption_history(root, registration, state_label=state_label):
+        return ownership + publication_evidence_history(root, registration, state_label=state_label)
+    return ownership
+
+
+def status_beta_identity(
+    root: Path,
+    registration: Registration,
+    *,
+    state_label: str,
+) -> tuple[str, str | None, str | None] | None:
+    """Read the status state plus its current Beta release/source identity.
+
+    This deliberately parses only the fields needed by the protected-baseline
+    continuity rule.  Full status/provenance validation still runs later in
+    :func:`validate_registry_and_snapshots`; malformed data must not be
+    mistaken for a legitimate transition away from a terminal result.
+    """
+
+    path = status_path(root, registration.plugin_id)
+    if is_link(path):
+        fail(f"{state_label} Factory status for {registration.plugin_id} must not use a symbolic link")
+    if not path.exists():
+        return None
+    if not path.is_file():
+        fail(f"{state_label} Factory status for {registration.plugin_id} must be a regular file")
+    status = read_json(path, f"{state_label} Factory status for {registration.plugin_id}")
+    source = require_object(status.get("source"), f"{state_label} Factory status source")
+    release = require_object(status.get("release"), f"{state_label} Factory status release")
+    publication = require_object(status.get("publication"), f"{state_label} Factory status publication")
+    state = publication.get("state")
+    if not isinstance(state, str) or state not in PUBLICATION_STATES:
+        fail(f"{state_label} Factory status for {registration.plugin_id} has an invalid publication state")
+    beta_release_id = release.get("betaReleaseId")
+    if beta_release_id is not None and (
+        not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id)
+    ):
+        fail(f"{state_label} Factory status for {registration.plugin_id} has an invalid Beta release ID")
+    beta_sha = optional_sha(source.get("betaSha"), f"{state_label} Factory status betaSha")
+    return state, beta_release_id, beta_sha
+
+
+def published_status_identity(
+    root: Path,
+    registration: Registration,
+    *,
+    state_label: str,
+) -> tuple[str, tuple[str, str, str, str, str, str]] | None:
+    """Return a canonical published sidecar and its smoke-bound identity.
+
+    The status file is ordinary generated content, so it cannot replace the
+    append-only KMS proof.  It nevertheless represents the *current* consumer
+    outcome.  A protected baseline may retain it verbatim, or replace it only
+    with a tuple represented by a smoke outcome appended after that baseline.
+    Keeping the full canonical document here also prevents a normal PR from
+    silently rewriting delivery or observability fields for the same outcome.
+    """
+
+    path = status_path(root, registration.plugin_id)
+    if is_link(path):
+        fail(f"{state_label} Factory status for {registration.plugin_id} must not use a symbolic link")
+    if not path.exists():
+        return None
+    if not path.is_file():
+        fail(f"{state_label} Factory status for {registration.plugin_id} must be a regular file")
+    status = read_json(path, f"{state_label} Factory status for {registration.plugin_id}")
+    source = require_object(status.get("source"), f"{state_label} Factory status source")
+    release = require_object(status.get("release"), f"{state_label} Factory status release")
+    publication = require_object(status.get("publication"), f"{state_label} Factory status publication")
+    if publication.get("state") != "published":
+        return None
+    beta_release_id = release.get("betaReleaseId")
+    stable_release_id = release.get("stableReleaseId")
+    if (
+        not isinstance(beta_release_id, str)
+        or not RELEASE_ID_PATTERN.fullmatch(beta_release_id)
+        or not isinstance(stable_release_id, str)
+        or not RELEASE_ID_PATTERN.fullmatch(stable_release_id)
+    ):
+        fail(f"{state_label} published Factory status for {registration.plugin_id} has invalid release IDs")
+    beta_sha = safe_sha(source.get("betaSha"), f"{state_label} published Factory status betaSha")
+    stable_sha = safe_sha(source.get("stableSha"), f"{state_label} published Factory status stableSha")
+    smoke_run_url = optional_url(publication.get("smokeRunUrl"), f"{state_label} published Factory status smokeRunUrl")
+    marketplace_revision = optional_sha(
+        publication.get("marketplaceRevision"),
+        f"{state_label} published Factory status marketplaceRevision",
+    )
+    if smoke_run_url is None or marketplace_revision is None:
+        fail(f"{state_label} published Factory status for {registration.plugin_id} has incomplete smoke evidence")
+    document = json.dumps(status, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return document, (
+        beta_release_id,
+        stable_release_id,
+        beta_sha,
+        stable_sha,
+        smoke_run_url,
+        marketplace_revision,
+    )
+
+
+def latest_appended_smoke_outcome_matches(
+    baseline_outcomes: tuple[str, ...],
+    current_outcomes: tuple[str, ...],
+    *,
+    published_identity: tuple[str, str, str, str, str, str],
+) -> bool:
+    """Require the current terminal sidecar to name the newest appended result."""
+
+    appended = current_outcomes[len(baseline_outcomes) :]
+    if not appended:
+        return False
+    try:
+        outcome = json.loads(appended[-1])
+    except json.JSONDecodeError as error:
+        raise ExternalSourceFactoryError("current Factory smoke outcome provenance is invalid") from error
+    source = outcome.get("source") if isinstance(outcome, dict) else None
+    smoke = outcome.get("smoke") if isinstance(outcome, dict) else None
+    if not isinstance(source, dict) or not isinstance(smoke, dict):
+        return False
+    outcome_identity = (
+        outcome.get("betaReleaseId"),
+        outcome.get("stableReleaseId"),
+        source.get("betaSha"),
+        source.get("stableSha"),
+        smoke.get("runUrl"),
+        smoke.get("marketplaceRevision"),
+    )
+    return outcome_identity == published_identity
+
+
+def appended_beta_provenance_matches(
+    baseline_events: tuple[str, ...],
+    current_events: tuple[str, ...],
+    *,
+    beta_release_id: str,
+    beta_sha: str,
+) -> bool:
+    """Require a next-cycle status tuple to be newly recorded provenance.
+
+    A readable ``waiting_for_smoke`` sidecar is not signed on its own.  When
+    it replaces a trusted terminal status, permit it only if an immutable Beta
+    event with the exact release/source tuple was appended after the trusted
+    baseline.  The full validator later checks that event's registry/ref and
+    artifact binding before the generated publication PR can merge.
+    """
+
+    for encoded_event in current_events[len(baseline_events) :]:
+        try:
+            event = json.loads(encoded_event)
+        except json.JSONDecodeError as error:
+            raise ExternalSourceFactoryError("current Factory publication provenance is invalid") from error
+        source = event.get("source") if isinstance(event, dict) else None
+        if (
+            isinstance(event, dict)
+            and event.get("channel") == "beta"
+            and event.get("releaseId") == beta_release_id
+            and isinstance(source, dict)
+            and source.get("sha") == beta_sha
+        ):
+            return True
+    return False
+
+
+def needs_smoke_redispatch(root: Path, plugin_id: str, *, beta_sha: str) -> dict[str, str]:
+    """Report whether an already-signed Beta needs its lost smoke dispatch replayed.
+
+    This is intentionally narrow: it never changes a channel, sidecar or
+    status.  The protected workflow calls it only after finding no Factory
+    diff for a duplicate Beta delivery.  Re-dispatching is safe only while
+    that exact source SHA is still the current waiting-for-smoke Beta.
+    """
+
+    registration = registration_for(root, plugin_id)
+    expected_beta_sha = safe_sha(beta_sha, "smoke redispatch Beta source SHA")
+    validate_status(root, registration)
+    identity = status_beta_identity(root, registration, state_label="current Factory")
+    if identity is None:
+        return {"redispatch": "false"}
+    state, beta_release_id, recorded_beta_sha = identity
+    if state != "waiting_for_smoke" or beta_release_id is None or recorded_beta_sha != expected_beta_sha:
+        return {"redispatch": "false"}
+    return {"redispatch": "true"}
 
 
 def validate_trusted_baseline_continuity(
@@ -1367,7 +2714,7 @@ def validate_trusted_baseline_continuity(
         # remains subject to the strict append-only checks below.
         return
 
-    baseline_registrations = load_registry(baseline)
+    baseline_registrations = load_registry(baseline, allow_legacy_v1=True)
     baseline_histories = published_release_history(
         baseline,
         baseline_registrations,
@@ -1388,21 +2735,23 @@ def validate_trusted_baseline_continuity(
             )
         baseline_registration = baseline_by_id[plugin_id]
         if (
-            registration.repository != baseline_registration.repository
+            registration.trust_tier != baseline_registration.trust_tier
+            or registration.repository != baseline_registration.repository
             or registration.source_path != baseline_registration.source_path
             or registration.beta_ref != baseline_registration.beta_ref
             or registration.stable_ref != baseline_registration.stable_ref
         ):
             fail(
-                f"published external official plugin {plugin_id} cannot change its registered source "
+                f"published official Factory plugin {plugin_id} cannot change its registered source "
                 "identity from the trusted baseline"
             )
         snapshot = snapshot_directory(root, plugin_id)
         evidence = publication_path(root, plugin_id)
-        if is_link(snapshot) or not snapshot.is_dir() or is_link(evidence) or not evidence.is_file():
+        ownership = adoption_path(root, plugin_id) if registration.trust_tier == "first-party" else evidence
+        if is_link(snapshot) or not snapshot.is_dir() or is_link(ownership) or not ownership.is_file():
             fail(
-                f"published external official plugin {plugin_id} must retain its immutable snapshot, "
-                "release history, and publication evidence recorded in the trusted baseline"
+                f"published official Factory plugin {plugin_id} must retain its immutable snapshot, "
+                "release history, and source-ownership evidence recorded in the trusted baseline"
             )
         current_ids = current_histories.get(plugin_id, ())
         if current_ids[: len(baseline_ids)] != baseline_ids:
@@ -1410,20 +2759,179 @@ def validate_trusted_baseline_continuity(
                 f"published external official plugin {plugin_id} must retain every immutable release "
                 "recorded in the trusted baseline in append-only order"
             )
-        baseline_events = publication_evidence_history(
+        # The protected materializer first adds an exact first-party Registry
+        # v2 row as pending-adoption. Its retained Marketplace snapshot and
+        # release history predate the adoption proof by design; the following
+        # protected adoption PR supplies that KMS-bound proof. Do not demand a
+        # proof that cannot exist in this precise baseline state, but keep all
+        # identity and append-only release checks above and forbid unrelated
+        # state transitions from using this exception.
+        if baseline_registration.trust_tier == "first-party" and baseline_registration.status == "pending-adoption":
+            if registration.status not in {"pending-adoption", "active"}:
+                fail(
+                    f"pending first-party official plugin {plugin_id} must remain pending or be activated "
+                    "with an immutable adoption proof"
+                )
+            continue
+        baseline_events = ownership_history(
             baseline,
             baseline_registration,
             state_label="trusted Factory baseline",
         )
-        current_events = publication_evidence_history(
+        current_events = ownership_history(
             root,
             registration,
             state_label="current Factory",
         )
         if current_events[: len(baseline_events)] != baseline_events:
+            if registration.trust_tier == "external":
+                fail(
+                    f"published external official plugin {plugin_id} must retain every immutable publication "
+                    "evidence event recorded in the trusted baseline in append-only order"
+                )
+            if first_party_has_post_adoption_history(
+                baseline,
+                baseline_registration,
+                state_label="trusted Factory baseline",
+            ):
+                fail(
+                    f"published first-party official plugin {plugin_id} must retain every immutable publication "
+                    "evidence event recorded in the trusted baseline in append-only order"
+                )
             fail(
-                f"published external official plugin {plugin_id} must retain every immutable publication "
-                "evidence event recorded in the trusted baseline in append-only order"
+                f"published first-party official plugin {plugin_id} must retain its immutable adoption "
+                "proof recorded in the trusted baseline"
+            )
+        # Terminal smoke outcomes are a second append-only evidence stream.
+        # They cannot be flattened behind normal publication events because a
+        # later Beta event is legitimately appended to ``events`` after an
+        # earlier smoke result. Compare the two ordered arrays independently
+        # so the first smoke completion (which adds the optional field) and
+        # subsequent source releases both pass while deletion/rewrite fails.
+        baseline_evidence = publication_path(baseline, plugin_id)
+        baseline_outcomes: tuple[str, ...] = ()
+        current_outcomes: tuple[str, ...] = ()
+        if baseline_evidence.exists() or is_link(baseline_evidence):
+            baseline_outcomes = publication_smoke_outcome_history(
+                baseline,
+                baseline_registration,
+                state_label="trusted Factory baseline",
+            )
+            current_outcomes = publication_smoke_outcome_history(
+                root,
+                registration,
+                state_label="current Factory",
+            )
+            if current_outcomes[: len(baseline_outcomes)] != baseline_outcomes:
+                fail(
+                    f"published official Factory plugin {plugin_id} must retain every immutable smoke outcome "
+                    "recorded in the trusted baseline in append-only order"
+                )
+        # A complete smoke-gated result is also durable consumer state. Losing
+        # it makes Desktop show an apparent unpublished plugin and prevents a
+        # later callback from repairing the record (completion requires the
+        # prior Beta status). A generated workflow may update observability
+        # fields, but it must never delete or downgrade a published baseline.
+        baseline_status = status_beta_identity(
+            baseline,
+            baseline_registration,
+            state_label="trusted Factory baseline",
+        )
+        current_status = status_beta_identity(root, registration, state_label="current Factory")
+        if baseline_status is not None and baseline_status[0] in {"waiting_for_smoke", "promoting_stable"}:
+            # A smoke callback needs its preceding Factory status to bind the
+            # Beta source/release identity. Do not let an ordinary PR delete
+            # or replace that in-flight state with a cosmetic failure record.
+            # A newer Beta is the sole nonterminal replacement: it must have
+            # an appended exact provenance event, which supersedes the old
+            # callback rather than stranding it.
+            if current_status is None:
+                fail(
+                    f"in-flight official Factory plugin {plugin_id} must retain its smoke-gated Factory status "
+                    "recorded in the trusted baseline"
+                )
+            if current_status[0] == "published":
+                # Full status validation below requires the KMS-bound smoke
+                # outcome, so a genuine terminal completion is allowed.
+                continue
+            if current_status == baseline_status:
+                continue
+            if (
+                baseline_status[0] == "waiting_for_smoke"
+                and current_status[0] == "promoting_stable"
+                and current_status[1:] == baseline_status[1:]
+            ):
+                continue
+            if (
+                current_status[0] == "waiting_for_smoke"
+                and current_status[1] is not None
+                and current_status[2] is not None
+                and current_status[1:] != baseline_status[1:]
+                and appended_beta_provenance_matches(
+                    baseline_events,
+                    current_events,
+                    beta_release_id=current_status[1],
+                    beta_sha=current_status[2],
+                )
+            ):
+                continue
+            fail(
+                f"in-flight official Factory plugin {plugin_id} must retain its smoke-gated Factory status "
+                "unless an exact new Beta smoke cycle is recorded by appended immutable provenance"
+            )
+        if baseline_status is not None and baseline_status[0] == "published":
+            if current_status is not None and current_status[0] == "published":
+                baseline_published = published_status_identity(
+                    baseline,
+                    baseline_registration,
+                    state_label="trusted Factory baseline",
+                )
+                current_published = published_status_identity(
+                    root,
+                    registration,
+                    state_label="current Factory",
+                )
+                if baseline_published is not None and current_published is not None:
+                    if (
+                        current_published[0] == baseline_published[0]
+                        and current_outcomes == baseline_outcomes
+                    ):
+                        # The preserved current outcome is byte-for-byte the
+                        # one users saw at the trusted baseline, including
+                        # delivery observability fields.
+                        continue
+                    if latest_appended_smoke_outcome_matches(
+                        baseline_outcomes,
+                        current_outcomes,
+                        published_identity=current_published[1],
+                    ):
+                        # A later smoke-gated Stable promotion legitimately
+                        # replaces the one current Desktop status only when
+                        # its exact terminal tuple was appended after the
+                        # baseline.  Selecting an older valid outcome would
+                        # otherwise be an unaudited rollback.
+                        continue
+            if (
+                current_status is not None
+                and current_status[0] == "waiting_for_smoke"
+                and current_status[1] is not None
+                and current_status[2] is not None
+                and current_status[1:] != baseline_status[1:]
+                and appended_beta_provenance_matches(
+                    baseline_events,
+                    current_events,
+                    beta_release_id=current_status[1],
+                    beta_sha=current_status[2],
+                )
+            ):
+                # A distinct Beta release or source SHA begins a new smoke
+                # cycle. Retaining the old terminal document verbatim would
+                # incorrectly make future legitimate Beta publications fail
+                # the protected source gate.
+                continue
+            fail(
+                f"published official Factory plugin {plugin_id} must retain its terminal published status "
+                "unless an exact new Beta smoke cycle is recorded by appended immutable provenance"
             )
 
 
@@ -1502,25 +3010,71 @@ def validate_registry_and_snapshots(
         for path in publication_proof_root.iterdir():
             if is_link(path) or not path.is_file() or path.name not in allowed_proofs:
                 fail(f"official external publication proof directory has an unregistered entry: {path.name}")
+    adoption_root = root / ADOPTIONS_RELATIVE_PATH
+    if adoption_root.exists():
+        if is_link(adoption_root) or not adoption_root.is_dir():
+            fail("official first-party adoption directory must be a regular directory")
+        allowed_adoptions = {f"{item.plugin_id}.json" for item in registrations if item.trust_tier == "first-party"}
+        for path in adoption_root.iterdir():
+            if is_link(path) or not path.is_file() or path.name not in allowed_adoptions:
+                fail(f"official first-party adoption directory has an unregistered entry: {path.name}")
+    adoption_proof_root = root / ADOPTION_PROOFS_RELATIVE_PATH
+    if adoption_proof_root.exists():
+        if is_link(adoption_proof_root) or not adoption_proof_root.is_dir():
+            fail("official first-party adoption proof directory must be a regular directory")
+        allowed_proofs = {f"{item.plugin_id}.json" for item in registrations if item.trust_tier == "first-party"}
+        for path in adoption_proof_root.iterdir():
+            if is_link(path) or not path.is_file() or path.name not in allowed_proofs:
+                fail(f"official first-party adoption proof directory has an unregistered entry: {path.name}")
+    status_root = root / ".xsec-factory" / "official-status"
+    if status_root.exists():
+        if is_link(status_root) or not status_root.is_dir():
+            fail("official Factory status directory must be a regular directory")
+        allowed_statuses = {f"{item.plugin_id}.json" for item in registrations}
+        for path in status_root.iterdir():
+            if is_link(path) or not path.is_file() or path.name not in allowed_statuses:
+                fail(f"official Factory status directory has an unregistered entry: {path.name}")
     for registration in registrations:
         entry = entries_by_id.get(registration.plugin_id)
         snapshot = snapshot_directory(root, registration.plugin_id)
         evidence = publication_path(root, registration.plugin_id)
         proof = publication_proof_root / f"{registration.plugin_id}.json"
+        if registration.status == "pending-adoption":
+            if registration.trust_tier != "first-party":
+                fail("only a first-party registration may be pending adoption")
+            if entry != marketplace_entry(registration):
+                fail(f"pending first-party plugin {registration.plugin_id} must retain its existing marketplace entry")
+            if not snapshot.is_dir() or is_link(snapshot):
+                fail(f"pending first-party plugin {registration.plugin_id} snapshot is unavailable")
+            if adoption_path(root, registration.plugin_id).exists() or (root / ADOPTION_PROOFS_RELATIVE_PATH / f"{registration.plugin_id}.json").exists():
+                fail(f"pending first-party plugin {registration.plugin_id} must be activated with its staged adoption proof")
+            manifest = source_manifest(snapshot, registration)
+            try:
+                document = load_release_document(release_path(root, registration.plugin_id), registration.plugin_id)
+            except ValueError as error:
+                raise ExternalSourceFactoryError(str(error)) from error
+            _, beta = current_beta_record(root, registration.plugin_id)
+            if manifest.get("version") != beta.get("version"):
+                fail(f"pending first-party plugin {registration.plugin_id} snapshot does not match its Beta release")
+            validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
+            validate_disabled_release_sidecar(root, registration)
+            validate_status(root, registration, require_publication_proofs=require_publication_proofs)
+            continue
         if registration.status == "disabled":
             if entry is not None:
-                fail(f"disabled external official plugin {registration.plugin_id} remains in marketplace index")
+                fail(f"disabled official Factory plugin {registration.plugin_id} remains in marketplace index")
             # A disabled external package is a withdrawal from discovery, not
             # an unpublication. Keep the snapshot (including releases.json)
             # and its append-only source evidence so the same SemVer can never
             # be republished with different bytes after a later re-enable.
             # An un-published registration can simply be removed instead of
             # being recorded as disabled.
-            if not snapshot.is_dir() or is_link(snapshot) or not evidence.is_file() or is_link(evidence):
+            if not snapshot.is_dir() or is_link(snapshot):
                 fail(
-                    f"disabled external official plugin {registration.plugin_id} must retain its immutable "
-                    "snapshot, release history, and publication evidence"
+                    f"disabled official Factory plugin {registration.plugin_id} must retain its immutable snapshot and release history"
                 )
+            if registration.trust_tier == "external" and (not evidence.is_file() or is_link(evidence)):
+                fail(f"disabled external official plugin {registration.plugin_id} must retain publication evidence")
         elif entry is None:
             if snapshot.exists() or evidence.exists() or proof.exists() or is_link(proof):
                 fail(f"active external official plugin {registration.plugin_id} has an incomplete publication")
@@ -1548,12 +3102,38 @@ def validate_registry_and_snapshots(
             ) from error
         if snapshot_engines != beta.get("engines"):
             fail(f"external official plugin {registration.plugin_id} snapshot engines do not match its Beta release")
-        validate_evidence(root, registration, document)
-        if require_publication_proofs:
-            validate_publication_proof(root, registration)
-        if registration.status == "disabled":
+        if registration.trust_tier == "external":
+            validate_evidence(root, registration, document)
+            if require_publication_proofs:
+                validate_publication_proof(root, registration)
+        else:
+            # A first-party entry starts from a signed adoption, preserving
+            # its historical release record/artifacts and existing pointers.
+            # It is not allowed to self-authorise by adding a registry row.
+            validate_adoption(root, registration, require_kms_proof=require_publication_proofs)
+            # Once a split source records provenance, retain the same
+            # append-only source evidence/proof used by external packages in
+            # addition to (never instead of) its migration adoption. This
+            # includes a new source SHA that reproduces an adopted artifact.
+            adopted_ids = adopted_release_ids(root, registration, state_label="current Factory")
+            has_post_adoption_history = first_party_has_post_adoption_history(
+                root,
+                registration,
+                state_label="current Factory",
+            )
+            if has_post_adoption_history and (is_link(evidence) or not evidence.is_file()):
+                fail(
+                    f"first-party plugin {registration.plugin_id} must retain publication evidence "
+                    "after its adopted release history"
+                )
+            if evidence.exists() or is_link(evidence):
+                validate_evidence(root, registration, document, adopted_release_ids=frozenset(adopted_ids))
+                if require_publication_proofs:
+                    validate_publication_proof(root, registration)
+        if registration.status == "disabled" and registration.trust_tier == "external":
             validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
             validate_disabled_release_sidecar(root, registration)
+        validate_status(root, registration, require_publication_proofs=require_publication_proofs)
 
 
 def write_outputs(values: dict[str, str], output_path: Path | None) -> None:
@@ -1591,11 +3171,54 @@ def main() -> None:
     verify_parser.add_argument("--plugin-id", required=True)
     verify_parser.add_argument("--source-root", type=Path, required=True)
     verify_parser.add_argument("--release-id", required=True)
+    verify_parser.add_argument("--expected-beta-sha")
     stable_parser = commands.add_parser("record-stable")
     stable_parser.add_argument("--plugin-id", required=True)
     stable_parser.add_argument("--source-sha", required=True)
     stable_parser.add_argument("--release-id", required=True)
     stable_parser.add_argument("--publisher", required=True)
+    adoption_parser = commands.add_parser("adopt-first-party")
+    adoption_parser.add_argument("--plugin-id", required=True)
+    adoption_parser.add_argument("--beta-sha", required=True)
+    adoption_parser.add_argument("--stable-sha", required=True)
+    adoption_parser.add_argument("--factory-revision", required=True)
+    activate_parser = commands.add_parser("activate-first-party")
+    activate_parser.add_argument("--plugin-id", required=True)
+    status_parser = commands.add_parser("record-status")
+    status_parser.add_argument("--plugin-id", required=True)
+    status_parser.add_argument("--beta-sha")
+    status_parser.add_argument("--stable-sha")
+    status_parser.add_argument("--state", required=True, choices=sorted(PUBLICATION_STATES))
+    status_parser.add_argument("--delivery-id", required=True)
+    status_parser.add_argument("--factory-run-url")
+    status_parser.add_argument("--smoke-run-url")
+    status_parser.add_argument("--marketplace-revision")
+    complete_status_parser = commands.add_parser("complete-smoke-status")
+    complete_status_parser.add_argument("--plugin-id", required=True)
+    complete_status_parser.add_argument("--beta-release-id", required=True)
+    complete_status_parser.add_argument("--stable-sha")
+    complete_status_parser.add_argument("--delivery-id", required=True)
+    complete_status_parser.add_argument("--smoke-run-url", required=True)
+    complete_status_parser.add_argument("--marketplace-revision", required=True)
+    redispatch_parser = commands.add_parser("needs-smoke-redispatch")
+    redispatch_parser.add_argument("--plugin-id", required=True)
+    redispatch_parser.add_argument("--beta-sha", required=True)
+    source_reconcile_parser = commands.add_parser("prepare-reconcile-source")
+    source_reconcile_parser.add_argument("--delivery-key", required=True)
+    source_reconcile_parser.add_argument("--plugin-id", required=True)
+    source_reconcile_parser.add_argument("--source-repository", required=True)
+    source_reconcile_parser.add_argument("--source-ref", required=True)
+    source_reconcile_parser.add_argument("--source-sha", required=True)
+    adoption_prepare_parser = commands.add_parser("prepare-adoption")
+    adoption_prepare_parser.add_argument("--plugin-id", required=True)
+    adoption_prepare_parser.add_argument("--beta-sha", required=True)
+    adoption_prepare_parser.add_argument("--stable-sha", required=True)
+    smoke_reconcile_parser = commands.add_parser("prepare-reconcile-smoke")
+    smoke_reconcile_parser.add_argument("--delivery-key", required=True)
+    smoke_reconcile_parser.add_argument("--marketplace-revision", required=True)
+    smoke_reconcile_parser.add_argument("--channel", required=True)
+    smoke_reconcile_parser.add_argument("--smoke-workflow-run-id", required=True)
+    smoke_reconcile_parser.add_argument("--smoke-workflow-run-attempt", required=True)
     legacy_parser = commands.add_parser(
         "reject-legacy-stable",
         help="reject an external plugin in the legacy built-in Stable workflow",
@@ -1622,9 +3245,68 @@ def main() -> None:
         elif args.command == "record-beta":
             result = record_beta(root, args.plugin_id, args.source_sha, args.publisher)
         elif args.command == "verify-stable":
-            result = verify_stable(root, args.plugin_id, args.source_root, args.release_id)
+            result = verify_stable(
+                root,
+                args.plugin_id,
+                args.source_root,
+                args.release_id,
+                expected_beta_sha=args.expected_beta_sha,
+            )
         elif args.command == "record-stable":
             result = record_stable(root, args.plugin_id, args.source_sha, args.release_id, args.publisher)
+        elif args.command == "adopt-first-party":
+            result = create_adoption(
+                root,
+                args.plugin_id,
+                beta_sha=args.beta_sha,
+                stable_sha=args.stable_sha,
+                factory_revision=args.factory_revision,
+            )
+        elif args.command == "activate-first-party":
+            result = activate_first_party(root, args.plugin_id)
+        elif args.command == "record-status":
+            result = record_status(
+                root,
+                args.plugin_id,
+                beta_sha=args.beta_sha,
+                stable_sha=args.stable_sha,
+                state=args.state,
+                delivery_id=args.delivery_id,
+                factory_run_url=args.factory_run_url,
+                smoke_run_url=args.smoke_run_url,
+                marketplace_revision=args.marketplace_revision,
+            )
+        elif args.command == "complete-smoke-status":
+            result = complete_smoke_status(
+                root,
+                args.plugin_id,
+                beta_release_id=args.beta_release_id,
+                stable_sha=args.stable_sha,
+                delivery_id=args.delivery_id,
+                smoke_run_url=args.smoke_run_url,
+                marketplace_revision=args.marketplace_revision,
+            )
+        elif args.command == "needs-smoke-redispatch":
+            result = needs_smoke_redispatch(root, args.plugin_id, beta_sha=args.beta_sha)
+        elif args.command == "prepare-reconcile-source":
+            result = prepare_reconcile_source(
+                root,
+                delivery_key=args.delivery_key,
+                plugin_id=args.plugin_id,
+                source_repository=args.source_repository,
+                source_ref=args.source_ref,
+                source_sha=args.source_sha,
+            )
+        elif args.command == "prepare-adoption":
+            result = prepare_adoption(root, args.plugin_id, args.beta_sha, args.stable_sha)
+        elif args.command == "prepare-reconcile-smoke":
+            result = prepare_reconcile_smoke(
+                delivery_key=args.delivery_key,
+                marketplace_revision=args.marketplace_revision,
+                channel=args.channel,
+                smoke_workflow_run_id=args.smoke_workflow_run_id,
+                smoke_workflow_run_attempt=args.smoke_workflow_run_attempt,
+            )
         elif args.command == "reject-legacy-stable":
             result = reject_legacy_stable_promotion(root, args.plugin_id)
         else:

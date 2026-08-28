@@ -33,10 +33,19 @@ ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE_INDEX_SUBJECT = ".agents/plugins/marketplace.json"
 OFFICIAL_PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publications"
 OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-publication-proofs"
+OFFICIAL_ADOPTIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoptions"
+OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoption-proofs"
 # This document is not consumed by Desktop.  It binds the external source
 # provenance kept by the Factory to the same protected OIDC/KMS publication
 # boundary as the Marketplace index and release records.
 OFFICIAL_PUBLICATION_PROVENANCE_PURPOSE = "xsec.plugin-marketplace.provenance"
+# First-party adoptions are intentionally a different KMS purpose.  A
+# provenance proof says that a source checkout produced a new Factory
+# publication; an adoption proof says that a protected migration bound an
+# already-published built-in snapshot/release history to its new source repo.
+# Keeping the subjects and sidecars separate prevents either assertion from
+# being replayed as the other.
+OFFICIAL_ADOPTION_PROVENANCE_PURPOSE = "xsec.plugin-marketplace.first-party-adoption"
 BROKER_AUDIENCE = "xsec-kms-document-signing-v1"
 PRODUCTION_BROKER_URL = "https://api.54321000.xyz/v2/internal/signing/documents"
 GITHUB_ACTIONS_OIDC_HOST_SUFFIX = ".actions.githubusercontent.com"
@@ -244,6 +253,50 @@ def official_publication_provenance_documents(root: Path) -> list[MarketplaceDoc
     return documents
 
 
+def official_adoption_provenance_document(root: Path, plugin_id: str) -> MarketplaceDocument:
+    """Return the fixed KMS document for a first-party migration proof."""
+
+    if (
+        not isinstance(plugin_id, str)
+        or not OFFICIAL_PLUGIN_ID_PATTERN.fullmatch(plugin_id)
+        or ".." in plugin_id
+        or "--" in plugin_id
+        or plugin_id.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES
+    ):
+        fail("official Factory adoption plugin ID is unsafe")
+    subject = (OFFICIAL_ADOPTIONS_RELATIVE_PATH / f"{plugin_id}.json").as_posix()
+    proof_subject = (OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").as_posix()
+    return MarketplaceDocument(
+        OFFICIAL_ADOPTION_PROVENANCE_PURPOSE,
+        subject,
+        safe_document_path(root, subject, must_exist=True),
+        safe_document_path(root, proof_subject, must_exist=False),
+    )
+
+
+def official_adoption_provenance_documents(root: Path) -> list[MarketplaceDocument]:
+    """Enumerate only fixed-path first-party adoption proofs for KMS signing."""
+
+    adoption_root = root / OFFICIAL_ADOPTIONS_RELATIVE_PATH
+    if not adoption_root.exists():
+        return []
+    if is_link(adoption_root) or not adoption_root.is_dir():
+        fail("official Factory adoption directory must be a regular directory")
+    proof_root = root / OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH
+    if proof_root.exists() and (is_link(proof_root) or not proof_root.is_dir()):
+        fail("official Factory adoption proof directory must be a regular directory")
+    documents: list[MarketplaceDocument] = []
+    for adoption in sorted(adoption_root.iterdir(), key=lambda item: item.name):
+        if is_link(adoption) or not adoption.is_file() or adoption.suffix != ".json":
+            fail(f"official Factory adoption directory has an unsafe entry: {adoption.name}")
+        plugin_id = adoption.name.removesuffix(".json")
+        document = official_adoption_provenance_document(root, plugin_id)
+        if document.path != adoption.resolve(strict=True):
+            fail(f"official Factory adoption path does not match its subject: {adoption.name}")
+        documents.append(document)
+    return documents
+
+
 def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     index_path = safe_document_path(root, MARKETPLACE_INDEX_SUBJECT, must_exist=True)
     marketplace = json_object(index_path.read_bytes(), MARKETPLACE_INDEX_SUBJECT)
@@ -271,6 +324,7 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
             )
         )
     documents.extend(official_publication_provenance_documents(root))
+    documents.extend(official_adoption_provenance_documents(root))
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
 
 

@@ -59,6 +59,16 @@ publishable snapshot in `plugins/<plugin-id>/`, its immutable artifacts and
 release history, and source provenance in
 `.xsec-factory/official-publications/<plugin-id>.json`.
 
+The Factory now has Registry v2 trust tiers.  Ordinary `external` packages
+retain the restrictive optional-package rules; the exact reviewed
+`first-party` source mapping is the only path that may retain a `com.xsec.*`
+identity, existing Desktop capabilities and `INSTALLED_BY_DEFAULT`.  The
+split/migration contract, KMS adoption proof and Cloud reconciliation payloads
+are documented in [first-party-plugin-factory.md](docs/first-party-plugin-factory.md).
+That document also defines the default-dry-run materializer that derives the
+eleven split source repositories from retained immutable artifacts without
+moving a channel or activating a Registry record.
+
 An administrator first reviews an allowlist entry in
 `.xsec-factory/official-registry.json`. An entry fixes a GitHub
 `owner/repository`, an optional repository-relative plugin path, and exactly

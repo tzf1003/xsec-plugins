@@ -295,6 +295,29 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             self.assertIn(publisher.sidecar_path_for(provenance), written)
             self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
 
+    def test_publisher_signs_first_party_adoption_in_its_own_fixed_proof_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-first-party-adoption-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            adoption = root / ".xsec-factory" / "official-adoptions" / "com.xsec.workspace.sub-agent.json"
+            adoption.parent.mkdir(parents=True)
+            adoption.write_bytes(b'{"schemaVersion":1,"pluginId":"com.xsec.workspace.sub-agent"}\n')
+
+            documents = publisher.marketplace_documents(root)
+            provenance = next(
+                document for document in documents
+                if document.purpose == publisher.OFFICIAL_ADOPTION_PROVENANCE_PURPOSE
+            )
+            self.assertEqual(provenance.subject, ".xsec-factory/official-adoptions/com.xsec.workspace.sub-agent.json")
+            self.assertEqual(
+                publisher.sidecar_path_for(provenance),
+                root / ".xsec-factory" / "official-adoption-proofs" / "com.xsec.workspace.sub-agent.json",
+            )
+
+            written = publisher.publish_sidecars(root, REVISION, self.broker_response)
+            self.assertIn(publisher.sidecar_path_for(provenance), written)
+            self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+
     def test_official_factory_provenance_rejects_windows_device_plugin_ids(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-id-") as directory:
             root = Path(directory)

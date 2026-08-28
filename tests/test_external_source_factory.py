@@ -171,6 +171,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
     def registry_entry(self, *, status: str = "active", repository: str = "acme/external-plugin", path: str = "package") -> dict[str, object]:
         return {
             "pluginId": PLUGIN_ID,
+            "trustTier": "external",
             "source": {
                 "repository": repository,
                 "path": path,
@@ -186,7 +187,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             root / ".agents" / "plugins" / "marketplace.json",
             {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []},
         )
-        write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 1, "plugins": list(entries)})
+        write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": list(entries)})
 
     def make_source(self, root: Path, *, version: str = "1.0.0", source_path: str = "package") -> Path:
         plugin = root / source_path
@@ -206,6 +207,71 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         )
         (plugin / "frontend.js").write_text("export function activate() {}\n", encoding="utf-8")
         return root
+
+    def first_party_entry(
+        self,
+        *,
+        repository: str = "tzf1003/xsec-plugin-sub-agent",
+        status: str = "pending-adoption",
+    ) -> dict[str, object]:
+        plugin_id = "com.xsec.workspace.sub-agent"
+        return {
+            "pluginId": plugin_id,
+            "trustTier": "first-party",
+            "source": {
+                "repository": repository,
+                "path": f"plugins/{plugin_id}",
+                "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
+            },
+            "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+            "category": "Security",
+            "status": status,
+        }
+
+    def make_first_party_adoption(self, root: Path) -> str:
+        plugin_id = "com.xsec.workspace.sub-agent"
+        self.make_factory(root, self.first_party_entry())
+        snapshot = root / "plugins" / plugin_id
+        snapshot.mkdir(parents=True)
+        write_json(
+            snapshot / "plugin.json",
+            {
+                "name": plugin_id,
+                "version": "1.0.0",
+                "extensions": {
+                    "com.xsec.desktop": {
+                        "engines": {"xsec": ">=1", "pluginApi": "^1"},
+                        "entrypoints": {"frontend": "frontend.js"},
+                        "permissions": {"process.spawn": {}},
+                        "contributes": {"workspaceTools": {"sub-agent": {"title": "Sub agent"}}},
+                    }
+                },
+            },
+        )
+        (snapshot / "frontend.js").write_text("export function activate() {}\n", encoding="utf-8")
+        build_market.build_plugin(snapshot, snapshot)
+        registration = factory.registration_for(root, plugin_id, active=False)
+        write_json(
+            root / ".agents" / "plugins" / "marketplace.json",
+            {
+                "name": "xsec-official",
+                "interface": {"displayName": "Test"},
+                "plugins": [factory.marketplace_entry(registration)],
+            },
+        )
+        write_historical_release_sidecar(root, plugin_id)
+        factory.create_adoption(
+            root,
+            plugin_id,
+            beta_sha=BETA_SHA,
+            stable_sha=STABLE_SHA,
+            factory_revision="c" * 40,
+        )
+        document = publisher.official_adoption_provenance_document(root, plugin_id)
+        write_historical_sidecar(document, publisher.sidecar_path_for(document))
+        factory.activate_first_party(root, plugin_id)
+        _, beta = factory.current_beta_record(root, plugin_id)
+        return str(beta["releaseId"])
 
     def stage_and_record_beta(
         self,
@@ -357,6 +423,56 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             events = json.loads(factory.publication_path(root, PLUGIN_ID).read_text(encoding="utf-8"))["events"]
             self.assertEqual(events[-1]["channel"], "stable")
             self.assertEqual(events[-1]["source"]["sha"], STABLE_SHA)
+
+    def test_stable_rejects_a_smoke_selected_historical_beta_after_a_newer_beta_exists(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-stale-stable-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            historical_release_id = self.stage_and_record_beta(root, source)
+            historical_source = root / "historical-source"
+            shutil.copytree(source, historical_source)
+            manifest_path = source / "package" / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(manifest_path, manifest)
+            (source / "package" / "frontend.js").write_text("export function activate() { return 'new-beta'; }\n", encoding="utf-8")
+            self.stage_and_record_beta(root, source, source_sha=STABLE_SHA)
+
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the current Beta pointer"):
+                factory.verify_stable(root, PLUGIN_ID, historical_source, historical_release_id)
+
+    def test_stable_rechecks_the_smoke_verified_beta_source_sha_inside_the_publish_slot(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-stale-beta-sha-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, source)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-a",
+            )
+            self.assertEqual(
+                factory.verify_stable(root, PLUGIN_ID, source, release_id, expected_beta_sha=BETA_SHA)["release_id"],
+                release_id,
+            )
+            # A later Beta source commit can have exactly the same artifact
+            # and releaseId. Its status SHA, not the releaseId, tells Stable
+            # that the prior Desktop smoke callback is no longer current.
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=STABLE_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-b-same-release",
+            )
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must match immutable Beta provenance"):
+                factory.verify_stable(root, PLUGIN_ID, source, release_id, expected_beta_sha=BETA_SHA)
 
     def test_committed_node_modules_do_not_break_beta_to_stable_content_identity(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-node-modules-") as directory:
@@ -632,7 +748,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             # external marketplace entry eligible for the generic signed path.
             # The operator must keep a disabled registration for a withdrawn
             # external package instead.
-            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 1, "plugins": []})
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": []})
             factory.publication_path(root, PLUGIN_ID).unlink()
             manifest_path = root / "plugins" / PLUGIN_ID / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -661,7 +777,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             # make a later same-SemVer publication look brand new.
             baseline = workspace / "trusted-baseline"
             shutil.copytree(root, baseline)
-            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 1, "plugins": []})
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": []})
             write_json(
                 root / ".agents" / "plugins" / "marketplace.json",
                 {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []},
@@ -688,7 +804,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             rewritten = self.registry_entry(repository="acme/replacement-plugin", path="replacement")
             write_json(
                 root / ".xsec-factory" / "official-registry.json",
-                {"schemaVersion": 1, "plugins": [rewritten]},
+                {"schemaVersion": 2, "plugins": [rewritten]},
             )
 
             with self.assertRaisesRegex(
@@ -782,6 +898,112 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             ):
                 factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
+    def test_trusted_baseline_accepts_then_preserves_append_only_smoke_outcomes(self) -> None:
+        """The first terminal smoke outcome extends a legacy evidence record."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-external-baseline-smoke-outcome-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, source)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-delivery",
+            )
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+            baseline = workspace / "trusted-before-smoke"
+            shutil.copytree(root, baseline)
+
+            # A pending Desktop callback requires this source/release binding
+            # to remain present. Without it, complete_smoke_status cannot
+            # prove that the callback belongs to the current Beta.
+            pending_status_path = factory.status_path(root, PLUGIN_ID)
+            pending_status = pending_status_path.read_bytes()
+            pending_status_path.unlink()
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "retain its smoke-gated Factory status"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    baseline_root=baseline,
+                    require_publication_proofs=False,
+                )
+            pending_status_path.write_bytes(pending_status)
+
+            # The only same-Beta lifecycle advance is waiting -> promoting;
+            # promoting must never be rewritten back to waiting by a PR.
+            pending = json.loads(pending_status_path.read_text(encoding="utf-8"))
+            pending["publication"]["state"] = "promoting_stable"
+            write_json(pending_status_path, pending)
+            factory.validate_trusted_baseline_continuity(
+                root,
+                factory.load_registry(root),
+                baseline,
+            )
+            promoting_baseline = workspace / "trusted-promoting-smoke"
+            shutil.copytree(root, promoting_baseline)
+            pending["publication"]["state"] = "waiting_for_smoke"
+            write_json(pending_status_path, pending)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "unless an exact new Beta smoke cycle"):
+                factory.validate_trusted_baseline_continuity(
+                    root,
+                    factory.load_registry(root),
+                    promoting_baseline,
+                )
+            pending_status_path.write_bytes(pending_status)
+
+            factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="smoke-delivery",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/200",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, PLUGIN_ID)
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+            terminal_baseline = workspace / "trusted-terminal-smoke"
+            shutil.copytree(root, terminal_baseline)
+            status_path = factory.status_path(root, PLUGIN_ID)
+            original_status = status_path.read_bytes()
+            status_path.unlink()
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain its terminal published status"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    baseline_root=terminal_baseline,
+                    require_publication_proofs=False,
+                )
+
+            status_path.write_bytes(original_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["publication"]["state"] = "waiting_for_smoke"
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain its terminal published status"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    baseline_root=terminal_baseline,
+                    require_publication_proofs=False,
+                )
+
+            status_path.write_bytes(original_status)
+            evidence_path = factory.publication_path(root, PLUGIN_ID)
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["smokeOutcomes"][0]["smoke"]["marketplaceRevision"] = "d" * 40
+            write_json(evidence_path, evidence)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain every immutable smoke outcome"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    baseline_root=terminal_baseline,
+                    require_publication_proofs=False,
+                )
+
     def test_strict_gate_rejects_a_complete_preseeded_first_publication_without_kms_proof(self) -> None:
         """A PR cannot manufacture snapshot/release/evidence in its first change."""
 
@@ -837,6 +1059,46 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             baseline = workspace / "pre-factory-baseline"
             baseline.mkdir()
             factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_trusted_baseline_accepts_legacy_v1_external_registry_during_the_v2_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-v1-baseline-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+            baseline = workspace / "trusted-v1-baseline"
+            shutil.copytree(root, baseline)
+            legacy_entry = self.registry_entry()
+            legacy_entry.pop("trustTier")
+            write_json(
+                baseline / ".xsec-factory" / "official-registry.json",
+                {"schemaVersion": 1, "plugins": [legacy_entry]},
+            )
+
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_trusted_pending_first_party_baseline_can_be_activated_only_with_its_adoption(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-pending-baseline-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            self.make_first_party_adoption(root)
+            baseline = workspace / "trusted-pending-baseline"
+            shutil.copytree(root, baseline)
+            pending = self.first_party_entry(status="pending-adoption")
+            write_json(
+                baseline / ".xsec-factory" / "official-registry.json",
+                {"schemaVersion": 2, "plugins": [pending]},
+            )
+            factory.adoption_path(baseline, "com.xsec.workspace.sub-agent").unlink()
+            (baseline / factory.ADOPTION_PROOFS_RELATIVE_PATH / "com.xsec.workspace.sub-agent.json").unlink()
+
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+            disabled = self.first_party_entry(status="disabled")
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": [disabled]})
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must remain pending or be activated"):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
     def test_snapshot_root_rejects_symlink_entries_before_ownership_checks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-snapshot-link-") as directory:
@@ -946,6 +1208,767 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.stage_and_record_beta(root, source)
 
             self.assertFalse(marker.exists())
+
+    def test_first_party_registry_is_closed_to_the_exact_approved_repository(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-registry-") as directory:
+            root = Path(directory)
+            entry = self.first_party_entry(repository="tzf1003/looks-like-sub-agent")
+            self.make_factory(root, entry)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the approved first-party source"):
+                factory.load_registry(root)
+
+            entry = self.first_party_entry()
+            entry["trustTier"] = "external"
+            self.make_factory(root, entry)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "reserved for the Desktop namespace"):
+                factory.load_registry(root)
+
+            self.make_factory(root, self.first_party_entry())
+            self.assertEqual(factory.load_registry(root)[0].installation, "INSTALLED_BY_DEFAULT")
+
+            entry = self.registry_entry()
+            entry["status"] = "pending-adoption"
+            self.make_factory(root, entry)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "invalid for its trust tier"):
+                factory.load_registry(root)
+
+    def test_signed_first_party_adoption_binds_history_source_heads_and_channel_pointers(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-") as directory:
+            root = Path(directory)
+            release_id = self.make_first_party_adoption(root)
+            factory.validate_registry_and_snapshots(root)
+
+            adoption_path = factory.adoption_path(root, "com.xsec.workspace.sub-agent")
+            adoption = json.loads(adoption_path.read_text(encoding="utf-8"))
+            original_adoption = json.loads(json.dumps(adoption))
+            adoption["source"]["betaSha"] = "d" * 40
+            write_json(adoption_path, adoption)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS adoption proof is invalid"):
+                factory.validate_registry_and_snapshots(root)
+
+            # Restore the signed payload, then demonstrate that a pointer
+            # rewrite is detected before any new source can be accepted.
+            write_json(adoption_path, original_adoption)
+            adoption = json.loads(adoption_path.read_text(encoding="utf-8"))
+            adoption["channels"]["beta"] = {"releaseId": "sha256-" + "0" * 64}
+            write_json(adoption_path, adoption)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "channel pointer is not historical"):
+                factory.validate_registry_and_snapshots(root)
+            self.assertTrue(release_id.startswith("sha256-"))
+
+    def test_first_party_published_status_requires_signed_adoption_and_exact_release_pointers(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-status-") as directory:
+            root = Path(directory)
+            release_id = self.make_first_party_adoption(root)
+            self.assertTrue(promote_release.promote_stable(root, "com.xsec.workspace.sub-agent", release_id))
+            # The test moves the immutable pointer directly, so refresh the
+            # release sidecar just as the protected Stable publisher would.
+            write_historical_release_sidecar(root, "com.xsec.workspace.sub-agent")
+            registration = factory.registration_for(root, "com.xsec.workspace.sub-agent")
+            # A terminal status is not authenticated by adoption alone: the
+            # protected smoke path appends a KMS-signed outcome tied to the
+            # exact Beta/Stable source provenance before it writes Desktop's
+            # readable status sidecar.
+            factory.record_beta(root, "com.xsec.workspace.sub-agent", BETA_SHA, "test-publisher")
+            factory.record_stable(root, "com.xsec.workspace.sub-agent", STABLE_SHA, release_id, "test-publisher")
+            factory.append_smoke_outcome(
+                root,
+                registration,
+                beta_release_id=release_id,
+                stable_release_id=release_id,
+                beta_sha=BETA_SHA,
+                stable_sha=STABLE_SHA,
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/42",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, "com.xsec.workspace.sub-agent")
+            factory.record_status(
+                root,
+                "com.xsec.workspace.sub-agent",
+                beta_sha=BETA_SHA,
+                stable_sha=STABLE_SHA,
+                state="published",
+                delivery_id="delivery-42",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/42",
+                marketplace_revision="c" * 40,
+            )
+            factory.validate_registry_and_snapshots(root)
+            status_path = factory.status_path(root, "com.xsec.workspace.sub-agent")
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            valid_status = json.loads(json.dumps(status))
+            status["publication"]["smokeRunUrl"] = None
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain Desktop smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(status_path, valid_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["source"]["stableSha"] = None
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain both Beta and Stable source SHAs"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(status_path, valid_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["release"]["betaReleaseId"] = "sha256-" + "0" * 64
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "release pointers do not match"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(status_path, valid_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["source"]["betaSha"] = "d" * 40
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match KMS-bound smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(status_path, valid_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["publication"]["marketplaceRevision"] = "d" * 40
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match KMS-bound smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+            self.assertTrue(release_id.startswith("sha256-"))
+
+    def test_duplicate_status_delivery_keeps_the_original_audited_delivery_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-status-dedupe-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            first = factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="delivery-1",
+            )
+            duplicate = factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="delivery-2",
+            )
+            status = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertNotIn("unchanged", first)
+            self.assertEqual(duplicate["unchanged"], "true")
+            self.assertEqual(status["publication"]["deliveryId"], "delivery-1")
+
+    def test_smoke_completion_marks_an_already_promoted_release_published_idempotently(self) -> None:
+        """A late smoke callback must not leave Desktop at waiting_for_smoke."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-smoke-terminal-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, self.make_source(root / "source"))
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-delivery",
+                factory_run_url="https://github.com/acme/factory/actions/runs/100",
+            )
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            # The documented manual recovery has no new Beta argument. It
+            # must retain the source SHA that the pending smoke callback is
+            # bound to, otherwise the later protected completion fails.
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=None,
+                stable_sha=STABLE_SHA,
+                state="promoting_stable",
+                delivery_id="manual-recovery",
+                factory_run_url="https://github.com/acme/factory/actions/runs/150",
+            )
+            recovered = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertEqual(recovered["source"]["betaSha"], BETA_SHA)
+
+            completed = factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="smoke-delivery",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/200",
+                marketplace_revision="c" * 40,
+            )
+            duplicate = factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="late-smoke-delivery",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/201",
+                # A retained later Factory revision can re-run the Desktop
+                # sweep for this already-published tuple. It must reuse the
+                # original KMS-bound metadata rather than write a status
+                # which has no matching immutable smoke outcome.
+                marketplace_revision="d" * 40,
+            )
+            status = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertEqual(completed["state"], "published")
+            self.assertEqual(duplicate["unchanged"], "true")
+            self.assertEqual(status["source"]["betaSha"], BETA_SHA)
+            self.assertEqual(status["source"]["stableSha"], STABLE_SHA)
+            self.assertEqual(status["publication"]["state"], "published")
+            self.assertEqual(status["publication"]["deliveryId"], "smoke-delivery")
+            self.assertEqual(status["publication"]["factoryRunUrl"], "https://github.com/acme/factory/actions/runs/150")
+            self.assertEqual(status["publication"]["smokeRunUrl"], "https://github.com/tzf1003/xSecDesktop/actions/runs/200")
+            self.assertEqual(status["publication"]["marketplaceRevision"], "c" * 40)
+            evidence = json.loads(factory.publication_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertEqual(len(evidence["smokeOutcomes"]), 1)
+            self.assertEqual(evidence["smokeOutcomes"][0]["smoke"]["marketplaceRevision"], "c" * 40)
+            write_publication_proof(root, PLUGIN_ID)
+            factory.validate_registry_and_snapshots(root)
+            duplicate_beta = factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="redelivered-beta",
+                factory_run_url="https://github.com/acme/factory/actions/runs/300",
+            )
+            self.assertEqual(duplicate_beta, {"plugin_id": PLUGIN_ID, "state": "published", "unchanged": "true"})
+            preserved = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertEqual(preserved, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the current Factory status"):
+                factory.complete_smoke_status(
+                    root,
+                    PLUGIN_ID,
+                    beta_release_id="sha256-" + "0" * 64,
+                    stable_sha=STABLE_SHA,
+                    delivery_id="wrong-release",
+                    smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/202",
+                    marketplace_revision="c" * 40,
+                )
+
+    def test_in_flight_status_cannot_claim_unbound_stable_or_smoke_evidence(self) -> None:
+        """Waiting and promoting sidecars must expose only their proven lifecycle fields."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-in-flight-status-fields-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, self.make_source(root / "source"))
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-delivery",
+            )
+            waiting_path = factory.status_path(root, PLUGIN_ID)
+            waiting = json.loads(waiting_path.read_text(encoding="utf-8"))
+            forged_waiting = json.loads(json.dumps(waiting))
+            forged_waiting["source"]["stableSha"] = STABLE_SHA
+            forged_waiting["publication"]["smokeRunUrl"] = "https://github.com/tzf1003/xSecDesktop/actions/runs/600"
+            forged_waiting["publication"]["marketplaceRevision"] = "c" * 40
+            write_json(waiting_path, forged_waiting)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "waiting Factory status must not claim Stable or smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(waiting_path, waiting)
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=None,
+                stable_sha=STABLE_SHA,
+                state="promoting_stable",
+                delivery_id="stable-delivery",
+            )
+            factory.validate_registry_and_snapshots(root)
+            promoting_path = factory.status_path(root, PLUGIN_ID)
+            promoting = json.loads(promoting_path.read_text(encoding="utf-8"))
+            forged_promoting = json.loads(json.dumps(promoting))
+            forged_promoting["source"]["stableSha"] = "d" * 40
+            write_json(promoting_path, forged_promoting)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "promoting Factory status must match immutable Stable provenance"):
+                factory.validate_registry_and_snapshots(root)
+
+            forged_promoting = json.loads(json.dumps(promoting))
+            forged_promoting["publication"]["smokeRunUrl"] = "https://github.com/tzf1003/xSecDesktop/actions/runs/601"
+            forged_promoting["publication"]["marketplaceRevision"] = "e" * 40
+            write_json(promoting_path, forged_promoting)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "promoting Factory status must not claim Desktop smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+    def test_promoting_status_cannot_pair_current_beta_with_historical_stable(self) -> None:
+        """A signed historical Stable event cannot fabricate a new promotion."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-promoting-current-beta-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            historical_release = self.stage_and_record_beta(root, source)
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, historical_release))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, historical_release, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+
+            source_manifest = source / "package" / "plugin.json"
+            manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(source_manifest, manifest)
+            (source / "package" / "frontend.js").write_text(
+                "export function activate() { return 'new-beta'; }\n",
+                encoding="utf-8",
+            )
+            current_beta_sha = "d" * 40
+            current_release = self.stage_and_record_beta(root, source, source_sha=current_beta_sha)
+            self.assertNotEqual(current_release, historical_release)
+            # The immutable evidence now contains a valid current Beta event
+            # and a valid historical Stable event, but Stable still points to
+            # that old release. A normal PR must not stitch them into an
+            # apparent promotion.
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=current_beta_sha,
+                stable_sha=STABLE_SHA,
+                state="promoting_stable",
+                delivery_id="forged-historical-stable",
+            )
+            write_publication_proof(root, PLUGIN_ID, source_revision=current_beta_sha)
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "promoting Factory status must promote the current Beta release",
+            ):
+                factory.validate_registry_and_snapshots(root)
+
+    def test_published_baseline_cannot_roll_back_to_an_older_signed_smoke_outcome(self) -> None:
+        """A later valid smoke result cannot be replaced by a prior terminal tuple."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-published-outcome-rollback-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, self.make_source(root / "source"))
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="first-beta",
+            )
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+            factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="first-smoke",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/700",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, PLUGIN_ID)
+            baseline = workspace / "trusted-first-outcome"
+            shutil.copytree(root, baseline)
+            first_status = factory.status_path(root, PLUGIN_ID).read_bytes()
+
+            # A source-only Beta cycle may reproduce the same immutable
+            # release. It still gets distinct Beta/Stable provenance and a
+            # distinct KMS-bound smoke result.
+            next_beta_sha = "d" * 40
+            next_stable_sha = "e" * 40
+            factory.record_beta(root, PLUGIN_ID, next_beta_sha, "test-publisher")
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=next_beta_sha,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="second-beta",
+            )
+            write_publication_proof(root, PLUGIN_ID, source_revision=next_beta_sha)
+            factory.record_stable(root, PLUGIN_ID, next_stable_sha, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID, source_revision=next_stable_sha)
+            factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=next_stable_sha,
+                delivery_id="second-smoke",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/701",
+                marketplace_revision="f" * 40,
+            )
+            write_publication_proof(root, PLUGIN_ID, source_revision=next_stable_sha)
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+            # Both smoke outcomes remain KMS-signed and valid, but the first
+            # is not the current published result after the second was
+            # appended. A normal PR cannot roll the readable sidecar back.
+            factory.status_path(root, PLUGIN_ID).write_bytes(first_status)
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "must retain its terminal published status unless an exact new Beta smoke cycle",
+            ):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_published_baseline_allows_a_distinct_beta_to_begin_its_next_smoke_cycle(self) -> None:
+        """A terminal status protects its own tuple, not every future Beta."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-next-beta-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            initial_release = self.stage_and_record_beta(root, source)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="initial-beta",
+            )
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, initial_release))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, initial_release, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+            factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=initial_release,
+                stable_sha=STABLE_SHA,
+                delivery_id="initial-smoke",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/400",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, PLUGIN_ID)
+            baseline = workspace / "trusted-terminal"
+            shutil.copytree(root, baseline)
+
+            # A status file is consumer-readable, not source provenance. A
+            # normal PR cannot invent the next Beta cycle by changing only
+            # this tuple while retaining the old signed evidence history.
+            forged_status_path = factory.status_path(root, PLUGIN_ID)
+            forged_status = json.loads(forged_status_path.read_text(encoding="utf-8"))
+            forged_status["source"]["betaSha"] = "d" * 40
+            forged_status["publication"]["state"] = "waiting_for_smoke"
+            forged_status["publication"]["smokeRunUrl"] = None
+            forged_status["publication"]["marketplaceRevision"] = None
+            write_json(forged_status_path, forged_status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "appended immutable provenance"):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+            shutil.copy2(factory.status_path(baseline, PLUGIN_ID), forged_status_path)
+
+            manifest_path = source / "package" / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(manifest_path, manifest)
+            (source / "package" / "frontend.js").write_text(
+                "export function activate() { return 'next-beta'; }\n",
+                encoding="utf-8",
+            )
+            next_sha = "d" * 40
+            next_release = self.stage_and_record_beta(root, source, source_sha=next_sha)
+            self.assertNotEqual(next_release, initial_release)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=next_sha,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="next-beta",
+            )
+            write_publication_proof(root, PLUGIN_ID, source_revision=next_sha)
+            self.assertEqual(factory.needs_smoke_redispatch(root, PLUGIN_ID, beta_sha=next_sha), {"redispatch": "true"})
+            self.assertEqual(factory.needs_smoke_redispatch(root, PLUGIN_ID, beta_sha=BETA_SHA), {"redispatch": "false"})
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_first_party_beta_after_adoption_appends_history_without_rewriting_the_adopted_prefix(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-followup-beta-") as directory:
+            root = Path(directory)
+            old_release_id = self.make_first_party_adoption(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            source = root / "source"
+            shutil.copytree(root / "plugins" / plugin_id, source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
+            source_manifest = source / "plugins" / plugin_id / "plugin.json"
+            manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(source_manifest, manifest)
+            (source / "plugins" / plugin_id / "frontend.js").write_text("export function activate() { return 'next'; }\n", encoding="utf-8")
+
+            factory.stage_beta(root, plugin_id, source)
+            snapshot = root / "plugins" / plugin_id
+            build_market.build_plugin(snapshot, snapshot)
+            factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
+            write_historical_release_sidecar(root, plugin_id, source_revision="d" * 40)
+            write_publication_proof(root, plugin_id, source_revision="d" * 40)
+            factory.validate_registry_and_snapshots(root)
+
+            releases = json.loads(factory.release_path(root, plugin_id).read_text(encoding="utf-8"))["releases"]
+            self.assertEqual(releases[0]["releaseId"], old_release_id)
+            self.assertEqual(len(releases), 2)
+
+    def test_first_party_same_artifact_beta_sha_is_a_post_adoption_provenance_cycle(self) -> None:
+        """A source-only change must not be hidden behind the adoption prefix."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-same-artifact-beta-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            plugin_id = "com.xsec.workspace.sub-agent"
+            release_id = self.make_first_party_adoption(root)
+
+            # Complete one terminal cycle from the adopted artifact, so the
+            # trusted baseline has a real KMS-bound publication history.
+            factory.record_beta(root, plugin_id, BETA_SHA, "test-publisher")
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="adopted-beta",
+            )
+            self.assertTrue(promote_release.promote_stable(root, plugin_id, release_id))
+            factory.record_stable(root, plugin_id, STABLE_SHA, release_id, "test-publisher")
+            write_historical_release_sidecar(root, plugin_id)
+            write_publication_proof(root, plugin_id)
+            factory.complete_smoke_status(
+                root,
+                plugin_id,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="adopted-smoke",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/800",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, plugin_id)
+            factory.validate_registry_and_snapshots(root)
+            baseline = workspace / "trusted-adopted-terminal"
+            shutil.copytree(root, baseline)
+
+            # A new source SHA may reproduce the exact adopted artifact (for
+            # example an empty commit). It still gets a distinct immutable
+            # Beta provenance event and must start a new smoke cycle.
+            source = root / "source"
+            shutil.copytree(
+                root / "plugins" / plugin_id,
+                source / "plugins" / plugin_id,
+                ignore=shutil.ignore_patterns(".xsec-market"),
+            )
+            factory.stage_beta(root, plugin_id, source)
+            snapshot = root / "plugins" / plugin_id
+            build_market.build_plugin(snapshot, snapshot)
+            factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha="d" * 40,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="same-artifact-beta",
+            )
+            write_publication_proof(root, plugin_id, source_revision="d" * 40)
+
+            releases = json.loads(factory.release_path(root, plugin_id).read_text(encoding="utf-8"))["releases"]
+            self.assertEqual([release["releaseId"] for release in releases], [release_id])
+            self.assertTrue(factory.first_party_has_post_adoption_history(
+                root,
+                factory.registration_for(root, plugin_id),
+                state_label="current Factory",
+            ))
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_first_party_initial_in_flight_status_requires_exact_beta_provenance(self) -> None:
+        """A first status file cannot manufacture an adopted plugin's Beta SHA."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-in-flight-provenance-") as directory:
+            root = Path(directory)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            release_id = self.make_first_party_adoption(root)
+            next_sha = "d" * 40
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha=next_sha,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="forged-first-status",
+            )
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "in-flight Factory status must match immutable Beta provenance"):
+                factory.validate_registry_and_snapshots(root)
+
+            # The exact same status becomes valid only after a signed Beta
+            # event for its current release/source tuple has been recorded.
+            source = root / "source"
+            shutil.copytree(
+                root / "plugins" / plugin_id,
+                source / "plugins" / plugin_id,
+                ignore=shutil.ignore_patterns(".xsec-market"),
+            )
+            factory.stage_beta(root, plugin_id, source)
+            snapshot = root / "plugins" / plugin_id
+            build_market.build_plugin(snapshot, snapshot)
+            factory.record_beta(root, plugin_id, next_sha, "test-publisher")
+            write_publication_proof(root, plugin_id, source_revision=next_sha)
+            self.assertEqual(
+                json.loads(factory.release_path(root, plugin_id).read_text(encoding="utf-8"))["channels"]["beta"]["releaseId"],
+                release_id,
+            )
+            factory.validate_registry_and_snapshots(root)
+
+    def test_first_party_post_adoption_evidence_is_required_and_append_only(self) -> None:
+        """Adoption cannot be used to erase source provenance for newer releases."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-followup-evidence-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            self.make_first_party_adoption(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            source = root / "source"
+            shutil.copytree(root / "plugins" / plugin_id, source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
+            manifest_path = source / "plugins" / plugin_id / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(manifest_path, manifest)
+            (source / "plugins" / plugin_id / "frontend.js").write_text(
+                "export function activate() { return 'post-adoption'; }\n",
+                encoding="utf-8",
+            )
+
+            factory.stage_beta(root, plugin_id, source)
+            snapshot = root / "plugins" / plugin_id
+            build_market.build_plugin(snapshot, snapshot)
+            factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
+            write_historical_release_sidecar(root, plugin_id, source_revision="d" * 40)
+            write_publication_proof(root, plugin_id, source_revision="d" * 40)
+            factory.validate_registry_and_snapshots(root)
+
+            baseline = workspace / "trusted-baseline"
+            shutil.copytree(root, baseline)
+            evidence_path = factory.publication_path(root, plugin_id)
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["events"][0]["publisher"] = "rewritten-publisher"
+            write_json(evidence_path, evidence)
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "must retain every immutable publication evidence event",
+            ):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline, require_publication_proofs=False)
+
+            shutil.copy2(factory.publication_path(baseline, plugin_id), evidence_path)
+            proof_document = factory.official_publication_provenance_document(root, plugin_id)
+            publisher.sidecar_path_for(proof_document).unlink()
+            evidence_path.unlink()
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "must retain publication evidence after its adopted release history",
+            ):
+                factory.validate_registry_and_snapshots(root)
+
+    def test_reconcile_payload_requires_the_current_registry_binding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-reconcile-payload-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            accepted = factory.prepare_reconcile_source(
+                root,
+                delivery_key="delivery-42",
+                plugin_id=PLUGIN_ID,
+                source_repository="acme/external-plugin",
+                source_ref="refs/heads/beta",
+                source_sha=BETA_SHA,
+            )
+            self.assertEqual(accepted["channel"], "beta")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match a registered beta or stable branch"):
+                factory.prepare_reconcile_source(
+                    root,
+                    delivery_key="delivery-43",
+                    plugin_id=PLUGIN_ID,
+                    source_repository="acme/external-plugin",
+                    source_ref="refs/heads/old-beta",
+                    source_sha=BETA_SHA,
+                )
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "workflow run identity is invalid"):
+                factory.prepare_reconcile_smoke(
+                    delivery_key="delivery-44",
+                    marketplace_revision=BETA_SHA,
+                    channel="beta",
+                    smoke_workflow_run_id="not-a-run",
+                    smoke_workflow_run_attempt="1",
+                )
+
+    def test_reconcile_workflows_fail_closed_on_actor_payload_and_stale_source_heads(self) -> None:
+        source_workflow = (ROOT / ".github" / "workflows" / "reconcile-source.yml").read_text(encoding="utf-8")
+        smoke_workflow = (ROOT / ".github" / "workflows" / "reconcile-smoke.yml").read_text(encoding="utf-8")
+        # xsec-cloud has Actions-dispatch-only authority. It calls exactly this
+        # workflow with the full string contract, and only this entrypoint
+        # verifies the Dispatcher App actor and protected Factory main before
+        # it can route a smoke callback into the reusable workflow.
+        self.assertIn("workflow_dispatch:", source_workflow)
+        self.assertNotIn("repository_dispatch:", source_workflow)
+        self.assertIn("XSEC_FACTORY_DISPATCHER_ACTOR", source_workflow)
+        self.assertIn("ACTOR: ${{ github.actor }}", source_workflow)
+        self.assertIn('[ "$ACTOR" = "$EXPECTED_ACTOR" ]', source_workflow)
+        self.assertIn('[ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ]', source_workflow)
+        self.assertIn("github.ref_protected", source_workflow)
+        self.assertIn("uses: ./.github/workflows/reconcile-smoke.yml", source_workflow)
+        for input_name in (
+            "trigger_kind",
+            "delivery_key",
+            "plugin_id",
+            "source_repository",
+            "source_ref",
+            "source_sha",
+            "marketplace_revision",
+            "channel",
+            "smoke_workflow_run_id",
+            "smoke_workflow_run_attempt",
+        ):
+            self.assertIn(f"{input_name}:", source_workflow)
+            self.assertIn(f"inputs.{input_name}", source_workflow)
+        self.assertIn("workflow_call:", smoke_workflow)
+        self.assertNotIn("repository_dispatch:", smoke_workflow)
+        self.assertNotIn("XSEC_FACTORY_DISPATCHER_ACTOR", smoke_workflow)
+        self.assertIn("prepare-reconcile-source", source_workflow)
+        self.assertIn("ls-remote", source_workflow)
+        self.assertIn("Source delivery is stale", source_workflow)
+        self.assertIn("publish.yml", source_workflow)
+        self.assertIn("prepare-reconcile-smoke", smoke_workflow)
+        self.assertIn("merge-base --is-ancestor", smoke_workflow)
+        self.assertIn("release_id=\"$current_beta\"", smoke_workflow)
+        publisher_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertIn("Record immutable external Stable provenance after verification", publisher_workflow)
+        self.assertIn(
+            "if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}",
+            publisher_workflow,
+        )
+        self.assertNotIn("steps.external-stable.outputs.changed == 'true'", publisher_workflow)
+        self.assertIn("duplicate source delivery", publisher_workflow)
+        self.assertIn("git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory", publisher_workflow)
+        self.assertIn("Record Factory Beta state", publisher_workflow)
+        self.assertIn("complete-smoke-status", publisher_workflow)
+        self.assertIn("--stable-sha \"$SOURCE_SHA\"", publisher_workflow)
+        self.assertIn("expected_beta_sha", publisher_workflow)
+        self.assertIn("already-published identical outcome idempotent", publisher_workflow)
+        self.assertIn("does not match the current Beta pointer", (ROOT / "scripts" / "external_source_factory.py").read_text(encoding="utf-8"))
+        self.assertIn("smoke_beta_sha", smoke_workflow)
+        self.assertIn("smoke_marketplace_revision", publisher_workflow)
+        self.assertIn("smoke_run_url", publisher_workflow)
+        self.assertIn("still heads its registered branch", publisher_workflow)
+        self.assertIn('verified_head="$(git -C .xsec-factory-source rev-parse refs/remotes/xsec-factory-source/verified)"', publisher_workflow)
+        self.assertIn('[ "$verified_head" = "$SOURCE_SHA" ]', publisher_workflow)
+        self.assertIn("no longer heads its registered branch", publisher_workflow)
+        self.assertIn("smoke_marketplace_revision", smoke_workflow)
+        self.assertIn("xSecDesktop/actions/runs/${SMOKE_RUN_ID}", smoke_workflow)
+        adoption_workflow = (ROOT / ".github" / "workflows" / "adopt-first-party.yml").read_text(encoding="utf-8")
+        self.assertIn("prepare-adoption", adoption_workflow)
+        self.assertIn("adopt-first-party", adoption_workflow)
+        self.assertIn("activate-first-party", adoption_workflow)
+        self.assertIn("XSEC_MARKETPLACE_SOURCE_REVISION", adoption_workflow)
+        self.assertIn("@codex review", adoption_workflow)
+        self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', adoption_workflow)
 
 
 if __name__ == "__main__":
