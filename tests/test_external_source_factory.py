@@ -1382,6 +1382,9 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", source_workflow)
         self.assertNotIn("repository_dispatch:", source_workflow)
         self.assertIn("XSEC_FACTORY_DISPATCHER_ACTOR", source_workflow)
+        self.assertIn("ACTOR: ${{ github.actor }}", source_workflow)
+        self.assertIn('[ "$ACTOR" = "$EXPECTED_ACTOR" ]', source_workflow)
+        self.assertIn('[ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ]', source_workflow)
         self.assertIn("github.ref_protected", source_workflow)
         self.assertIn("uses: ./.github/workflows/reconcile-smoke.yml", source_workflow)
         for input_name in (

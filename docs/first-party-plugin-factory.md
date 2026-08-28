@@ -123,6 +123,9 @@ Cloud 只能用专用 GitHub App 调用 GitHub Actions 的 `workflow_dispatch` A
 repository variable `XSEC_FACTORY_DISPATCHER_ACTOR` 精确等于该 App bot login，再按
 `trigger_kind` 在内部路由 source publish 或受控的 `reconcile-smoke.yml` reusable workflow。
 Factory 不监听公开 `repository_dispatch`，因此 Cloud 以外的事件不能绕过该 App 边界。
+这里校验的是 GitHub 注入的 `github.actor`、`github.ref` 与 `github.ref_protected`，不是任何
+workflow input；即使有人手工从 `main` 点击 dispatch，也会因 actor 不是 Dispatcher App 而在
+checkout 前被拒绝。
 
 source event payload：
 
