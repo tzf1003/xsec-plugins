@@ -66,7 +66,10 @@ python scripts/external_source_factory.py adopt-first-party \
 ```
 
 随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。未来 Beta 发布可追加 history，
-但 adoption 中的历史 prefix 永远不能改写。
+但 adoption 中的历史 prefix 永远不能改写。只要当前 `releases.json` 增加了 adoption prefix
+以外的 release，`.xsec-factory/official-publications/<plugin-id>.json` 与其 KMS proof 就成为
+强制、append-only 的 source provenance；普通 PR 不能删除、重写或用 adoption proof 替代这些
+post-adoption events。
 
 ## 可执行源码 materializer
 
@@ -115,10 +118,11 @@ python scripts\materialize_first_party_source.py `
 
 ## 自动 reconcile payload
 
-Cloud 只能用专用 GitHub App 向 `xsec-plugins` 发 `repository_dispatch`。两个 workflow
-event type 为 `xsec_factory_reconcile_source` 和 `xsec_factory_reconcile_smoke`，两者都要求
-受保护 `main` 与 repository variable `XSEC_FACTORY_DISPATCHER_ACTOR` 精确等于该 App bot
-login。
+Cloud 只能用专用 GitHub App 调用 GitHub Actions 的 `workflow_dispatch` API，固定目标是受保护
+`main` 上的 `reconcile-source.yml`；它接受下方完整的 text-only inputs。顶层 workflow 要求
+repository variable `XSEC_FACTORY_DISPATCHER_ACTOR` 精确等于该 App bot login，再按
+`trigger_kind` 在内部路由 source publish 或受控的 `reconcile-smoke.yml` reusable workflow。
+Factory 不监听公开 `repository_dispatch`，因此 Cloud 以外的事件不能绕过该 App 边界。
 
 source event payload：
 
@@ -127,7 +131,9 @@ source event payload：
 ```
 
 Factory 再读 protected Registry、固定 HTTPS 查询当前分支头并拒绝过期 SHA；`beta` 才调度
-现有 `publish.yml`。`main` 只进入等待状态，绝不因 push 直接推广 Stable。
+现有 `publish.yml`。Publisher 在取得全局 publication slot 后还会重新拉取注册分支，并要求
+`source_sha` 仍是该分支**精确 head**（不能只是不早于 head 的 ancestor）；因此晚到或排队的
+旧 Beta 永远不能覆盖较新的 Beta。`main` 只进入等待状态，绝不因 push 直接推广 Stable。
 
 smoke callback payload：
 

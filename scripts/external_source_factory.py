@@ -1519,6 +1519,51 @@ def validate_adoption(root: Path, registration: Registration, *, require_kms_pro
         raise ExternalSourceFactoryError(f"first-party plugin {registration.plugin_id} KMS adoption proof is invalid") from error
 
 
+def adopted_release_ids(root: Path, registration: Registration, *, state_label: str) -> tuple[str, ...]:
+    """Read the immutable release prefix covered by a first-party adoption.
+
+    The adoption validator proves the complete record/byte binding. This
+    narrow reader is also used by the trusted-baseline continuity pass, which
+    must know when normal source-publication evidence becomes mandatory after
+    the adopted history rather than treating adoption as a perpetual substitute.
+    """
+
+    if registration.trust_tier != "first-party":
+        fail(f"{state_label} is not a first-party registration")
+    path = adoption_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail(f"{state_label} first-party adoption proof for {registration.plugin_id} is unavailable")
+    proof = read_json(path, f"{state_label} first-party adoption proof for {registration.plugin_id}")
+    legacy = require_object(proof.get("legacy"), f"{state_label} first-party adoption proof legacy")
+    identifiers = legacy.get("releaseIds")
+    if not isinstance(identifiers, list) or not identifiers or not all(
+        isinstance(identifier, str) and RELEASE_ID_PATTERN.fullmatch(identifier) for identifier in identifiers
+    ):
+        fail(f"{state_label} first-party adoption proof legacy release IDs are invalid")
+    if len(set(identifiers)) != len(identifiers):
+        fail(f"{state_label} first-party adoption proof legacy release IDs are duplicated")
+    return tuple(identifiers)
+
+
+def first_party_has_post_adoption_history(root: Path, registration: Registration, *, state_label: str) -> bool:
+    """Whether immutable history has grown beyond the signed adoption prefix."""
+
+    adopted_ids = adopted_release_ids(root, registration, state_label=state_label)
+    try:
+        document = load_release_document(release_path(root, registration.plugin_id), registration.plugin_id)
+    except ValueError as error:
+        raise ExternalSourceFactoryError(str(error)) from error
+    records = document.get("releases")
+    if not isinstance(records, list) or not all(isinstance(record, dict) for record in records):
+        fail(f"{state_label} first-party release history is invalid")
+    release_ids = tuple(record.get("releaseId") for record in records)
+    if not all(isinstance(identifier, str) and RELEASE_ID_PATTERN.fullmatch(identifier) for identifier in release_ids):
+        fail(f"{state_label} first-party release history IDs are invalid")
+    if release_ids[: len(adopted_ids)] != adopted_ids:
+        fail(f"{state_label} first-party release history does not retain its adopted prefix")
+    return len(release_ids) > len(adopted_ids)
+
+
 def optional_url(value: object, label: str) -> str | None:
     if value is None:
         return None
@@ -2068,7 +2113,13 @@ def ownership_history(root: Path, registration: Registration, *, state_label: st
     if is_link(path) or not path.is_file():
         fail(f"{state_label} first-party adoption proof for {registration.plugin_id} is unavailable")
     proof = read_json(path, f"{state_label} first-party adoption proof for {registration.plugin_id}")
-    return (json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":")),)
+    ownership = (json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":")),)
+    # Adoption authenticates only the retained legacy prefix. Once a split
+    # source publishes new bytes, append-only evidence is equally immutable and
+    # must survive every trusted-baseline comparison.
+    if first_party_has_post_adoption_history(root, registration, state_label=state_label):
+        return ownership + publication_evidence_history(root, registration, state_label=state_label)
+    return ownership
 
 
 def validate_trusted_baseline_continuity(
@@ -2183,6 +2234,15 @@ def validate_trusted_baseline_continuity(
             if registration.trust_tier == "external":
                 fail(
                     f"published external official plugin {plugin_id} must retain every immutable publication "
+                    "evidence event recorded in the trusted baseline in append-only order"
+                )
+            if first_party_has_post_adoption_history(
+                baseline,
+                baseline_registration,
+                state_label="trusted Factory baseline",
+            ):
+                fail(
+                    f"published first-party official plugin {plugin_id} must retain every immutable publication "
                     "evidence event recorded in the trusted baseline in append-only order"
                 )
             fail(
@@ -2370,12 +2430,18 @@ def validate_registry_and_snapshots(
             # Once a split source publishes new bytes, retain the same
             # append-only source evidence/proof used by external packages in
             # addition to (never instead of) its migration adoption.
-            if evidence.exists():
-                proof_document = read_json(adoption_path(root, registration.plugin_id), "first-party adoption proof")
-                proof_legacy = require_object(proof_document.get("legacy"), "first-party adoption proof legacy")
-                adopted_ids = proof_legacy.get("releaseIds")
-                if not isinstance(adopted_ids, list) or not all(isinstance(identifier, str) for identifier in adopted_ids):
-                    fail("first-party adoption proof legacy release IDs are invalid")
+            adopted_ids = adopted_release_ids(root, registration, state_label="current Factory")
+            has_post_adoption_history = first_party_has_post_adoption_history(
+                root,
+                registration,
+                state_label="current Factory",
+            )
+            if has_post_adoption_history and (is_link(evidence) or not evidence.is_file()):
+                fail(
+                    f"first-party plugin {registration.plugin_id} must retain publication evidence "
+                    "after its adopted release history"
+                )
+            if evidence.exists() or is_link(evidence):
                 validate_evidence(root, registration, document, adopted_release_ids=frozenset(adopted_ids))
                 if require_publication_proofs:
                     validate_publication_proof(root, registration)

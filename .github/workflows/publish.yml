@@ -220,7 +220,7 @@ jobs:
           persist-credentials: false
           submodules: false
           lfs: false
-      - name: Prove the exact external commit remains reachable from its registered branch
+      - name: Prove the exact external commit still heads its registered branch
         if: ${{ steps.request.outputs.external == 'true' }}
         env:
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
@@ -263,6 +263,10 @@ jobs:
           # uses only a fixed HTTPS URL, ignores system/global Git config,
           # refuses redirects and all protocols except HTTPS, and writes to a
           # local verified ref rather than a source-controlled remote name.
+          # This job starts only after the shared publication slot is acquired.
+          # A commit that was current when reconcile-source dispatched it must
+          # still be the exact ref head now; ancestry alone would permit a
+          # delayed old Beta to replace a newer delivery.
           env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
             -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
             -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
@@ -280,6 +284,11 @@ jobs:
           unset token_header
           [ "$(git -C .xsec-factory-source rev-parse HEAD)" = "$SOURCE_SHA" ]
           git -C .xsec-factory-source cat-file -e "$SOURCE_SHA^{commit}"
+          verified_head="$(git -C .xsec-factory-source rev-parse refs/remotes/xsec-factory-source/verified)"
+          [ "$verified_head" = "$SOURCE_SHA" ] || {
+            echo "The requested external source SHA no longer heads its registered branch." >&2
+            exit 1
+          }
           git -C .xsec-factory-source merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/xsec-factory-source/verified
           if git -C .xsec-factory-source config --local --no-includes --get-regexp '^http\..*\.extraheader$' >/dev/null; then
             echo "The isolated external checkout retained an HTTP credential." >&2

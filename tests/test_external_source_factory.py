@@ -1292,6 +1292,55 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(releases[0]["releaseId"], old_release_id)
             self.assertEqual(len(releases), 2)
 
+    def test_first_party_post_adoption_evidence_is_required_and_append_only(self) -> None:
+        """Adoption cannot be used to erase source provenance for newer releases."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-followup-evidence-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            self.make_first_party_adoption(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            source = root / "source"
+            shutil.copytree(root / "plugins" / plugin_id, source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
+            manifest_path = source / "plugins" / plugin_id / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(manifest_path, manifest)
+            (source / "plugins" / plugin_id / "frontend.js").write_text(
+                "export function activate() { return 'post-adoption'; }\n",
+                encoding="utf-8",
+            )
+
+            factory.stage_beta(root, plugin_id, source)
+            snapshot = root / "plugins" / plugin_id
+            build_market.build_plugin(snapshot, snapshot)
+            factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
+            write_historical_release_sidecar(root, plugin_id, source_revision="d" * 40)
+            write_publication_proof(root, plugin_id, source_revision="d" * 40)
+            factory.validate_registry_and_snapshots(root)
+
+            baseline = workspace / "trusted-baseline"
+            shutil.copytree(root, baseline)
+            evidence_path = factory.publication_path(root, plugin_id)
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["events"][0]["publisher"] = "rewritten-publisher"
+            write_json(evidence_path, evidence)
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "must retain every immutable publication evidence event",
+            ):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline, require_publication_proofs=False)
+
+            shutil.copy2(factory.publication_path(baseline, plugin_id), evidence_path)
+            proof_document = factory.official_publication_provenance_document(root, plugin_id)
+            publisher.sidecar_path_for(proof_document).unlink()
+            evidence_path.unlink()
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "must retain publication evidence after its adopted release history",
+            ):
+                factory.validate_registry_and_snapshots(root)
+
     def test_reconcile_payload_requires_the_current_registry_binding(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-reconcile-payload-") as directory:
             root = Path(directory)
@@ -1326,12 +1375,32 @@ class ExternalSourceFactoryTests(unittest.TestCase):
     def test_reconcile_workflows_fail_closed_on_actor_payload_and_stale_source_heads(self) -> None:
         source_workflow = (ROOT / ".github" / "workflows" / "reconcile-source.yml").read_text(encoding="utf-8")
         smoke_workflow = (ROOT / ".github" / "workflows" / "reconcile-smoke.yml").read_text(encoding="utf-8")
-        for workflow in (source_workflow, smoke_workflow):
-            self.assertIn("XSEC_FACTORY_DISPATCHER_ACTOR", workflow)
-            self.assertIn("github.ref_protected", workflow)
-            self.assertIn("trigger_kind", workflow)
-            self.assertIn("delivery_key", workflow)
-            self.assertNotIn("workflow_dispatch:", workflow)
+        # xsec-cloud has Actions-dispatch-only authority. It calls exactly this
+        # workflow with the full string contract, and only this entrypoint
+        # verifies the Dispatcher App actor and protected Factory main before
+        # it can route a smoke callback into the reusable workflow.
+        self.assertIn("workflow_dispatch:", source_workflow)
+        self.assertNotIn("repository_dispatch:", source_workflow)
+        self.assertIn("XSEC_FACTORY_DISPATCHER_ACTOR", source_workflow)
+        self.assertIn("github.ref_protected", source_workflow)
+        self.assertIn("uses: ./.github/workflows/reconcile-smoke.yml", source_workflow)
+        for input_name in (
+            "trigger_kind",
+            "delivery_key",
+            "plugin_id",
+            "source_repository",
+            "source_ref",
+            "source_sha",
+            "marketplace_revision",
+            "channel",
+            "smoke_workflow_run_id",
+            "smoke_workflow_run_attempt",
+        ):
+            self.assertIn(f"{input_name}:", source_workflow)
+            self.assertIn(f"inputs.{input_name}", source_workflow)
+        self.assertIn("workflow_call:", smoke_workflow)
+        self.assertNotIn("repository_dispatch:", smoke_workflow)
+        self.assertNotIn("XSEC_FACTORY_DISPATCHER_ACTOR", smoke_workflow)
         self.assertIn("prepare-reconcile-source", source_workflow)
         self.assertIn("ls-remote", source_workflow)
         self.assertIn("Source delivery is stale", source_workflow)
@@ -1351,6 +1420,10 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("smoke_beta_sha", smoke_workflow)
         self.assertIn("smoke_marketplace_revision", publisher_workflow)
         self.assertIn("smoke_run_url", publisher_workflow)
+        self.assertIn("still heads its registered branch", publisher_workflow)
+        self.assertIn('verified_head="$(git -C .xsec-factory-source rev-parse refs/remotes/xsec-factory-source/verified)"', publisher_workflow)
+        self.assertIn('[ "$verified_head" = "$SOURCE_SHA" ]', publisher_workflow)
+        self.assertIn("no longer heads its registered branch", publisher_workflow)
         self.assertIn("smoke_marketplace_revision", smoke_workflow)
         self.assertIn("xSecDesktop/actions/runs/${SMOKE_RUN_ID}", smoke_workflow)
         adoption_workflow = (ROOT / ".github" / "workflows" / "adopt-first-party.yml").read_text(encoding="utf-8")
