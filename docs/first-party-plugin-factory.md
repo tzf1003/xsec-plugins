@@ -105,6 +105,7 @@ python scripts\materialize_first_party_source.py `
 才会读取 artifact。只有明确指定 `--push` 和该插件的精确 GitHub URL 才会写远端。脚本要求远端
 `main` 和 `beta` 都不存在，并用单次 `git push --atomic` 创建两条分支（任何一条不能建立时两条都不写入）。目标预检同样在隔离目录中执行，且会拒绝 candidate repo 中任何 `url.*.insteadOf`/`pushInsteadOf` 条目，避免 Git 将获准 URL 改写到其他仓库；
 若 operator 使用获准的 SSH URL，脚本会覆盖 `GIT_SSH_COMMAND`，以空 SSH 配置、固定 `github.com`/`git`、禁用 ProxyCommand/ProxyJump 和严格的 `github.com` host-key 验证运行；它不会采纳 `~/.ssh/config` 的 `Host` 重写，但仍可使用系统 SSH agent 完成认证。
+Factory checkout 还必须是完整的非 shallow Git 历史，且不得有任何 `refs/replace/*`；每次可信 Factory 历史读取和 `fast-export` 都强制禁用 Git replacement objects，避免相同 `main` SHA 被本地替换对象呈现为其他祖先内容。
 它不读取、打印或保存 token/KMS secret：
 
 ```powershell

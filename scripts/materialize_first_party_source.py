@@ -151,8 +151,35 @@ def run_git(
     return completed
 
 
-def git_stdout(arguments: list[str], *, cwd: Path) -> str:
-    return run_git(arguments, cwd=cwd).stdout.decode("utf-8", errors="strict").strip()
+def git_stdout(
+    arguments: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str] | None = None,
+) -> str:
+    return run_git(arguments, cwd=cwd, environment=environment).stdout.decode("utf-8", errors="strict").strip()
+
+
+def trusted_history_environment() -> dict[str, str]:
+    """Disable replacement objects for every read of Factory Git history.
+
+    ``refs/replace/*`` is a local presentation layer: it can change the tree
+    seen by ``fast-export`` without changing a branch's visible SHA.  The
+    initial source migration binds public ancestry to the protected Factory
+    history, so replacement refs are forbidden and Git's replacement feature
+    stays disabled even if a process environment tries to re-enable it.
+    """
+
+    environment = os.environ.copy()
+    environment.pop("GIT_REPLACE_REF_BASE", None)
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return environment
+
+
+def factory_git_stdout(factory_root: Path, arguments: list[str]) -> str:
+    """Read the trusted Factory worktree with replacement objects disabled."""
+
+    return git_stdout(arguments, cwd=factory_root, environment=trusted_history_environment())
 
 
 def sealed_transport_environment(
@@ -497,27 +524,36 @@ def require_factory_history(factory_root: Path) -> Path:
     root = factory_root.resolve(strict=True)
     if not (root / ".git").exists():
         fail("Factory root must be a Git worktree so filtered plugin history can be retained")
-    top_level = git_stdout(["rev-parse", "--show-toplevel"], cwd=root)
+    top_level = factory_git_stdout(root, ["rev-parse", "--show-toplevel"])
     try:
         resolved_top_level = Path(top_level).resolve(strict=True)
     except OSError as error:
         raise MaterializationError("cannot resolve Factory Git worktree") from error
     if resolved_top_level != root:
         fail("Factory root must be the Git worktree top level")
-    origin = git_stdout(["config", "--get", "remote.origin.url"], cwd=root)
+    origin = factory_git_stdout(root, ["config", "--get", "remote.origin.url"])
     if origin != TRUSTED_FACTORY_ORIGIN:
         fail("Factory origin must be the canonical trusted xsec-plugins GitHub HTTPS remote")
-    main = git_stdout(["rev-parse", "--verify", "main^{commit}"], cwd=root)
+    if factory_git_stdout(root, ["rev-parse", "--is-shallow-repository"]) != "false":
+        fail("materialization requires complete non-shallow Factory history")
+    replacement_refs = factory_git_stdout(root, ["for-each-ref", "--format=%(refname)", "refs/replace/"])
+    if replacement_refs:
+        fail("materialization rejects Factory Git replacement refs")
+    main = factory_git_stdout(root, ["rev-parse", "--verify", "main^{commit}"])
     if not GIT_SHA_PATTERN.fullmatch(main):
         fail("Factory protected main revision is unavailable")
-    origin_main = git_stdout(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], cwd=root)
+    origin_main = factory_git_stdout(root, ["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"])
     if not GIT_SHA_PATTERN.fullmatch(origin_main):
         fail("trusted Factory origin/main revision is unavailable")
     remote_main = trusted_factory_remote_main(root)
-    head = git_stdout(["rev-parse", "--verify", "HEAD^{commit}"], cwd=root)
+    head = factory_git_stdout(root, ["rev-parse", "--verify", "HEAD^{commit}"])
     if head != main or head != origin_main or head != remote_main:
         fail("materialization requires a checkout at the current trusted Factory remote main commit")
-    if run_git(["status", "--porcelain", "--untracked-files=all"], cwd=root).stdout.strip():
+    if run_git(
+        ["status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        environment=trusted_history_environment(),
+    ).stdout.strip():
         fail("materialization requires a clean trusted Factory main checkout")
     return root
 
@@ -551,9 +587,20 @@ def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) 
 
     run_git(["init", "--quiet", "--initial-branch=main", str(repository)], cwd=factory_root)
     export = subprocess.Popen(
-        ["git", "-C", str(factory_root), "fast-export", "--show-original-ids", "main", "--", f"plugins/{plugin_id}"],
+        [
+            "git",
+            "-C",
+            str(factory_root),
+            "--no-replace-objects",
+            "fast-export",
+            "--show-original-ids",
+            "main",
+            "--",
+            f"plugins/{plugin_id}",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=trusted_history_environment(),
     )
     assert export.stdout is not None
     imported = subprocess.run(

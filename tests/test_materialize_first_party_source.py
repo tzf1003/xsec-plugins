@@ -369,6 +369,28 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             self.assertIn('"ls-remote"', script)
             self.assertIn("TRUSTED_FACTORY_ORIGIN", script)
 
+    def test_rejects_factory_replacement_refs_and_shallow_history_before_export(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-replace-") as directory:
+            factory = Path(directory) / "factory"
+            factory.mkdir()
+            self.make_factory(factory)
+            head = git(factory, "rev-parse", "HEAD")
+            git(factory, "update-ref", f"refs/replace/{head}", head)
+            with self.assertRaisesRegex(materializer.MaterializationError, "replacement refs"):
+                materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
+
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-shallow-") as directory:
+            factory = Path(directory) / "factory"
+            factory.mkdir()
+            self.make_factory(factory)
+            head = git(factory, "rev-parse", "HEAD")
+            (factory / ".git" / "shallow").write_text(head + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(materializer.MaterializationError, "non-shallow"):
+                materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
+            script = (SCRIPTS / "materialize_first_party_source.py").read_text(encoding="utf-8")
+            self.assertIn("GIT_NO_REPLACE_OBJECTS", script)
+            self.assertIn('"--no-replace-objects"', script)
+
     def test_rejects_a_retained_release_index_without_a_valid_kms_sidecar(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-unverified-release-") as directory:
             factory = Path(directory) / "factory"
