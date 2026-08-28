@@ -23,6 +23,14 @@ on:
         description: Existing external Beta releaseId. Required only for an external Stable promotion.
         required: false
         type: string
+      smoke_run_url:
+        description: Exact Desktop smoke Actions URL. Accepted only for a smoke-gated external Stable promotion.
+        required: false
+        type: string
+      smoke_marketplace_revision:
+        description: Exact Factory revision that Desktop smoke verified. Accepted only for a smoke-gated external Stable promotion.
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -51,6 +59,8 @@ jobs:
           PLUGIN_ID: ${{ inputs.plugin_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_ID: ${{ inputs.release_id }}
+          SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
+          SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
@@ -77,8 +87,14 @@ jobs:
               echo "External Stable promotion requires release_id." >&2
               exit 1
             fi
+            if [ -n "$SMOKE_RUN_URL" ] || [ -n "$SMOKE_MARKETPLACE_REVISION" ]; then
+              [ "$channel" = "stable" ] && [ -n "$SMOKE_RUN_URL" ] && [ -n "$SMOKE_MARKETPLACE_REVISION" ] || {
+                echo "Smoke outcome metadata is valid only as a complete external Stable promotion pair." >&2
+                exit 1
+              }
+            fi
           else
-            [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] && [ "$channel" = "beta" ] || {
+            [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] && [ -z "$SMOKE_RUN_URL" ] && [ -z "$SMOKE_MARKETPLACE_REVISION" ] && [ "$channel" = "beta" ] || {
               echo "Built-in publication accepts no source_sha/release_id and only the beta channel; provide plugin_id for an external publication." >&2
               exit 1
             }
@@ -323,10 +339,18 @@ jobs:
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
           DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
           FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
+          SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
         run: |
+          set -euo pipefail
+          state=promoting_stable
+          if [ -n "$SMOKE_RUN_URL" ]; then
+            state=published
+          fi
           python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
-            --stable-sha "$SOURCE_SHA" --state promoting_stable --delivery-id "$DELIVERY_ID" \
-            --factory-run-url "$FACTORY_RUN_URL"
+            --stable-sha "$SOURCE_SHA" --state "$state" --delivery-id "$DELIVERY_ID" \
+            --factory-run-url "$FACTORY_RUN_URL" --smoke-run-url "$SMOKE_RUN_URL" \
+            --marketplace-revision "$SMOKE_MARKETPLACE_REVISION"
       - name: Skip a byte-identical external Stable retry without KMS or dispatch
         id: publication-decision
         env:
@@ -346,7 +370,7 @@ jobs:
               exit 1
             }
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
-          elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "beta" ] && git diff --quiet -- .agents/plugins plugins .xsec-factory; then
+          elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "beta" ] && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory)"; then
             # A duplicate source delivery has neither changed the immutable
             # beta record/provenance nor its UI state.  Do not request a new
             # KMS signature or produce a metadata commit for it.

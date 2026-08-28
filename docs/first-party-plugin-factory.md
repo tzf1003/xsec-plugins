@@ -102,3 +102,8 @@ repository/path/refs/betaSha/stableSha、当前 Beta/Stable releaseId，以及
 `waiting_for_beta|building_beta|waiting_for_smoke|promoting_stable|published|failed` 状态、
 delivery、Factory/smoke run URL 和 Marketplace revision（如有）。已标记 `published` 的
 状态必须能回溯到 adoption 或不可变 publication evidence，不能单独宣称某个 release。
+当 `reconcile-smoke` 接受 Desktop 的 Beta smoke 成功回调并触发可重建的 Stable
+推广时，会把该回调的精确 Factory revision 和 Desktop Actions URL 带入 Stable 生成
+PR；只有该 PR 的指针/证据校验通过后，状态才成为终态 `published`。重复 Beta delivery
+使用 `git status --porcelain --untracked-files=all` 检查 Factory 目录，未跟踪的
+provenance/status 文件绝不会被错误地当作可跳过的空操作。

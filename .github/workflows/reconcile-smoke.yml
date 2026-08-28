@@ -69,6 +69,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MARKETPLACE_REVISION: ${{ steps.request.outputs.marketplace_revision }}
+          SMOKE_RUN_ID: ${{ steps.request.outputs.smoke_workflow_run_id }}
         run: |
           set -euo pipefail
           # Read current Registry again, and compare its current beta pointer
@@ -87,5 +88,7 @@ jobs:
             main_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${repository}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
             [ -n "$main_sha" ] || { echo "Cannot resolve registered source main for ${plugin_id}." >&2; exit 1; }
             gh workflow run publish.yml --ref main \
-              -f channel=stable -f plugin_id="$plugin_id" -f source_sha="$main_sha" -f release_id="$current_beta"
+              -f channel=stable -f plugin_id="$plugin_id" -f source_sha="$main_sha" -f release_id="$current_beta" \
+              -f smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/${SMOKE_RUN_ID}" \
+              -f smoke_marketplace_revision="$MARKETPLACE_REVISION"
           done < <(jq -c '.plugins[]' .xsec-factory/official-registry.json)

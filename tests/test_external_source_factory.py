@@ -904,6 +904,46 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             baseline.mkdir()
             factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
+    def test_trusted_baseline_accepts_legacy_v1_external_registry_during_the_v2_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-v1-baseline-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+            baseline = workspace / "trusted-v1-baseline"
+            shutil.copytree(root, baseline)
+            legacy_entry = self.registry_entry()
+            legacy_entry.pop("trustTier")
+            write_json(
+                baseline / ".xsec-factory" / "official-registry.json",
+                {"schemaVersion": 1, "plugins": [legacy_entry]},
+            )
+
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_trusted_pending_first_party_baseline_can_be_activated_only_with_its_adoption(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-pending-baseline-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            self.make_first_party_adoption(root)
+            baseline = workspace / "trusted-pending-baseline"
+            shutil.copytree(root, baseline)
+            pending = self.first_party_entry(status="pending-adoption")
+            write_json(
+                baseline / ".xsec-factory" / "official-registry.json",
+                {"schemaVersion": 2, "plugins": [pending]},
+            )
+            factory.adoption_path(baseline, "com.xsec.workspace.sub-agent").unlink()
+            (baseline / factory.ADOPTION_PROOFS_RELATIVE_PATH / "com.xsec.workspace.sub-agent.json").unlink()
+
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+            disabled = self.first_party_entry(status="disabled")
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": [disabled]})
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must remain pending or be activated"):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_snapshot_root_rejects_symlink_entries_before_ownership_checks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-snapshot-link-") as directory:
             root = Path(directory)
@@ -1181,7 +1221,13 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("release_id=\"$current_beta\"", smoke_workflow)
         publisher_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
         self.assertIn("duplicate source delivery", publisher_workflow)
+        self.assertIn("git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory", publisher_workflow)
         self.assertIn("Record Factory Beta state", publisher_workflow)
+        self.assertIn("state=published", publisher_workflow)
+        self.assertIn("smoke_marketplace_revision", publisher_workflow)
+        self.assertIn("smoke_run_url", publisher_workflow)
+        self.assertIn("smoke_marketplace_revision", smoke_workflow)
+        self.assertIn("xSecDesktop/actions/runs/${SMOKE_RUN_ID}", smoke_workflow)
         adoption_workflow = (ROOT / ".github" / "workflows" / "adopt-first-party.yml").read_text(encoding="utf-8")
         self.assertIn("prepare-adoption", adoption_workflow)
         self.assertIn("adopt-first-party", adoption_workflow)

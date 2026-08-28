@@ -554,18 +554,41 @@ def parse_registration(value: object, index: int) -> Registration:
     )
 
 
-def load_registry(root: Path) -> tuple[Registration, ...]:
+def load_registry(root: Path, *, allow_legacy_v1: bool = False) -> tuple[Registration, ...]:
+    """Load current Registry v2, optionally reading a trusted v1 baseline.
+
+    The protected source gate compares a proposed v2 migration with the
+    previous protected commit.  That parent legitimately has Registry v1,
+    whose rows are exactly the old restrictive external shape.  Current
+    Factory input must still be v2; this narrow compatibility path exists
+    only for a separately materialized trusted baseline.
+    """
+
     path = root / REGISTRY_RELATIVE_PATH
     if is_link(path.parent):
         fail("official external registry directory must not be a symbolic link")
     document = read_json(path, "official Factory registry")
     require_exact_keys(document, {"schemaVersion", "plugins"}, "official Factory registry")
-    if document.get("schemaVersion") != 2:
+    schema_version = document.get("schemaVersion")
+    if schema_version not in {1, 2}:
+        fail("official Factory registry schemaVersion must be 2")
+    if schema_version == 1 and not allow_legacy_v1:
         fail("official Factory registry schemaVersion must be 2")
     raw_plugins = document.get("plugins")
     if not isinstance(raw_plugins, list):
         fail("official Factory registry plugins must be a list")
-    registrations = tuple(parse_registration(item, index) for index, item in enumerate(raw_plugins))
+    if schema_version == 1:
+        def legacy_entry(value: object, index: int) -> Registration:
+            legacy_label = f"trusted Factory baseline Registry v1 plugin at index {index}"
+            entry = require_object(value, legacy_label)
+            require_exact_keys(entry, {"pluginId", "source", "policy", "category", "status"}, legacy_label)
+            v2_entry = dict(entry)
+            v2_entry["trustTier"] = "external"
+            return parse_registration(v2_entry, index)
+
+        registrations = tuple(legacy_entry(item, index) for index, item in enumerate(raw_plugins))
+    else:
+        registrations = tuple(parse_registration(item, index) for index, item in enumerate(raw_plugins))
     identifiers = [item.plugin_id for item in registrations]
     if len(identifiers) != len(set(identifiers)):
         fail("official Factory registry contains duplicate plugin IDs")
@@ -1952,7 +1975,7 @@ def validate_trusted_baseline_continuity(
         # remains subject to the strict append-only checks below.
         return
 
-    baseline_registrations = load_registry(baseline)
+    baseline_registrations = load_registry(baseline, allow_legacy_v1=True)
     baseline_histories = published_release_history(
         baseline,
         baseline_registrations,
@@ -1997,6 +2020,20 @@ def validate_trusted_baseline_continuity(
                 f"published external official plugin {plugin_id} must retain every immutable release "
                 "recorded in the trusted baseline in append-only order"
             )
+        # The protected materializer first adds an exact first-party Registry
+        # v2 row as pending-adoption. Its retained Marketplace snapshot and
+        # release history predate the adoption proof by design; the following
+        # protected adoption PR supplies that KMS-bound proof. Do not demand a
+        # proof that cannot exist in this precise baseline state, but keep all
+        # identity and append-only release checks above and forbid unrelated
+        # state transitions from using this exception.
+        if baseline_registration.trust_tier == "first-party" and baseline_registration.status == "pending-adoption":
+            if registration.status not in {"pending-adoption", "active"}:
+                fail(
+                    f"pending first-party official plugin {plugin_id} must remain pending or be activated "
+                    "with an immutable adoption proof"
+                )
+            continue
         baseline_events = ownership_history(
             baseline,
             baseline_registration,
