@@ -2688,8 +2688,49 @@ def validate_trusted_baseline_continuity(
             baseline_registration,
             state_label="trusted Factory baseline",
         )
+        current_status = status_beta_identity(root, registration, state_label="current Factory")
+        if baseline_status is not None and baseline_status[0] in {"waiting_for_smoke", "promoting_stable"}:
+            # A smoke callback needs its preceding Factory status to bind the
+            # Beta source/release identity. Do not let an ordinary PR delete
+            # or replace that in-flight state with a cosmetic failure record.
+            # A newer Beta is the sole nonterminal replacement: it must have
+            # an appended exact provenance event, which supersedes the old
+            # callback rather than stranding it.
+            if current_status is None:
+                fail(
+                    f"in-flight official Factory plugin {plugin_id} must retain its smoke-gated Factory status "
+                    "recorded in the trusted baseline"
+                )
+            if current_status[0] == "published":
+                # Full status validation below requires the KMS-bound smoke
+                # outcome, so a genuine terminal completion is allowed.
+                continue
+            if current_status == baseline_status:
+                continue
+            if (
+                baseline_status[0] == "waiting_for_smoke"
+                and current_status[0] == "promoting_stable"
+                and current_status[1:] == baseline_status[1:]
+            ):
+                continue
+            if (
+                current_status[0] == "waiting_for_smoke"
+                and current_status[1] is not None
+                and current_status[2] is not None
+                and current_status[1:] != baseline_status[1:]
+                and appended_beta_provenance_matches(
+                    baseline_events,
+                    current_events,
+                    beta_release_id=current_status[1],
+                    beta_sha=current_status[2],
+                )
+            ):
+                continue
+            fail(
+                f"in-flight official Factory plugin {plugin_id} must retain its smoke-gated Factory status "
+                "unless an exact new Beta smoke cycle is recorded by appended immutable provenance"
+            )
         if baseline_status is not None and baseline_status[0] == "published":
-            current_status = status_beta_identity(root, registration, state_label="current Factory")
             if current_status is not None and current_status[0] == "published":
                 # A later smoke-gated Stable promotion legitimately replaces
                 # the one current Desktop status with a newer terminal tuple;

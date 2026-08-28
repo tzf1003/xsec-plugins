@@ -921,6 +921,42 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             baseline = workspace / "trusted-before-smoke"
             shutil.copytree(root, baseline)
 
+            # A pending Desktop callback requires this source/release binding
+            # to remain present. Without it, complete_smoke_status cannot
+            # prove that the callback belongs to the current Beta.
+            pending_status_path = factory.status_path(root, PLUGIN_ID)
+            pending_status = pending_status_path.read_bytes()
+            pending_status_path.unlink()
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "retain its smoke-gated Factory status"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    baseline_root=baseline,
+                    require_publication_proofs=False,
+                )
+            pending_status_path.write_bytes(pending_status)
+
+            # The only same-Beta lifecycle advance is waiting -> promoting;
+            # promoting must never be rewritten back to waiting by a PR.
+            pending = json.loads(pending_status_path.read_text(encoding="utf-8"))
+            pending["publication"]["state"] = "promoting_stable"
+            write_json(pending_status_path, pending)
+            factory.validate_trusted_baseline_continuity(
+                root,
+                factory.load_registry(root),
+                baseline,
+            )
+            promoting_baseline = workspace / "trusted-promoting-smoke"
+            shutil.copytree(root, promoting_baseline)
+            pending["publication"]["state"] = "waiting_for_smoke"
+            write_json(pending_status_path, pending)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "unless an exact new Beta smoke cycle"):
+                factory.validate_trusted_baseline_continuity(
+                    root,
+                    factory.load_registry(root),
+                    promoting_baseline,
+                )
+            pending_status_path.write_bytes(pending_status)
+
             factory.complete_smoke_status(
                 root,
                 PLUGIN_ID,
