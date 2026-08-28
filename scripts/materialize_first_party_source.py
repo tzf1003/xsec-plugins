@@ -32,8 +32,9 @@ import sys
 import tempfile
 import zipfile
 
-from build_market import RELEASE_ID_PATTERN, load_release_document
+from build_market import RELEASE_ID_PATTERN, is_link, load_release_document
 from external_source_factory import FIRST_PARTY_APPROVED_SOURCES
+from kms_marketplace_publisher import MarketplaceDocument, MarketplaceKmsPublisherError, verify_historical_sidecar_signature
 from validate_market import validate_archive, validate_zip_member
 
 
@@ -192,6 +193,24 @@ def selected_release_artifact(factory_root: Path, plugin_id: str, channel: str) 
     return record, path
 
 
+def verify_retained_release_signature(factory_root: Path, plugin_id: str) -> None:
+    """Authenticate the exact release index before using any artifact it names."""
+
+    release_path = factory_root / "plugins" / plugin_id / ".xsec-market" / "releases.json"
+    sidecar = release_path.with_name("releases.json.sig.jws.json")
+    if is_link(release_path) or is_link(sidecar) or not release_path.is_file() or not sidecar.is_file():
+        fail("retained release history and its KMS sidecar must be regular files")
+    document = MarketplaceDocument(
+        "xsec.plugin-marketplace.release",
+        f"plugins/{plugin_id}/.xsec-market/releases.json",
+        release_path,
+    )
+    try:
+        verify_historical_sidecar_signature(sidecar.read_bytes(), document)
+    except (OSError, MarketplaceKmsPublisherError) as error:
+        raise MaterializationError("retained release KMS sidecar is invalid") from error
+
+
 def source_member_is_forbidden(path: PurePosixPath) -> bool:
     return ".xsec-market" in path.parts or path.name.endswith(FORBIDDEN_SOURCE_SUFFIXES)
 
@@ -290,6 +309,14 @@ def require_factory_history(factory_root: Path) -> Path:
     main = git_stdout(["rev-parse", "--verify", "main^{commit}"], cwd=root)
     if not GIT_SHA_PATTERN.fullmatch(main):
         fail("Factory protected main revision is unavailable")
+    origin_main = git_stdout(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], cwd=root)
+    if not GIT_SHA_PATTERN.fullmatch(origin_main):
+        fail("trusted Factory origin/main revision is unavailable")
+    head = git_stdout(["rev-parse", "--verify", "HEAD^{commit}"], cwd=root)
+    if head != main or head != origin_main:
+        fail("materialization requires a checkout at the trusted Factory main commit")
+    if run_git(["status", "--porcelain", "--untracked-files=all"], cwd=root).stdout.strip():
+        fail("materialization requires a clean trusted Factory main checkout")
     return root
 
 
@@ -468,6 +495,7 @@ def materialize_repository(factory_root: Path, plugin_id: str, repository: Path)
     factory_root = require_factory_history(factory_root)
     if repository.exists():
         fail("materialization repository path must not already exist")
+    verify_retained_release_signature(factory_root, plugin_id)
     beta_record, beta_artifact = selected_release_artifact(factory_root, plugin_id, "beta")
     stable_record, stable_artifact = selected_release_artifact(factory_root, plugin_id, "stable")
     history = filter_legacy_history(factory_root, plugin_id, repository)
@@ -509,6 +537,7 @@ def push_candidate(repository: Path, plugin_id: str, target: str) -> None:
     run_git(
         [
             "push",
+            "--atomic",
             "--porcelain",
             "--no-verify",
             canonical_target,

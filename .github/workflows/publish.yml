@@ -332,25 +332,33 @@ jobs:
           python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
             --beta-sha "$SOURCE_SHA" --state waiting_for_smoke --delivery-id "$DELIVERY_ID" \
             --factory-run-url "$FACTORY_RUN_URL"
-      - name: Record Factory Stable state for Desktop status consumers
-        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' && steps.external-stable.outputs.changed == 'true' }}
+      - name: Record terminal smoke-verified Factory state for Desktop status consumers
+        # This runs even when channels.stable already points at the selected
+        # release. A duplicate/late smoke callback must repair a prior
+        # waiting_for_smoke state, while complete-smoke-status keeps an
+        # already-published identical outcome idempotent.
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
           DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
           FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
           SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
         run: |
           set -euo pipefail
-          state=promoting_stable
           if [ -n "$SMOKE_RUN_URL" ]; then
-            state=published
+            python scripts/external_source_factory.py complete-smoke-status --plugin-id "$PLUGIN_ID" \
+              --beta-release-id "$RELEASE_ID" --stable-sha "$SOURCE_SHA" --delivery-id "$DELIVERY_ID" \
+              --smoke-run-url "$SMOKE_RUN_URL" --marketplace-revision "$SMOKE_MARKETPLACE_REVISION"
+          else
+            # The guarded manual recovery path remains observable but must
+            # never claim a verified Desktop smoke outcome.
+            python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
+              --stable-sha "$SOURCE_SHA" --state promoting_stable --delivery-id "$DELIVERY_ID" \
+              --factory-run-url "$FACTORY_RUN_URL"
           fi
-          python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
-            --stable-sha "$SOURCE_SHA" --state "$state" --delivery-id "$DELIVERY_ID" \
-            --factory-run-url "$FACTORY_RUN_URL" --smoke-run-url "$SMOKE_RUN_URL" \
-            --marketplace-revision "$SMOKE_MARKETPLACE_REVISION"
       - name: Skip a byte-identical external Stable retry without KMS or dispatch
         id: publication-decision
         env:
@@ -359,9 +367,13 @@ jobs:
           STABLE_CHANGED: ${{ steps.external-stable.outputs.changed }}
         run: |
           set -euo pipefail
-          if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ] && [ "$STABLE_CHANGED" != "true" ]; then
+          if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ] && [ "$STABLE_CHANGED" != "true" ] \
+            && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory)"; then
             # A no-op must still prove the already-selected pointer has
             # immutable Factory evidence, but it must leave no output to sign.
+            # In particular, a late smoke callback that turned the status
+            # terminal is a real, signed Factory update even when the Stable
+            # pointer was already selected.
             python scripts/external_source_factory.py validate
             git diff --exit-code
             test -z "$(git status --porcelain --untracked-files=all)" || {

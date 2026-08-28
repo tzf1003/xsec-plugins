@@ -1602,6 +1602,94 @@ def record_status(
     return {"plugin_id": registration.plugin_id, "state": state}
 
 
+def complete_smoke_status(
+    root: Path,
+    plugin_id: str,
+    *,
+    beta_release_id: str,
+    stable_sha: str | None,
+    delivery_id: str,
+    smoke_run_url: str,
+    marketplace_revision: str,
+) -> dict[str, str]:
+    """Write a terminal Beta-smoke status without accepting caller source data.
+
+    ``reconcile-smoke`` has already established that ``marketplace_revision``
+    is retained Factory main and that its Beta pointer still matches the
+    current one. This function repeats the local pointer/status binding so a
+    callback cannot overwrite the recorded Beta source SHA or Factory run URL
+    while merely supplying a plausible display record.  ``stable_sha`` is
+    supplied only by the protected Stable publisher after it has independently
+    rebuilt this exact Beta release from the registered source ``main`` head.
+    """
+
+    registration = registration_for(root, plugin_id)
+    if not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id):
+        fail("completed smoke Beta release ID must be canonical")
+    path = status_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail("completed smoke status requires the prior Factory Beta status")
+    existing = read_json(path, f"official Factory status for {registration.plugin_id}")
+    require_exact_keys(
+        existing,
+        {"schemaVersion", "pluginId", "trustTier", "source", "release", "publication"},
+        "completed smoke status",
+    )
+    if (
+        existing.get("schemaVersion") != 1
+        or existing.get("pluginId") != registration.plugin_id
+        or existing.get("trustTier") != registration.trust_tier
+    ):
+        fail("completed smoke status has an invalid identity")
+    source = require_object(existing.get("source"), "completed smoke status source")
+    require_exact_keys(source, {"repository", "path", "refs", "betaSha", "stableSha"}, "completed smoke status source")
+    refs = require_object(source.get("refs"), "completed smoke status source.refs")
+    require_exact_keys(refs, {"beta", "stable"}, "completed smoke status source.refs")
+    if (
+        source.get("repository") != registration.repository
+        or source.get("path") != registration.source_path.as_posix()
+        or refs.get("beta") != registration.beta_ref
+        or refs.get("stable") != registration.stable_ref
+    ):
+        fail("completed smoke status source does not match the official registry")
+    beta_sha = optional_sha(source.get("betaSha"), "completed smoke status betaSha")
+    prior_stable_sha = optional_sha(source.get("stableSha"), "completed smoke status stableSha")
+    if beta_sha is None:
+        fail("completed smoke status has no Beta source SHA")
+    release = require_object(existing.get("release"), "completed smoke status release")
+    require_exact_keys(release, {"betaReleaseId", "stableReleaseId"}, "completed smoke status release")
+    if release.get("betaReleaseId") != beta_release_id:
+        fail("completed smoke status Beta release does not match the current Factory status")
+    publication = require_object(existing.get("publication"), "completed smoke status publication")
+    require_exact_keys(
+        publication,
+        {"state", "deliveryId", "factoryRunUrl", "smokeRunUrl", "marketplaceRevision"},
+        "completed smoke status publication",
+    )
+    if publication.get("state") not in {"waiting_for_smoke", "promoting_stable", "published"}:
+        fail("completed smoke status does not represent a smoke-gated publication")
+    factory_run_url = optional_url(publication.get("factoryRunUrl"), "completed smoke status factoryRunUrl")
+    current_release = release_path(root, registration.plugin_id)
+    try:
+        current_document = load_release_document(current_release, registration.plugin_id)
+    except ValueError as error:
+        raise ExternalSourceFactoryError(str(error)) from error
+    current_beta, _ = release_channels(current_document)
+    if current_beta != beta_release_id:
+        fail("completed smoke status Beta release does not match immutable release metadata")
+    return record_status(
+        root,
+        registration.plugin_id,
+        beta_sha=beta_sha,
+        stable_sha=optional_sha(stable_sha, "completed smoke status stableSha") if stable_sha is not None else prior_stable_sha,
+        state="published",
+        delivery_id=delivery_id,
+        factory_run_url=factory_run_url,
+        smoke_run_url=smoke_run_url,
+        marketplace_revision=marketplace_revision,
+    )
+
+
 def validate_status(root: Path, registration: Registration) -> None:
     path = status_path(root, registration.plugin_id)
     if not path.exists():
@@ -2306,6 +2394,13 @@ def main() -> None:
     status_parser.add_argument("--factory-run-url")
     status_parser.add_argument("--smoke-run-url")
     status_parser.add_argument("--marketplace-revision")
+    complete_status_parser = commands.add_parser("complete-smoke-status")
+    complete_status_parser.add_argument("--plugin-id", required=True)
+    complete_status_parser.add_argument("--beta-release-id", required=True)
+    complete_status_parser.add_argument("--stable-sha")
+    complete_status_parser.add_argument("--delivery-id", required=True)
+    complete_status_parser.add_argument("--smoke-run-url", required=True)
+    complete_status_parser.add_argument("--marketplace-revision", required=True)
     source_reconcile_parser = commands.add_parser("prepare-reconcile-source")
     source_reconcile_parser.add_argument("--delivery-key", required=True)
     source_reconcile_parser.add_argument("--plugin-id", required=True)
@@ -2370,6 +2465,16 @@ def main() -> None:
                 state=args.state,
                 delivery_id=args.delivery_id,
                 factory_run_url=args.factory_run_url,
+                smoke_run_url=args.smoke_run_url,
+                marketplace_revision=args.marketplace_revision,
+            )
+        elif args.command == "complete-smoke-status":
+            result = complete_smoke_status(
+                root,
+                args.plugin_id,
+                beta_release_id=args.beta_release_id,
+                stable_sha=args.stable_sha,
+                delivery_id=args.delivery_id,
                 smoke_run_url=args.smoke_run_url,
                 marketplace_revision=args.marketplace_revision,
             )

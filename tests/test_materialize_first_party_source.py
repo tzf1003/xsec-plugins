@@ -6,7 +6,10 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +41,11 @@ def git(root: Path, *arguments: str) -> str:
 
 class FirstPartySourceMaterializerTests(unittest.TestCase):
     maxDiff = None
+
+    def setUp(self) -> None:
+        verifier = patch.object(materializer, "verify_historical_sidecar_signature", return_value="a" * 40)
+        verifier.start()
+        self.addCleanup(verifier.stop)
 
     def manifest(self, version: str) -> dict[str, object]:
         return {
@@ -88,6 +96,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 },
             },
         )
+        (plugin / ".xsec-market" / "releases.json.sig.jws.json").write_text("test-sidecar", encoding="utf-8")
         write_json(plugin / "plugin.json", self.manifest("1.1.0"))
         write_json(plugin / ".codex-plugin" / "plugin.json", {"name": PLUGIN_ID, "version": "1.1.0"})
         (plugin / "frontend.js").write_text("export function activate() {}\n", encoding="utf-8")
@@ -115,6 +124,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
         git(root, "config", "user.email", "factory-test@example.invalid")
         git(root, "add", "--all")
         git(root, "commit", "--quiet", "-m", "feat: retain plugin source history")
+        git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
         return stable, beta
 
     def test_materializes_exact_stable_and_beta_source_branches_with_filtered_history(self) -> None:
@@ -148,16 +158,14 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             factory = Path(directory) / "factory"
             factory.mkdir()
             self.make_factory(factory)
-            completed = subprocess.run(
-                [sys.executable, str(SCRIPTS / "materialize_first_party_source.py"), "--root", str(factory), "--plugin-id", PLUGIN_ID],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True,
-            )
-            result = json.loads(completed.stdout.decode("utf-8"))
+            output = StringIO()
+            errors = StringIO()
+            with patch.object(sys, "argv", [str(SCRIPTS / "materialize_first_party_source.py"), "--root", str(factory), "--plugin-id", PLUGIN_ID]), redirect_stdout(output), redirect_stderr(errors):
+                self.assertEqual(materializer.main(), 0)
+            result = json.loads(output.getvalue())
             self.assertEqual(set(result), {"sourceCommits", "pendingAdoptionRegistry"})
             self.assertEqual(result["pendingAdoptionRegistry"]["status"], "pending-adoption")
-            self.assertEqual(completed.stderr, b"")
+            self.assertEqual(errors.getvalue(), "")
 
     def test_rejects_unsafe_artifact_member_before_extracting_source(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-traversal-") as directory:
@@ -177,6 +185,8 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
         self.assertEqual(materializer.require_exact_target(PLUGIN_ID, expected), expected)
         with self.assertRaisesRegex(materializer.MaterializationError, "exact approved public GitHub repository"):
             materializer.require_exact_target(PLUGIN_ID, "https://github.com/tzf1003/xsec-plugin-approvals.git")
+        script = (SCRIPTS / "materialize_first_party_source.py").read_text(encoding="utf-8")
+        self.assertIn('"--atomic"', script)
 
     def test_rejects_an_artifact_that_no_longer_matches_the_retained_sha256(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-digest-") as directory:
@@ -187,7 +197,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             artifact.write_bytes(artifact.read_bytes() + b"changed")
 
             with self.assertRaisesRegex(materializer.MaterializationError, "SHA-256 does not match"):
-                materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
+                materializer.selected_release_artifact(factory, PLUGIN_ID, "beta")
 
     def test_filter_index_removes_factory_only_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-index-") as directory:
@@ -209,6 +219,35 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             finally:
                 os.chdir(previous)
             self.assertEqual(git(root, "ls-files"), f"plugins/{PLUGIN_ID}/frontend.js")
+
+    def test_rejects_dirty_or_non_main_factory_input_before_reading_release_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-trusted-main-") as directory:
+            factory = Path(directory) / "factory"
+            factory.mkdir()
+            self.make_factory(factory)
+            (factory / "untrusted.txt").write_text("dirty", encoding="utf-8")
+            with self.assertRaisesRegex(materializer.MaterializationError, "clean trusted Factory main"):
+                materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
+            (factory / "untrusted.txt").unlink()
+            git(factory, "checkout", "--quiet", "-b", "untrusted")
+            (factory / "untrusted.txt").write_text("different commit", encoding="utf-8")
+            git(factory, "add", "untrusted.txt")
+            git(factory, "commit", "--quiet", "-m", "untrusted local main lookalike")
+            with self.assertRaisesRegex(materializer.MaterializationError, "trusted Factory main commit"):
+                materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
+
+    def test_rejects_a_retained_release_index_without_a_valid_kms_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-unverified-release-") as directory:
+            factory = Path(directory) / "factory"
+            factory.mkdir()
+            self.make_factory(factory)
+            with patch.object(
+                materializer,
+                "verify_historical_sidecar_signature",
+                side_effect=materializer.MarketplaceKmsPublisherError("signature mismatch"),
+            ):
+                with self.assertRaisesRegex(materializer.MaterializationError, "retained release KMS sidecar is invalid"):
+                    materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
 
 
 if __name__ == "__main__":

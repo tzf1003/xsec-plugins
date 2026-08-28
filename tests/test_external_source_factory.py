@@ -1147,6 +1147,64 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(duplicate["unchanged"], "true")
             self.assertEqual(status["publication"]["deliveryId"], "delivery-1")
 
+    def test_smoke_completion_marks_an_already_promoted_release_published_idempotently(self) -> None:
+        """A late smoke callback must not leave Desktop at waiting_for_smoke."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-smoke-terminal-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, self.make_source(root / "source"))
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-delivery",
+                factory_run_url="https://github.com/acme/factory/actions/runs/100",
+            )
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+
+            completed = factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="smoke-delivery",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/200",
+                marketplace_revision="c" * 40,
+            )
+            duplicate = factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="late-smoke-delivery",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/201",
+                marketplace_revision="c" * 40,
+            )
+            status = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertEqual(completed["state"], "published")
+            self.assertEqual(duplicate["unchanged"], "true")
+            self.assertEqual(status["source"]["betaSha"], BETA_SHA)
+            self.assertEqual(status["source"]["stableSha"], STABLE_SHA)
+            self.assertEqual(status["publication"]["state"], "published")
+            self.assertEqual(status["publication"]["deliveryId"], "smoke-delivery")
+            self.assertEqual(status["publication"]["factoryRunUrl"], "https://github.com/acme/factory/actions/runs/100")
+            self.assertEqual(status["publication"]["smokeRunUrl"], "https://github.com/tzf1003/xSecDesktop/actions/runs/200")
+            self.assertEqual(status["publication"]["marketplaceRevision"], "c" * 40)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the current Factory status"):
+                factory.complete_smoke_status(
+                    root,
+                    PLUGIN_ID,
+                    beta_release_id="sha256-" + "0" * 64,
+                    stable_sha=STABLE_SHA,
+                    delivery_id="wrong-release",
+                    smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/202",
+                    marketplace_revision="c" * 40,
+                )
+
     def test_first_party_beta_after_adoption_appends_history_without_rewriting_the_adopted_prefix(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-followup-beta-") as directory:
             root = Path(directory)
@@ -1223,7 +1281,9 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("duplicate source delivery", publisher_workflow)
         self.assertIn("git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory", publisher_workflow)
         self.assertIn("Record Factory Beta state", publisher_workflow)
-        self.assertIn("state=published", publisher_workflow)
+        self.assertIn("complete-smoke-status", publisher_workflow)
+        self.assertIn("--stable-sha \"$SOURCE_SHA\"", publisher_workflow)
+        self.assertIn("already-published identical outcome idempotent", publisher_workflow)
         self.assertIn("smoke_marketplace_revision", publisher_workflow)
         self.assertIn("smoke_run_url", publisher_workflow)
         self.assertIn("smoke_marketplace_revision", smoke_workflow)
