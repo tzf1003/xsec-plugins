@@ -88,7 +88,10 @@ plugins/<plugin-id>/
 `plugins/<plugin-id>`，再在每个历史 commit 的 index 中移除 `.xsec-market`、
 `.xsec-plugin` 和 `.sig.jws.json`。生成后会删除 filter 的 original refs、过期 reflog
 并执行 GC；两条最终分支再次断言没有 Marketplace metadata、artifact 或 signature。
-它不执行插件代码、不会写 adoption/proof，也不会改 Registry。
+候选 Git 仓库用私有空 `--template` 初始化，持久及逐命令强制 `core.hooksPath` 指向 null device，
+并屏蔽 global/system Git config，所以 operator 的 `init.templateDir`、模板 hook 或 hook path 不能在
+checkout/filter/commit 时改写源码。每个最终 branch 在推送前还逐文件比对为“已签名 artifact + 固定
+README/CI”精确树，任何模板残留或本地篡改都会拒绝。它不执行插件代码、不会写 adoption/proof，也不会改 Registry。
 
 默认是临时目录 dry-run，stdout **只有**候选 source SHA 与可提交到 Factory PR 的
 `pending-adoption` Registry v2 行：

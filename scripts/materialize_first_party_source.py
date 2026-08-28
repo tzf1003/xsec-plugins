@@ -240,6 +240,53 @@ def sealed_transport_arguments(*, protocols: tuple[str, ...]) -> list[str]:
     return arguments
 
 
+def candidate_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Seal all Git configuration used while constructing a public source tree.
+
+    The candidate starts life on the operator's machine.  Global/system
+    configuration must not choose a template, hook path, replacement object,
+    credential helper, or other process behavior while its commits are made.
+    The candidate never needs a transport until the separately sealed push.
+    """
+
+    environment = sealed_transport_environment(protocols=())
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment.pop("GIT_REPLACE_REF_BASE", None)
+    if extra is not None:
+        environment.update(extra)
+    return environment
+
+
+def candidate_git_arguments(arguments: list[str]) -> list[str]:
+    """Force every candidate-repository Git command to ignore all hooks."""
+
+    return ["-c", f"core.hooksPath={os.devnull}", *arguments]
+
+
+def candidate_run_git(
+    arguments: list[str],
+    *,
+    cwd: Path,
+    input_bytes: bytes | None = None,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    return run_git(
+        candidate_git_arguments(arguments),
+        cwd=cwd,
+        input_bytes=input_bytes,
+        environment=candidate_environment(environment),
+    )
+
+
+def candidate_git_stdout(
+    arguments: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str] | None = None,
+) -> str:
+    return candidate_run_git(arguments, cwd=cwd, environment=environment).stdout.decode("utf-8", errors="strict").strip()
+
+
 def assert_no_local_url_rewrites(repository: Path) -> None:
     """Fail if the temporary source repository can rewrite a remote URL.
 
@@ -585,7 +632,21 @@ def filter_index_paths(plugin_id: str) -> int:
 def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) -> str:
     """Import main's path-limited history and remove Factory-only files in every commit."""
 
-    run_git(["init", "--quiet", "--initial-branch=main", str(repository)], cwd=factory_root)
+    # Never inherit ``init.templateDir``.  A caller-controlled template can
+    # carry post-checkout hooks which would run while the candidate branch is
+    # assembled.  The private empty directory is explicit even though the
+    # candidate environment also suppresses global/system configuration.
+    try:
+        with tempfile.TemporaryDirectory(prefix=".xsec-empty-git-template-", dir=str(repository.parent)) as template:
+            candidate_run_git(
+                ["init", "--quiet", "--initial-branch=main", f"--template={template}", str(repository)],
+                cwd=factory_root,
+            )
+    except OSError as error:
+        raise MaterializationError("cannot create a controlled empty Git template directory") from error
+    # Persist the disabled hook path for the filter subprocesses as well as
+    # forcing it on each top-level Candidate Git command below.
+    candidate_run_git(["config", "--local", "core.hooksPath", os.devnull], cwd=repository)
     export = subprocess.Popen(
         [
             "git",
@@ -604,10 +665,11 @@ def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) 
     )
     assert export.stdout is not None
     imported = subprocess.run(
-        ["git", "-C", str(repository), "fast-import", "--quiet"],
+        ["git", *candidate_git_arguments(["-C", str(repository), "fast-import", "--quiet"])],
         stdin=export.stdout,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=candidate_environment(),
         check=False,
     )
     export.stdout.close()
@@ -620,13 +682,13 @@ def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) 
     if export_status or imported.returncode:
         detail = (export_stderr + imported.stderr).decode("utf-8", errors="replace").strip()
         fail(f"cannot import filtered legacy plugin history: {detail or 'unknown error'}")
-    if not git_stdout(["rev-parse", "--verify", "refs/heads/main^{commit}"], cwd=repository):
+    if not candidate_git_stdout(["rev-parse", "--verify", "refs/heads/main^{commit}"], cwd=repository):
         fail("Factory main has no retained history for the selected plugin")
     # fast-import populates refs and the index but does not necessarily create
     # a matching working tree. filter-branch refuses even an index-only delta,
     # so explicitly establish a clean checkout before its per-commit filter.
-    run_git(["checkout", "--quiet", "--force", "main"], cwd=repository)
-    run_git(["reset", "--hard", "--quiet", "refs/heads/main"], cwd=repository)
+    candidate_run_git(["checkout", "--quiet", "--force", "main"], cwd=repository)
+    candidate_run_git(["reset", "--hard", "--quiet", "refs/heads/main"], cwd=repository)
 
     script = Path(__file__).resolve().as_posix()
     python = Path(sys.executable).resolve().as_posix()
@@ -634,25 +696,25 @@ def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) 
         shlex.quote(value)
         for value in (python, script, "--filter-index", "--plugin-id", plugin_id)
     )
-    environment = os.environ.copy()
+    environment = candidate_environment()
     environment["FILTER_BRANCH_SQUELCH_WARNING"] = "1"
-    run_git(
+    candidate_run_git(
         ["filter-branch", "--force", "--prune-empty", "--index-filter", index_filter, "--", "refs/heads/main"],
         cwd=repository,
         environment=environment,
     )
-    original_refs = git_stdout(["for-each-ref", "--format=%(refname)", "refs/original/"], cwd=repository)
+    original_refs = candidate_git_stdout(["for-each-ref", "--format=%(refname)", "refs/original/"], cwd=repository)
     for reference in (line for line in original_refs.splitlines() if line):
-        run_git(["update-ref", "-d", reference], cwd=repository)
-    run_git(["reflog", "expire", "--expire=now", "--all"], cwd=repository)
-    run_git(["gc", "--prune=now"], cwd=repository)
-    history = git_stdout(["rev-parse", "--verify", "refs/heads/main^{commit}"], cwd=repository)
+        candidate_run_git(["update-ref", "-d", reference], cwd=repository)
+    candidate_run_git(["reflog", "expire", "--expire=now", "--all"], cwd=repository)
+    candidate_run_git(["gc", "--prune=now"], cwd=repository)
+    history = candidate_git_stdout(["rev-parse", "--verify", "refs/heads/main^{commit}"], cwd=repository)
     assert_no_factory_content(repository, "refs/heads/main")
     return history
 
 
 def assert_no_factory_content(repository: Path, reference: str) -> None:
-    paths = git_stdout(["ls-tree", "-r", "--name-only", reference], cwd=repository).splitlines()
+    paths = candidate_git_stdout(["ls-tree", "-r", "--name-only", reference], cwd=repository).splitlines()
     for value in paths:
         path = PurePosixPath(value)
         if source_member_is_forbidden(path):
@@ -686,14 +748,82 @@ def write_standard_layout(repository: Path, plugin_id: str) -> None:
     ci.write_text(workflow, encoding="utf-8", newline="\n")
 
 
+def regular_file_hashes(root: Path) -> dict[str, str]:
+    """Return a canonical tree for locally generated regular source files."""
+
+    result: dict[str, str] = {}
+    try:
+        resolved_root = root.resolve(strict=True)
+        for path in root.rglob("*"):
+            if path.is_symlink():
+                fail("materialized source tree must not contain symbolic links")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                fail("materialized source tree must contain only regular files")
+            relative = path.resolve(strict=True).relative_to(resolved_root).as_posix()
+            result[relative] = sha256_file(path)
+    except (OSError, ValueError) as error:
+        raise MaterializationError("cannot read expected materialized source tree") from error
+    return result
+
+
+def expected_materialized_file_hashes(plugin_id: str, artifact: Path, record: dict[str, object]) -> dict[str, str]:
+    version = record.get("version")
+    if not isinstance(version, str):
+        fail("selected release version is invalid")
+    with tempfile.TemporaryDirectory(prefix="xsec-materialized-tree-") as directory:
+        root = Path(directory)
+        extract_verified_artifact(artifact, plugin_id, version, root / "plugins" / plugin_id)
+        write_standard_layout(root, plugin_id)
+        return regular_file_hashes(root)
+
+
+def assert_materialized_branch_tree(
+    repository: Path,
+    branch: str,
+    plugin_id: str,
+    artifact: Path,
+    record: dict[str, object],
+) -> None:
+    """Require the final commit to equal the signed artifact plus standard layout.
+
+    Disabled hooks are the primary protection, while this exact-tree comparison
+    is the final defence before a candidate can be pushed.  It catches an
+    unexpected template file, hook side effect, or any other local mutation
+    that made it into the branch even if Git still reports a clean worktree.
+    """
+
+    expected = expected_materialized_file_hashes(plugin_id, artifact, record)
+    tree = candidate_run_git(["ls-tree", "-r", "-z", "--full-tree", branch], cwd=repository).stdout
+    actual: dict[str, str] = {}
+    for entry in (item for item in tree.split(b"\0") if item):
+        try:
+            header, raw_path = entry.split(b"\t", 1)
+            mode, object_type, object_id = header.split(b" ")
+            path = raw_path.decode("utf-8", errors="strict")
+            object_name = object_id.decode("ascii", errors="strict")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise MaterializationError("materialized source branch has an invalid tree entry") from error
+        if mode not in {b"100644", b"100755"} or object_type != b"blob" or not GIT_SHA_PATTERN.fullmatch(object_name):
+            fail("materialized source branch must contain only regular source files")
+        if path in actual:
+            fail("materialized source branch contains duplicate file paths")
+        actual[path] = hashlib.sha256(
+            candidate_run_git(["cat-file", "blob", object_name], cwd=repository).stdout
+        ).hexdigest()
+    if actual != expected:
+        fail("final materialized source branch does not exactly match the signed artifact and standard layout")
+
+
 def deterministic_commit_environment(repository: Path, parent: str, offset: int) -> dict[str, str]:
-    raw_timestamp = git_stdout(["show", "-s", "--format=%ct", parent], cwd=repository)
+    raw_timestamp = candidate_git_stdout(["show", "-s", "--format=%ct", parent], cwd=repository)
     try:
         timestamp = int(raw_timestamp) + offset
     except ValueError as error:
         raise MaterializationError("legacy history has an invalid commit timestamp") from error
     value = f"{timestamp} +0000"
-    environment = os.environ.copy()
+    environment = candidate_environment()
     environment.update(
         {
             "GIT_AUTHOR_NAME": MIGRATION_AUTHOR_NAME,
@@ -717,23 +847,24 @@ def commit_materialized_branch(
     record: dict[str, object],
     timestamp_offset: int,
 ) -> str:
-    run_git(["checkout", "--quiet", "--force", "-B", branch, parent], cwd=repository)
+    candidate_run_git(["checkout", "--quiet", "--force", "-B", branch, parent], cwd=repository)
     replace_plugin_tree(repository, plugin_id, artifact, record)
     write_standard_layout(repository, plugin_id)
-    run_git(["add", "--all"], cwd=repository)
+    candidate_run_git(["add", "--all"], cwd=repository)
     version = record.get("version")
     release_id = record.get("releaseId")
     if not isinstance(version, str) or not isinstance(release_id, str):
         fail("selected immutable release identity is invalid")
-    run_git(
+    candidate_run_git(
         ["-c", "commit.gpgSign=false", "commit", "--no-verify", "--quiet", "-m", f"chore: materialize {channel} source {version} ({release_id})"],
         cwd=repository,
         environment=deterministic_commit_environment(repository, parent, timestamp_offset),
     )
-    commit = git_stdout(["rev-parse", "HEAD"], cwd=repository)
+    commit = candidate_git_stdout(["rev-parse", "HEAD"], cwd=repository)
     if not GIT_SHA_PATTERN.fullmatch(commit):
         fail("materialized source commit is invalid")
     assert_no_factory_content(repository, branch)
+    assert_materialized_branch_tree(repository, branch, plugin_id, artifact, record)
     return commit
 
 
@@ -780,7 +911,23 @@ def push_candidate(repository: Path, plugin_id: str, target: str) -> None:
     canonical_target = require_exact_target(plugin_id, target)
     protocols = ("https",) if canonical_target.startswith("https://") else ("ssh",)
     environment = sealed_transport_environment(protocols=protocols)
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment.pop("GIT_REPLACE_REF_BASE", None)
     assert_no_local_url_rewrites(repository)
+    try:
+        hook_path = git_stdout(
+            ["config", "--local", "--get", "core.hooksPath"],
+            cwd=repository,
+            environment=candidate_environment(),
+        )
+    except MaterializationError:
+        hook_path = None
+    if hook_path != os.devnull:
+        fail("materialization candidate must retain its disabled local Git hook path before push")
+    if candidate_git_stdout(["status", "--porcelain", "--untracked-files=all"], cwd=repository):
+        fail("materialization candidate must be clean before its one-time push")
+    assert_no_factory_content(repository, "refs/heads/main")
+    assert_no_factory_content(repository, "refs/heads/beta")
     # Preflight away from the candidate repository so neither a local URL
     # alias nor a parent worktree config can reinterpret the approved literal.
     with tempfile.TemporaryDirectory(prefix="xsec-source-target-check-") as directory:
@@ -804,6 +951,8 @@ def push_candidate(repository: Path, plugin_id: str, target: str) -> None:
         fail("target already has main or beta; materialization refuses to overwrite or force-push")
     run_git(
         [
+            "-c",
+            f"core.hooksPath={os.devnull}",
             *sealed_transport_arguments(protocols=protocols),
             "push",
             "--atomic",

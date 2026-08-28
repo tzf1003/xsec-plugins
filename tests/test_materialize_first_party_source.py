@@ -165,6 +165,47 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             self.assertEqual(result["pendingAdoptionRegistry"]["source"]["repository"], "tzf1003/xsec-plugin-sub-agent")
             self.assertRegex(result["sourceCommits"]["stable"], r"^[a-f0-9]{40}$")
 
+    def test_materialization_ignores_global_git_templates_and_seals_candidate_hooks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-template-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            factory.mkdir()
+            self.make_factory(factory)
+            template = root / "attacker-template"
+            hook = template / "hooks" / "post-checkout"
+            hook.parent.mkdir(parents=True)
+            hook.write_text("#!/bin/sh\nprintf injected > template-hook-ran.txt\n", encoding="utf-8")
+            hook.chmod(0o755)
+            global_config = root / "attacker.gitconfig"
+            global_config.write_text(f"[init]\n\ttemplateDir = {template.as_posix()}\n", encoding="utf-8")
+            output = root / "source-repository"
+
+            with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_config)}):
+                materializer.materialize_repository(factory, PLUGIN_ID, output)
+
+            self.assertEqual(git(output, "config", "--local", "--get", "core.hooksPath"), os.devnull)
+            self.assertFalse((output / "template-hook-ran.txt").exists())
+            self.assertNotIn("template-hook-ran.txt", git(output, "ls-tree", "-r", "--name-only", "main"))
+
+    def test_exact_tree_guard_rejects_a_mutated_materialized_branch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-tree-guard-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            factory.mkdir()
+            stable, _ = self.make_factory(factory)
+            output = root / "source-repository"
+            materializer.materialize_repository(factory, PLUGIN_ID, output)
+            _, stable_artifact = materializer.selected_release_artifact(factory, PLUGIN_ID, "stable")
+            git(output, "config", "user.name", "Tree Guard")
+            git(output, "config", "user.email", "tree-guard@example.invalid")
+            git(output, "checkout", "--quiet", "main")
+            (output / "plugins" / PLUGIN_ID / "frontend.js").write_text("tampered\n", encoding="utf-8")
+            git(output, "add", "--all")
+            git(output, "commit", "--quiet", "-m", "tamper")
+
+            with self.assertRaisesRegex(materializer.MaterializationError, "does not exactly match"):
+                materializer.assert_materialized_branch_tree(output, "main", PLUGIN_ID, stable_artifact, stable)
+
     def test_cli_dry_run_prints_only_commits_and_pending_registry(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-cli-") as directory:
             factory = Path(directory) / "factory"
@@ -238,15 +279,28 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     )
             invoke.assert_not_called()
 
+    def test_push_rejects_a_candidate_without_the_materializer_hook_seal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-missing-hook-seal-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            with self.assertRaisesRegex(materializer.MaterializationError, "disabled local Git hook path"):
+                materializer.push_candidate(
+                    repository,
+                    PLUGIN_ID,
+                    "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                )
+
     def test_push_preflight_and_write_seal_global_url_rewrite_configuration(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-sealed-push-") as directory:
             repository = Path(directory) / "candidate"
             git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            git(repository, "config", "core.hooksPath", os.devnull)
             calls: list[tuple[list[str], dict[str, object]]] = []
 
             def fake_git(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
                 calls.append((arguments, kwargs))
-                return subprocess.CompletedProcess(["git", *arguments], 0, stdout=b"", stderr=b"")
+                stdout = f"{os.devnull}\n".encode("utf-8") if arguments[-1:] == ["core.hooksPath"] else b""
+                return subprocess.CompletedProcess(["git", *arguments], 0, stdout=stdout, stderr=b"")
 
             with patch.dict(os.environ, {"GIT_CONFIG": "injected", "HTTPS_PROXY": "https://attacker.invalid"}):
                 with patch.object(materializer, "run_git", side_effect=fake_git):
@@ -255,9 +309,10 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                         PLUGIN_ID,
                         "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
                     )
-            self.assertEqual(len(calls), 2)
-            preflight_arguments, preflight_kwargs = calls[0]
-            push_arguments, push_kwargs = calls[1]
+            remote_calls = [(arguments, kwargs) for arguments, kwargs in calls if "ls-remote" in arguments or "push" in arguments]
+            self.assertEqual(len(remote_calls), 2)
+            preflight_arguments, preflight_kwargs = remote_calls[0]
+            push_arguments, push_kwargs = remote_calls[1]
             self.assertIn("ls-remote", preflight_arguments)
             self.assertNotEqual(preflight_kwargs["cwd"], repository)
             self.assertIn("push", push_arguments)
@@ -274,11 +329,13 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-sealed-ssh-") as directory:
             repository = Path(directory) / "candidate"
             git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            git(repository, "config", "core.hooksPath", os.devnull)
             calls: list[tuple[list[str], dict[str, object]]] = []
 
             def fake_git(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
                 calls.append((arguments, kwargs))
-                return subprocess.CompletedProcess(["git", *arguments], 0, stdout=b"", stderr=b"")
+                stdout = f"{os.devnull}\n".encode("utf-8") if arguments[-1:] == ["core.hooksPath"] else b""
+                return subprocess.CompletedProcess(["git", *arguments], 0, stdout=stdout, stderr=b"")
 
             with patch.dict(os.environ, {"GIT_SSH_COMMAND": "ssh -F attacker-config"}):
                 with patch.object(materializer, "run_git", side_effect=fake_git):
@@ -287,8 +344,9 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                         PLUGIN_ID,
                         "git@github.com:tzf1003/xsec-plugin-sub-agent.git",
                     )
-            self.assertEqual(len(calls), 2)
-            for _, kwargs in calls:
+            remote_calls = [(arguments, kwargs) for arguments, kwargs in calls if "ls-remote" in arguments or "push" in arguments]
+            self.assertEqual(len(remote_calls), 2)
+            for _, kwargs in remote_calls:
                 environment = kwargs["environment"]
                 assert isinstance(environment, dict)
                 command = environment["GIT_SSH_COMMAND"]
