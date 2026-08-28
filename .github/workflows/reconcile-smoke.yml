@@ -1,0 +1,91 @@
+name: Reconcile official marketplace smoke callback
+
+on:
+  repository_dispatch:
+    types: [xsec_factory_reconcile_smoke]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: xsec-marketplace-reconcile-smoke-${{ github.event.client_payload.marketplace_revision }}
+  cancel-in-progress: false
+
+jobs:
+  validate-and-promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the dedicated Cloud dispatcher App and protected Factory main
+        env:
+          ACTOR: ${{ github.actor }}
+          EXPECTED_ACTOR: ${{ vars.XSEC_FACTORY_DISPATCHER_ACTOR }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [ -n "$EXPECTED_ACTOR" ] || { echo "Configure XSEC_FACTORY_DISPATCHER_ACTOR to the dedicated GitHub App bot login." >&2; exit 1; }
+          [ "$ACTOR" = "$EXPECTED_ACTOR" ] || { echo "Only the dedicated Cloud Factory dispatcher App may reconcile smoke callbacks." >&2; exit 1; }
+          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || { echo "Reconciliation requires protected Factory main." >&2; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate the complete Cloud smoke payload
+        id: request
+        env:
+          TRIGGER_KIND: ${{ github.event.client_payload.trigger_kind }}
+          DELIVERY_KEY: ${{ github.event.client_payload.delivery_key }}
+          PLUGIN_ID: ${{ github.event.client_payload.plugin_id }}
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository }}
+          SOURCE_REF: ${{ github.event.client_payload.source_ref }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          MARKETPLACE_REVISION: ${{ github.event.client_payload.marketplace_revision }}
+          CHANNEL: ${{ github.event.client_payload.channel }}
+          SMOKE_RUN_ID: ${{ github.event.client_payload.smoke_workflow_run_id }}
+          SMOKE_RUN_ATTEMPT: ${{ github.event.client_payload.smoke_workflow_run_attempt }}
+        run: |
+          set -euo pipefail
+          [ "$TRIGGER_KIND" = "smoke_callback" ] || { echo "Unexpected reconciliation trigger kind." >&2; exit 1; }
+          [ -z "$PLUGIN_ID" ] && [ -z "$SOURCE_REPOSITORY" ] && [ -z "$SOURCE_REF" ] && [ -z "$SOURCE_SHA" ] || { echo "Smoke callbacks must not carry source fields." >&2; exit 1; }
+          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-reconcile-smoke \
+            --delivery-key "$DELIVERY_KEY" --marketplace-revision "$MARKETPLACE_REVISION" --channel "$CHANNEL" \
+            --smoke-workflow-run-id "$SMOKE_RUN_ID" --smoke-workflow-run-attempt "$SMOKE_RUN_ATTEMPT"
+      - name: Accept only a smoke revision retained by protected Factory main
+        env:
+          MARKETPLACE_REVISION: ${{ steps.request.outputs.marketplace_revision }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "${MARKETPLACE_REVISION}^{commit}"
+          git merge-base --is-ancestor "$MARKETPLACE_REVISION" refs/remotes/origin/main || {
+            echo "Smoke callback does not name a protected, retained Factory revision." >&2
+            exit 1
+          }
+      - name: Promote only smoke-verified Beta pointers whose source main is current
+        if: ${{ steps.request.outputs.channel == 'beta' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MARKETPLACE_REVISION: ${{ steps.request.outputs.marketplace_revision }}
+        run: |
+          set -euo pipefail
+          # Read current Registry again, and compare its current beta pointer
+          # to the exact smoke-tested revision. A later beta cannot inherit an
+          # earlier callback. publish.yml then rechecks the selected source
+          # SHA/main reachability and deterministic releaseId before moving
+          # only channels.stable.
+          while IFS= read -r registration; do
+            plugin_id="$(printf '%s' "$registration" | jq -r .pluginId)"
+            repository="$(printf '%s' "$registration" | jq -r .source.repository)"
+            active="$(printf '%s' "$registration" | jq -r .status)"
+            [ "$active" = "active" ] || continue
+            smoke_beta="$(git show "${MARKETPLACE_REVISION}:plugins/${plugin_id}/.xsec-market/releases.json" 2>/dev/null | jq -r '.channels.beta.releaseId // empty' || true)"
+            current_beta="$(jq -r '.channels.beta.releaseId // empty' "plugins/${plugin_id}/.xsec-market/releases.json" 2>/dev/null || true)"
+            [ -n "$smoke_beta" ] && [ "$smoke_beta" = "$current_beta" ] || continue
+            main_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${repository}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
+            [ -n "$main_sha" ] || { echo "Cannot resolve registered source main for ${plugin_id}." >&2; exit 1; }
+            gh workflow run publish.yml --ref main \
+              -f channel=stable -f plugin_id="$plugin_id" -f source_sha="$main_sha" -f release_id="$current_beta"
+          done < <(jq -c '.plugins[]' .xsec-factory/official-registry.json)

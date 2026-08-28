@@ -305,6 +305,28 @@ jobs:
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
           PUBLISHER: ${{ github.actor }}
         run: python scripts/external_source_factory.py record-beta --plugin-id "$PLUGIN_ID" --source-sha "$SOURCE_SHA" --publisher "$PUBLISHER"
+      - name: Record Factory Beta state for Desktop status consumers
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
+          FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
+            --beta-sha "$SOURCE_SHA" --state waiting_for_smoke --delivery-id "$DELIVERY_ID" \
+            --factory-run-url "$FACTORY_RUN_URL"
+      - name: Record Factory Stable state for Desktop status consumers
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' && steps.external-stable.outputs.changed == 'true' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
+          FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
+            --stable-sha "$SOURCE_SHA" --state promoting_stable --delivery-id "$DELIVERY_ID" \
+            --factory-run-url "$FACTORY_RUN_URL"
       - name: Skip a byte-identical external Stable retry without KMS or dispatch
         id: publication-decision
         env:
@@ -323,6 +345,12 @@ jobs:
               git status --short >&2
               exit 1
             }
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "beta" ] && git diff --quiet -- .agents/plugins plugins .xsec-factory; then
+            # A duplicate source delivery has neither changed the immutable
+            # beta record/provenance nor its UI state.  Do not request a new
+            # KMS signature or produce a metadata commit for it.
+            python scripts/external_source_factory.py validate
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "should_publish=true" >> "$GITHUB_OUTPUT"

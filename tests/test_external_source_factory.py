@@ -171,6 +171,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
     def registry_entry(self, *, status: str = "active", repository: str = "acme/external-plugin", path: str = "package") -> dict[str, object]:
         return {
             "pluginId": PLUGIN_ID,
+            "trustTier": "external",
             "source": {
                 "repository": repository,
                 "path": path,
@@ -186,7 +187,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             root / ".agents" / "plugins" / "marketplace.json",
             {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []},
         )
-        write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 1, "plugins": list(entries)})
+        write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": list(entries)})
 
     def make_source(self, root: Path, *, version: str = "1.0.0", source_path: str = "package") -> Path:
         plugin = root / source_path
@@ -206,6 +207,71 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         )
         (plugin / "frontend.js").write_text("export function activate() {}\n", encoding="utf-8")
         return root
+
+    def first_party_entry(
+        self,
+        *,
+        repository: str = "tzf1003/xsec-plugin-sub-agent",
+        status: str = "pending-adoption",
+    ) -> dict[str, object]:
+        plugin_id = "com.xsec.workspace.sub-agent"
+        return {
+            "pluginId": plugin_id,
+            "trustTier": "first-party",
+            "source": {
+                "repository": repository,
+                "path": f"plugins/{plugin_id}",
+                "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
+            },
+            "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+            "category": "Security",
+            "status": status,
+        }
+
+    def make_first_party_adoption(self, root: Path) -> str:
+        plugin_id = "com.xsec.workspace.sub-agent"
+        self.make_factory(root, self.first_party_entry())
+        snapshot = root / "plugins" / plugin_id
+        snapshot.mkdir(parents=True)
+        write_json(
+            snapshot / "plugin.json",
+            {
+                "name": plugin_id,
+                "version": "1.0.0",
+                "extensions": {
+                    "com.xsec.desktop": {
+                        "engines": {"xsec": ">=1", "pluginApi": "^1"},
+                        "entrypoints": {"frontend": "frontend.js"},
+                        "permissions": {"process.spawn": {}},
+                        "contributes": {"workspaceTools": {"sub-agent": {"title": "Sub agent"}}},
+                    }
+                },
+            },
+        )
+        (snapshot / "frontend.js").write_text("export function activate() {}\n", encoding="utf-8")
+        build_market.build_plugin(snapshot, snapshot)
+        registration = factory.registration_for(root, plugin_id, active=False)
+        write_json(
+            root / ".agents" / "plugins" / "marketplace.json",
+            {
+                "name": "xsec-official",
+                "interface": {"displayName": "Test"},
+                "plugins": [factory.marketplace_entry(registration)],
+            },
+        )
+        write_historical_release_sidecar(root, plugin_id)
+        factory.create_adoption(
+            root,
+            plugin_id,
+            beta_sha=BETA_SHA,
+            stable_sha=STABLE_SHA,
+            factory_revision="c" * 40,
+        )
+        document = publisher.official_adoption_provenance_document(root, plugin_id)
+        write_historical_sidecar(document, publisher.sidecar_path_for(document))
+        factory.activate_first_party(root, plugin_id)
+        _, beta = factory.current_beta_record(root, plugin_id)
+        return str(beta["releaseId"])
 
     def stage_and_record_beta(
         self,
@@ -632,7 +698,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             # external marketplace entry eligible for the generic signed path.
             # The operator must keep a disabled registration for a withdrawn
             # external package instead.
-            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 1, "plugins": []})
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": []})
             factory.publication_path(root, PLUGIN_ID).unlink()
             manifest_path = root / "plugins" / PLUGIN_ID / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -661,7 +727,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             # make a later same-SemVer publication look brand new.
             baseline = workspace / "trusted-baseline"
             shutil.copytree(root, baseline)
-            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 1, "plugins": []})
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": []})
             write_json(
                 root / ".agents" / "plugins" / "marketplace.json",
                 {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []},
@@ -688,7 +754,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             rewritten = self.registry_entry(repository="acme/replacement-plugin", path="replacement")
             write_json(
                 root / ".xsec-factory" / "official-registry.json",
-                {"schemaVersion": 1, "plugins": [rewritten]},
+                {"schemaVersion": 2, "plugins": [rewritten]},
             )
 
             with self.assertRaisesRegex(
@@ -946,6 +1012,183 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.stage_and_record_beta(root, source)
 
             self.assertFalse(marker.exists())
+
+    def test_first_party_registry_is_closed_to_the_exact_approved_repository(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-registry-") as directory:
+            root = Path(directory)
+            entry = self.first_party_entry(repository="tzf1003/looks-like-sub-agent")
+            self.make_factory(root, entry)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the approved first-party source"):
+                factory.load_registry(root)
+
+            entry = self.first_party_entry()
+            entry["trustTier"] = "external"
+            self.make_factory(root, entry)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "reserved for the Desktop namespace"):
+                factory.load_registry(root)
+
+            self.make_factory(root, self.first_party_entry())
+            self.assertEqual(factory.load_registry(root)[0].installation, "INSTALLED_BY_DEFAULT")
+
+            entry = self.registry_entry()
+            entry["status"] = "pending-adoption"
+            self.make_factory(root, entry)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "invalid for its trust tier"):
+                factory.load_registry(root)
+
+    def test_signed_first_party_adoption_binds_history_source_heads_and_channel_pointers(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-") as directory:
+            root = Path(directory)
+            release_id = self.make_first_party_adoption(root)
+            factory.validate_registry_and_snapshots(root)
+
+            adoption_path = factory.adoption_path(root, "com.xsec.workspace.sub-agent")
+            adoption = json.loads(adoption_path.read_text(encoding="utf-8"))
+            original_adoption = json.loads(json.dumps(adoption))
+            adoption["source"]["betaSha"] = "d" * 40
+            write_json(adoption_path, adoption)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS adoption proof is invalid"):
+                factory.validate_registry_and_snapshots(root)
+
+            # Restore the signed payload, then demonstrate that a pointer
+            # rewrite is detected before any new source can be accepted.
+            write_json(adoption_path, original_adoption)
+            adoption = json.loads(adoption_path.read_text(encoding="utf-8"))
+            adoption["channels"]["beta"] = {"releaseId": "sha256-" + "0" * 64}
+            write_json(adoption_path, adoption)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "channel pointer is not historical"):
+                factory.validate_registry_and_snapshots(root)
+            self.assertTrue(release_id.startswith("sha256-"))
+
+    def test_first_party_published_status_requires_signed_adoption_and_exact_release_pointers(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-status-") as directory:
+            root = Path(directory)
+            release_id = self.make_first_party_adoption(root)
+            factory.record_status(
+                root,
+                "com.xsec.workspace.sub-agent",
+                beta_sha=BETA_SHA,
+                stable_sha=STABLE_SHA,
+                state="published",
+                delivery_id="delivery-42",
+                marketplace_revision="c" * 40,
+            )
+            factory.validate_registry_and_snapshots(root)
+            status_path = factory.status_path(root, "com.xsec.workspace.sub-agent")
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["release"]["betaReleaseId"] = "sha256-" + "0" * 64
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "release pointers do not match"):
+                factory.validate_registry_and_snapshots(root)
+            self.assertTrue(release_id.startswith("sha256-"))
+
+    def test_duplicate_status_delivery_keeps_the_original_audited_delivery_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-status-dedupe-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            first = factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="delivery-1",
+            )
+            duplicate = factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="delivery-2",
+            )
+            status = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertNotIn("unchanged", first)
+            self.assertEqual(duplicate["unchanged"], "true")
+            self.assertEqual(status["publication"]["deliveryId"], "delivery-1")
+
+    def test_first_party_beta_after_adoption_appends_history_without_rewriting_the_adopted_prefix(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-followup-beta-") as directory:
+            root = Path(directory)
+            old_release_id = self.make_first_party_adoption(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            source = root / "source"
+            shutil.copytree(root / "plugins" / plugin_id, source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
+            source_manifest = source / "plugins" / plugin_id / "plugin.json"
+            manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(source_manifest, manifest)
+            (source / "plugins" / plugin_id / "frontend.js").write_text("export function activate() { return 'next'; }\n", encoding="utf-8")
+
+            factory.stage_beta(root, plugin_id, source)
+            snapshot = root / "plugins" / plugin_id
+            build_market.build_plugin(snapshot, snapshot)
+            factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
+            write_historical_release_sidecar(root, plugin_id, source_revision="d" * 40)
+            write_publication_proof(root, plugin_id, source_revision="d" * 40)
+            factory.validate_registry_and_snapshots(root)
+
+            releases = json.loads(factory.release_path(root, plugin_id).read_text(encoding="utf-8"))["releases"]
+            self.assertEqual(releases[0]["releaseId"], old_release_id)
+            self.assertEqual(len(releases), 2)
+
+    def test_reconcile_payload_requires_the_current_registry_binding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-reconcile-payload-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            accepted = factory.prepare_reconcile_source(
+                root,
+                delivery_key="delivery-42",
+                plugin_id=PLUGIN_ID,
+                source_repository="acme/external-plugin",
+                source_ref="refs/heads/beta",
+                source_sha=BETA_SHA,
+            )
+            self.assertEqual(accepted["channel"], "beta")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match a registered beta or stable branch"):
+                factory.prepare_reconcile_source(
+                    root,
+                    delivery_key="delivery-43",
+                    plugin_id=PLUGIN_ID,
+                    source_repository="acme/external-plugin",
+                    source_ref="refs/heads/old-beta",
+                    source_sha=BETA_SHA,
+                )
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "workflow run identity is invalid"):
+                factory.prepare_reconcile_smoke(
+                    delivery_key="delivery-44",
+                    marketplace_revision=BETA_SHA,
+                    channel="beta",
+                    smoke_workflow_run_id="not-a-run",
+                    smoke_workflow_run_attempt="1",
+                )
+
+    def test_reconcile_workflows_fail_closed_on_actor_payload_and_stale_source_heads(self) -> None:
+        source_workflow = (ROOT / ".github" / "workflows" / "reconcile-source.yml").read_text(encoding="utf-8")
+        smoke_workflow = (ROOT / ".github" / "workflows" / "reconcile-smoke.yml").read_text(encoding="utf-8")
+        for workflow in (source_workflow, smoke_workflow):
+            self.assertIn("XSEC_FACTORY_DISPATCHER_ACTOR", workflow)
+            self.assertIn("github.ref_protected", workflow)
+            self.assertIn("trigger_kind", workflow)
+            self.assertIn("delivery_key", workflow)
+            self.assertNotIn("workflow_dispatch:", workflow)
+        self.assertIn("prepare-reconcile-source", source_workflow)
+        self.assertIn("ls-remote", source_workflow)
+        self.assertIn("Source delivery is stale", source_workflow)
+        self.assertIn("publish.yml", source_workflow)
+        self.assertIn("prepare-reconcile-smoke", smoke_workflow)
+        self.assertIn("merge-base --is-ancestor", smoke_workflow)
+        self.assertIn("release_id=\"$current_beta\"", smoke_workflow)
+        publisher_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertIn("duplicate source delivery", publisher_workflow)
+        self.assertIn("Record Factory Beta state", publisher_workflow)
+        adoption_workflow = (ROOT / ".github" / "workflows" / "adopt-first-party.yml").read_text(encoding="utf-8")
+        self.assertIn("prepare-adoption", adoption_workflow)
+        self.assertIn("adopt-first-party", adoption_workflow)
+        self.assertIn("activate-first-party", adoption_workflow)
+        self.assertIn("XSEC_MARKETPLACE_SOURCE_REVISION", adoption_workflow)
+        self.assertIn("@codex review", adoption_workflow)
+        self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', adoption_workflow)
 
 
 if __name__ == "__main__":

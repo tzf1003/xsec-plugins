@@ -1,0 +1,104 @@
+# 第一方插件拆仓 Factory 合约
+
+`xsec-plugins` 是发布收录与签名 Factory，不是拆分后插件的日常源码仓库。每个
+第一方插件源码仓库使用受保护的 `beta` 与 `main`；Factory 只保留生成快照、不可变
+artifact、release history、签名和来源证明。
+
+## Registry v2
+
+`.xsec-factory/official-registry.json` 的根对象严格为：
+
+```json
+{"schemaVersion":2,"plugins":[{"pluginId":"...","trustTier":"first-party|external","source":{"repository":"owner/repository","path":"plugins/<id>","refs":{"beta":"refs/heads/beta","stable":"refs/heads/main"}},"policy":{"installation":"...","authentication":"ON_INSTALL"},"category":"Security","status":"active|disabled|pending-adoption"}]}
+```
+
+`external` 继续使用既有的安全边界：不能使用 `com.xsec.*`，只能
+`AVAILABLE`，且不能声明 Desktop 保留的路由、工具或高权限能力。
+
+`first-party` 是封闭 allowlist，只接受以下精确仓库、`plugins/<plugin-id>` 源码路径和
+`INSTALLED_BY_DEFAULT`：
+
+| 插件 ID | 仓库 |
+| --- | --- |
+| `com.xsec.asset-discovery` | [tzf1003/xsec-plugin-asset-discovery](https://github.com/tzf1003/xsec-plugin-asset-discovery) |
+| `com.xsec.attack-path` | [tzf1003/xsec-plugin-attack-path](https://github.com/tzf1003/xsec-plugin-attack-path) |
+| `com.xsec.project-workspace` | [tzf1003/xsec-plugin-project-workspace](https://github.com/tzf1003/xsec-plugin-project-workspace) |
+| `com.xsec.system-terminal` | [tzf1003/xsec-plugin-system-terminal](https://github.com/tzf1003/xsec-plugin-system-terminal) |
+| `com.xsec.workspace.approvals` | [tzf1003/xsec-plugin-approvals](https://github.com/tzf1003/xsec-plugin-approvals) |
+| `com.xsec.workspace.browser` | [tzf1003/xsec-plugin-browser](https://github.com/tzf1003/xsec-plugin-browser) |
+| `com.xsec.workspace.conversation-tree` | [tzf1003/xsec-plugin-conversation-tree](https://github.com/tzf1003/xsec-plugin-conversation-tree) |
+| `com.xsec.workspace.files` | [tzf1003/xsec-plugin-files](https://github.com/tzf1003/xsec-plugin-files) |
+| `com.xsec.workspace.project-outcomes` | [tzf1003/xsec-plugin-project-outcomes](https://github.com/tzf1003/xsec-plugin-project-outcomes) |
+| `com.xsec.workspace.sub-agent` | [tzf1003/xsec-plugin-sub-agent](https://github.com/tzf1003/xsec-plugin-sub-agent) |
+| `com.xsec.workspace.traffic` | [tzf1003/xsec-plugin-traffic](https://github.com/tzf1003/xsec-plugin-traffic) |
+
+因此 Registry PR 不能通过把任意包标记为 `first-party` 来取得 `com.xsec.*`、默认安装或
+现有终端/浏览器/项目写入权限。
+
+首次迁移使用仅第一方允许的临时 `status: "pending-adoption"`：它只能保留已存在的
+内置 Marketplace snapshot、release history、artifact 和已签名 release sidecar，不能
+发布新源码。受保护的 `adopt-first-party.yml` 在精确来源分支头仍匹配后创建 KMS proof，
+并在同一生成 PR 中把该状态改为 `active`。`external` 永远不能使用该状态。
+
+## 无损 adoption
+
+每个已发布的内置包在切换 Registry 前，由受保护 Factory main 生成：
+
+```text
+.xsec-factory/official-adoptions/<plugin-id>.json
+.xsec-factory/official-adoption-proofs/<plugin-id>.json
+```
+
+第一个文件固定绑定来源仓库、`beta/main` SHA、旧 Factory revision、旧 release document
+digest、原始 release document bytes、完整有序 release records，以及迁移瞬间的 Beta/Stable pointer；第二个是对第一
+个文件的独立 KMS JWS sidecar，purpose 为
+`xsec.plugin-marketplace.first-party-adoption`。校验器会验证历史 record 是当前 history
+的不可变前缀、所有历史 artifact 仍可下载验证、release sidecar 和 adoption sidecar 都
+能用固定 KMS issuer 的 JWKS 验证。迁移不会生成 release、改变 SemVer、替换 artifact
+或移动频道指针。
+
+受保护工作流调用：
+
+```text
+python scripts/external_source_factory.py adopt-first-party \
+  --plugin-id com.xsec.workspace.sub-agent \
+  --beta-sha <40-hex> --stable-sha <40-hex> --factory-revision <40-hex>
+```
+
+随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。未来 Beta 发布可追加 history，
+但 adoption 中的历史 prefix 永远不能改写。
+
+## 自动 reconcile payload
+
+Cloud 只能用专用 GitHub App 向 `xsec-plugins` 发 `repository_dispatch`。两个 workflow
+event type 为 `xsec_factory_reconcile_source` 和 `xsec_factory_reconcile_smoke`，两者都要求
+受保护 `main` 与 repository variable `XSEC_FACTORY_DISPATCHER_ACTOR` 精确等于该 App bot
+login。
+
+source event payload：
+
+```json
+{"trigger_kind":"source_event","delivery_key":"...","plugin_id":"...","source_repository":"owner/repository","source_ref":"refs/heads/beta|refs/heads/main","source_sha":"40-hex","marketplace_revision":"","channel":"","smoke_workflow_run_id":"","smoke_workflow_run_attempt":""}
+```
+
+Factory 再读 protected Registry、固定 HTTPS 查询当前分支头并拒绝过期 SHA；`beta` 才调度
+现有 `publish.yml`。`main` 只进入等待状态，绝不因 push 直接推广 Stable。
+
+smoke callback payload：
+
+```json
+{"trigger_kind":"smoke_callback","delivery_key":"...","plugin_id":"","source_repository":"","source_ref":"","source_sha":"","marketplace_revision":"40-hex","channel":"beta|stable","smoke_workflow_run_id":"positive decimal","smoke_workflow_run_attempt":"positive decimal"}
+```
+
+Factory 要求 smoke revision 是当前 protected main 的祖先。仅 `beta` smoke 会读取该精确
+revision 的 Beta pointer；如果 current Factory 仍指向同一 Beta，才读取每个注册来源的
+当前 `main` SHA 并调度 `publish.yml` Stable。后者仍会在有只读 GitHub App token 的
+publisher 中证明 main 可达性与可重建同一个 `releaseId`。任何更晚的 Beta、未知仓库、
+错误 ref、过期 SHA 或非专用 App 调度都不会移动 Stable。
+
+`publish.yml` 会将前端状态写到
+`.xsec-factory/official-status/<plugin-id>.json`：schema 1，包含 `trustTier`、来源
+repository/path/refs/betaSha/stableSha、当前 Beta/Stable releaseId，以及
+`waiting_for_beta|building_beta|waiting_for_smoke|promoting_stable|published|failed` 状态、
+delivery、Factory/smoke run URL 和 Marketplace revision（如有）。已标记 `published` 的
+状态必须能回溯到 adoption 或不可变 publication evidence，不能单独宣称某个 release。
