@@ -169,4 +169,6 @@ provenance/status 文件绝不会被错误地当作可跳过的空操作。受�
 `promoting_stable`，并保留既有 `betaSha` 以便随后合法的 smoke callback 仍能完成；它不会生成
 smoke outcome 或终态状态。即使 Stable 指针已经等于该 Beta（例如 adoption 后的可重建历史
 release），publisher 也会幂等写入/保留该 Stable source event；这样每个 terminal smoke outcome
-都有精确的 Beta 与 Stable provenance 可绑定。
+都有精确的 Beta 与 Stable provenance 可绑定。同一 release/source tuple 的晚到 Desktop sweep 会
+复用最早的 KMS-signed smoke outcome（包含 URL 与 Factory revision），不会把一个尚未签名的新
+revision 写入 `published` status。

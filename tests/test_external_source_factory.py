@@ -1346,7 +1346,11 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 stable_sha=STABLE_SHA,
                 delivery_id="late-smoke-delivery",
                 smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/201",
-                marketplace_revision="c" * 40,
+                # A retained later Factory revision can re-run the Desktop
+                # sweep for this already-published tuple. It must reuse the
+                # original KMS-bound metadata rather than write a status
+                # which has no matching immutable smoke outcome.
+                marketplace_revision="d" * 40,
             )
             status = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
             self.assertEqual(completed["state"], "published")
@@ -1358,6 +1362,9 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(status["publication"]["factoryRunUrl"], "https://github.com/acme/factory/actions/runs/150")
             self.assertEqual(status["publication"]["smokeRunUrl"], "https://github.com/tzf1003/xSecDesktop/actions/runs/200")
             self.assertEqual(status["publication"]["marketplaceRevision"], "c" * 40)
+            evidence = json.loads(factory.publication_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertEqual(len(evidence["smokeOutcomes"]), 1)
+            self.assertEqual(evidence["smokeOutcomes"][0]["smoke"]["marketplaceRevision"], "c" * 40)
             write_publication_proof(root, PLUGIN_ID)
             factory.validate_registry_and_snapshots(root)
             duplicate_beta = factory.record_status(

@@ -1292,7 +1292,7 @@ def append_smoke_outcome(
     stable_sha: str,
     smoke_run_url: str,
     marketplace_revision: str,
-) -> None:
+) -> dict[str, object]:
     """Append one immutable, KMS-signed terminal smoke evidence record."""
 
     path = publication_path(root, registration.plugin_id)
@@ -1339,7 +1339,7 @@ def append_smoke_outcome(
             # different run attempt URL. The original KMS-bound outcome is
             # the immutable audit record, so keep it rather than either
             # replacing it or treating the retry as a publication failure.
-            return
+            return existing
     outcomes.append(outcome)
     stable_write(
         root,
@@ -1347,6 +1347,7 @@ def append_smoke_outcome(
         {"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events, "smokeOutcomes": outcomes},
         f"official external publication evidence for {registration.plugin_id}",
     )
+    return outcome
 
 
 def record_beta(root: Path, plugin_id: str, source_sha: str, publisher: str) -> dict[str, str]:
@@ -1913,7 +1914,7 @@ def complete_smoke_status(
     resolved_stable_sha = optional_sha(stable_sha, "completed smoke status stableSha") if stable_sha is not None else prior_stable_sha
     if resolved_stable_sha is None:
         fail("completed smoke status has no Stable source SHA")
-    append_smoke_outcome(
+    signed_outcome = append_smoke_outcome(
         root,
         registration,
         beta_release_id=beta_release_id,
@@ -1923,16 +1924,27 @@ def complete_smoke_status(
         smoke_run_url=smoke_run_url,
         marketplace_revision=marketplace_revision,
     )
+    signed_source = require_object(signed_outcome.get("source"), "completed smoke signed outcome source")
+    signed_smoke = require_object(signed_outcome.get("smoke"), "completed smoke signed outcome")
+    signed_beta_sha = safe_sha(signed_source.get("betaSha"), "completed smoke signed outcome Beta source SHA")
+    signed_stable_sha = safe_sha(signed_source.get("stableSha"), "completed smoke signed outcome Stable source SHA")
+    signed_smoke_run_url = optional_url(signed_smoke.get("runUrl"), "completed smoke signed outcome run URL")
+    signed_marketplace_revision = optional_sha(
+        signed_smoke.get("marketplaceRevision"),
+        "completed smoke signed outcome Marketplace revision",
+    )
+    if signed_smoke_run_url is None or signed_marketplace_revision is None:
+        fail("completed smoke signed outcome is incomplete")
     return record_status(
         root,
         registration.plugin_id,
-        beta_sha=beta_sha,
-        stable_sha=resolved_stable_sha,
+        beta_sha=signed_beta_sha,
+        stable_sha=signed_stable_sha,
         state="published",
         delivery_id=delivery_id,
         factory_run_url=factory_run_url,
-        smoke_run_url=smoke_run_url,
-        marketplace_revision=marketplace_revision,
+        smoke_run_url=signed_smoke_run_url,
+        marketplace_revision=signed_marketplace_revision,
     )
 
 
