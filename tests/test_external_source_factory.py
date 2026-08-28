@@ -471,7 +471,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 state="waiting_for_smoke",
                 delivery_id="beta-b-same-release",
             )
-            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the smoke-verified Beta"):
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must match immutable Beta provenance"):
                 factory.verify_stable(root, PLUGIN_ID, source, release_id, expected_beta_sha=BETA_SHA)
 
     def test_committed_node_modules_do_not_break_beta_to_stable_content_identity(self) -> None:
@@ -1613,6 +1613,44 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 state_label="current Factory",
             ))
             factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+    def test_first_party_initial_in_flight_status_requires_exact_beta_provenance(self) -> None:
+        """A first status file cannot manufacture an adopted plugin's Beta SHA."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-in-flight-provenance-") as directory:
+            root = Path(directory)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            release_id = self.make_first_party_adoption(root)
+            next_sha = "d" * 40
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha=next_sha,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="forged-first-status",
+            )
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "in-flight Factory status must match immutable Beta provenance"):
+                factory.validate_registry_and_snapshots(root)
+
+            # The exact same status becomes valid only after a signed Beta
+            # event for its current release/source tuple has been recorded.
+            source = root / "source"
+            shutil.copytree(
+                root / "plugins" / plugin_id,
+                source / "plugins" / plugin_id,
+                ignore=shutil.ignore_patterns(".xsec-market"),
+            )
+            factory.stage_beta(root, plugin_id, source)
+            snapshot = root / "plugins" / plugin_id
+            build_market.build_plugin(snapshot, snapshot)
+            factory.record_beta(root, plugin_id, next_sha, "test-publisher")
+            write_publication_proof(root, plugin_id, source_revision=next_sha)
+            self.assertEqual(
+                json.loads(factory.release_path(root, plugin_id).read_text(encoding="utf-8"))["channels"]["beta"]["releaseId"],
+                release_id,
+            )
+            factory.validate_registry_and_snapshots(root)
 
     def test_first_party_post_adoption_evidence_is_required_and_append_only(self) -> None:
         """Adoption cannot be used to erase source provenance for newer releases."""

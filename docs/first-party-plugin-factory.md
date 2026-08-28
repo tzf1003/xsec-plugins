@@ -168,6 +168,9 @@ betaReleaseId`、两端 source SHA、`xSecDesktop` smoke run URL 与 Marketplace
 这五项精确值追加到同一份已经由 KMS JWS 签名的 `official-publications/<id>.json` smoke outcome；source
 gate 会逐项把状态与该 outcome、Beta/Stable source event 对齐。仅填写 SHA 形状、GitHub URL 或手工
 revision 的普通 PR 因没有匹配的 KMS proof 而失败，adoption 也不能单独宣称已 smoke/published。
+即使此前从未写过 status，`waiting_for_smoke` 与 `promoting_stable` 也必须同时带有当前 Beta releaseId/
+source SHA，并精确匹配已 KMS 签名的 Beta provenance event；不能仅靠首次创建可读 status 文件伪造一个
+Desktop 可见的 in-flight 发布周期。
 当 `reconcile-smoke` 接受 Desktop 的 Beta smoke 成功回调并触发可重建的 Stable
 推广时，会把该回调的精确 Factory revision 和 Desktop Actions URL 带入 Stable 生成
 PR；只有该 PR 的指针/证据校验通过后，状态才成为终态 `published`。重复 Beta delivery

@@ -2000,15 +2000,44 @@ def validate_status(
     require_exact_keys(publication, {"state", "deliveryId", "factoryRunUrl", "smokeRunUrl", "marketplaceRevision"}, "official Factory status publication")
     if publication.get("state") not in PUBLICATION_STATES:
         fail("official Factory status publication state is invalid")
+    state = publication["state"]
     require_text(publication.get("deliveryId"), "official Factory status deliveryId", maximum=160)
     optional_url(publication.get("factoryRunUrl"), "official Factory status factoryRunUrl")
     smoke_run_url = optional_url(publication.get("smokeRunUrl"), "official Factory status smokeRunUrl")
     marketplace_revision = optional_sha(publication.get("marketplaceRevision"), "official Factory status marketplaceRevision")
+    # In-flight status is consumer-visible release state, not a free-form
+    # progress label.  A status can be introduced after adoption without a
+    # prior baseline file, so bind every waiting/promoting tuple directly to
+    # KMS-signed Beta provenance instead of relying on a later diff check.
+    if state in {"waiting_for_smoke", "promoting_stable"}:
+        if beta_id is None or beta_sha is None:
+            fail("in-flight Factory status must retain a Beta release ID and source SHA")
+        if not release_file.exists():
+            fail("in-flight Factory status must match immutable Beta provenance")
+        if registration.trust_tier == "first-party":
+            validate_adoption(root, registration, require_kms_proof=require_publication_proofs)
+            adopted_ids = frozenset(adopted_release_ids(root, registration, state_label="in-flight Factory status"))
+        else:
+            adopted_ids = frozenset()
+        evidence_path = publication_path(root, registration.plugin_id)
+        if is_link(evidence_path) or not evidence_path.is_file():
+            fail("in-flight Factory status must match immutable Beta provenance")
+        evidence = validate_evidence(root, registration, releases, adopted_release_ids=adopted_ids)
+        if require_publication_proofs:
+            validate_publication_proof(root, registration)
+        events = evidence.get("events")
+        if not isinstance(events, list) or not evidence_event_matches(
+            events,
+            channel="beta",
+            release_id_value=beta_id,
+            source_sha=beta_sha,
+        ):
+            fail("in-flight Factory status must match immutable Beta provenance")
     # ``published`` is a terminal smoke result, never a cosmetic synonym for
     # a signed Beta. Validate all of the data written exclusively by the
     # smoke-gated Stable path before accepting the status sidecar; immutable
     # release provenance alone cannot establish that Desktop smoke completed.
-    if publication.get("state") == "published":
+    if state == "published":
         if beta_id is None or stable_id != beta_id:
             fail("published Factory status must bind the smoke-verified Beta to the Stable pointer")
         if beta_sha is None or stable_sha is None:
