@@ -2353,11 +2353,8 @@ def publication_evidence_history(root: Path, registration: Registration, *, stat
     if is_link(path) or not path.is_file():
         fail(f"{state_label} publication evidence for {registration.plugin_id} is unavailable")
     evidence = read_json(path, f"{state_label} publication evidence for {registration.plugin_id}")
-    require_exact_keys(
-        evidence,
-        {"schemaVersion", "pluginId", "events"},
-        f"{state_label} publication evidence for {registration.plugin_id}",
-    )
+    if set(evidence) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} has invalid keys")
     if evidence.get("schemaVersion") != 1 or evidence.get("pluginId") != registration.plugin_id:
         fail(f"{state_label} publication evidence for {registration.plugin_id} has an invalid identity")
     events = evidence.get("events")
@@ -2375,6 +2372,38 @@ def publication_evidence_history(root: Path, registration: Registration, *, stat
     if len(set(canonical_events)) != len(canonical_events):
         fail(f"{state_label} publication evidence for {registration.plugin_id} duplicates an immutable event")
     return canonical_events
+
+
+def publication_smoke_outcome_history(root: Path, registration: Registration, *, state_label: str) -> tuple[str, ...]:
+    """Return separately append-only terminal smoke evidence.
+
+    Publication events and smoke outcomes are stored in distinct ordered arrays:
+    a later Beta event may be appended after an earlier smoke outcome. Compare
+    their histories independently, otherwise a valid new event would appear to
+    insert before an older outcome in a synthetic flattened list.
+    """
+
+    path = publication_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail(f"{state_label} publication evidence for {registration.plugin_id} is unavailable")
+    evidence = read_json(path, f"{state_label} publication evidence for {registration.plugin_id}")
+    if set(evidence) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} has invalid keys")
+    outcomes = evidence.get("smokeOutcomes", [])
+    if not isinstance(outcomes, list):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} has an invalid smoke outcome list")
+    canonical_outcomes = tuple(
+        json.dumps(
+            require_object(outcome, f"{state_label} publication smoke outcome {index}"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for index, outcome in enumerate(outcomes)
+    )
+    if len(set(canonical_outcomes)) != len(canonical_outcomes):
+        fail(f"{state_label} publication evidence for {registration.plugin_id} duplicates an immutable smoke outcome")
+    return canonical_outcomes
 
 
 def ownership_history(root: Path, registration: Registration, *, state_label: str) -> tuple[str, ...]:
@@ -2522,6 +2551,29 @@ def validate_trusted_baseline_continuity(
                 f"published first-party official plugin {plugin_id} must retain its immutable adoption "
                 "proof recorded in the trusted baseline"
             )
+        # Terminal smoke outcomes are a second append-only evidence stream.
+        # They cannot be flattened behind normal publication events because a
+        # later Beta event is legitimately appended to ``events`` after an
+        # earlier smoke result. Compare the two ordered arrays independently
+        # so the first smoke completion (which adds the optional field) and
+        # subsequent source releases both pass while deletion/rewrite fails.
+        baseline_evidence = publication_path(baseline, plugin_id)
+        if baseline_evidence.exists() or is_link(baseline_evidence):
+            baseline_outcomes = publication_smoke_outcome_history(
+                baseline,
+                baseline_registration,
+                state_label="trusted Factory baseline",
+            )
+            current_outcomes = publication_smoke_outcome_history(
+                root,
+                registration,
+                state_label="current Factory",
+            )
+            if current_outcomes[: len(baseline_outcomes)] != baseline_outcomes:
+                fail(
+                    f"published official Factory plugin {plugin_id} must retain every immutable smoke outcome "
+                    "recorded in the trusted baseline in append-only order"
+                )
 
 
 def validate_registry_and_snapshots(

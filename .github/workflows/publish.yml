@@ -319,8 +319,12 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Record immutable external Stable provenance after moving the pointer
-        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' && steps.external-stable.outputs.changed == 'true' }}
+      - name: Record immutable external Stable provenance after verification
+        # ``promote_release.py`` reports no diff when Stable already selected
+        # this exact Beta. The smoke path still needs a Stable source event
+        # before it can bind a terminal outcome, so record (or idempotently
+        # retain) the verified provenance regardless of pointer movement.
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}

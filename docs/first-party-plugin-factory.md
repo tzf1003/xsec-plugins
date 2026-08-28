@@ -167,4 +167,6 @@ PR；只有该 PR 的指针/证据校验通过后，状态才成为终态 `publi
 使用 `git status --porcelain --untracked-files=all` 检查 Factory 目录，未跟踪的
 provenance/status 文件绝不会被错误地当作可跳过的空操作。受控的手动 Stable recovery 只会记录
 `promoting_stable`，并保留既有 `betaSha` 以便随后合法的 smoke callback 仍能完成；它不会生成
-smoke outcome 或终态状态。
+smoke outcome 或终态状态。即使 Stable 指针已经等于该 Beta（例如 adoption 后的可重建历史
+release），publisher 也会幂等写入/保留该 Stable source event；这样每个 terminal smoke outcome
+都有精确的 Beta 与 Stable provenance 可绑定。

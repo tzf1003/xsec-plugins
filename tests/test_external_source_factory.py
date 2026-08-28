@@ -898,6 +898,54 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             ):
                 factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
+    def test_trusted_baseline_accepts_then_preserves_append_only_smoke_outcomes(self) -> None:
+        """The first terminal smoke outcome extends a legacy evidence record."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-external-baseline-smoke-outcome-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, source)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-delivery",
+            )
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+            baseline = workspace / "trusted-before-smoke"
+            shutil.copytree(root, baseline)
+
+            factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="smoke-delivery",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/200",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, PLUGIN_ID)
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
+            terminal_baseline = workspace / "trusted-terminal-smoke"
+            shutil.copytree(root, terminal_baseline)
+            evidence_path = factory.publication_path(root, PLUGIN_ID)
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["smokeOutcomes"][0]["smoke"]["marketplaceRevision"] = "d" * 40
+            write_json(evidence_path, evidence)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain every immutable smoke outcome"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    baseline_root=terminal_baseline,
+                    require_publication_proofs=False,
+                )
+
     def test_strict_gate_rejects_a_complete_preseeded_first_publication_without_kms_proof(self) -> None:
         """A PR cannot manufacture snapshot/release/evidence in its first change."""
 
@@ -1480,6 +1528,12 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("merge-base --is-ancestor", smoke_workflow)
         self.assertIn("release_id=\"$current_beta\"", smoke_workflow)
         publisher_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertIn("Record immutable external Stable provenance after verification", publisher_workflow)
+        self.assertIn(
+            "if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}",
+            publisher_workflow,
+        )
+        self.assertNotIn("steps.external-stable.outputs.changed == 'true'", publisher_workflow)
         self.assertIn("duplicate source delivery", publisher_workflow)
         self.assertIn("git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory", publisher_workflow)
         self.assertIn("Record Factory Beta state", publisher_workflow)
