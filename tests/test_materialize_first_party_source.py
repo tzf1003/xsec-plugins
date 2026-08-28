@@ -46,6 +46,17 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
         verifier = patch.object(materializer, "verify_historical_sidecar_signature", return_value="a" * 40)
         verifier.start()
         self.addCleanup(verifier.stop)
+        # Materialization queries the real fixed public Factory origin before
+        # reading artifacts. Unit fixtures use isolated repositories, so make
+        # that read-only remote result equal their actual local HEAD while
+        # retaining a dedicated stale-remote regression below.
+        remote_main = patch.object(
+            materializer,
+            "trusted_factory_remote_main",
+            side_effect=lambda root: git(root, "rev-parse", "HEAD"),
+        )
+        remote_main.start()
+        self.addCleanup(remote_main.stop)
 
     def manifest(self, version: str) -> dict[str, object]:
         return {
@@ -234,7 +245,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             (factory / "untrusted.txt").write_text("different commit", encoding="utf-8")
             git(factory, "add", "untrusted.txt")
             git(factory, "commit", "--quiet", "-m", "untrusted local main lookalike")
-            with self.assertRaisesRegex(materializer.MaterializationError, "trusted Factory main commit"):
+            with self.assertRaisesRegex(materializer.MaterializationError, "trusted Factory.*main commit"):
                 materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
 
     def test_rejects_a_clean_clone_with_an_untrusted_factory_origin(self) -> None:
@@ -245,6 +256,18 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             git(factory, "remote", "set-url", "origin", "https://github.com/attacker/xsec-plugins.git")
             with self.assertRaisesRegex(materializer.MaterializationError, "canonical trusted xsec-plugins"):
                 materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
+
+    def test_rejects_a_clean_factory_checkout_when_cached_origin_main_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-stale-remote-main-") as directory:
+            factory = Path(directory) / "factory"
+            factory.mkdir()
+            self.make_factory(factory)
+            with patch.object(materializer, "trusted_factory_remote_main", return_value="b" * 40):
+                with self.assertRaisesRegex(materializer.MaterializationError, "current trusted Factory remote main"):
+                    materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
+            script = (SCRIPTS / "materialize_first_party_source.py").read_text(encoding="utf-8")
+            self.assertIn('"ls-remote"', script)
+            self.assertIn("TRUSTED_FACTORY_ORIGIN", script)
 
     def test_rejects_a_retained_release_index_without_a_valid_kms_sidecar(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-unverified-release-") as directory:

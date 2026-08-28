@@ -100,7 +100,8 @@ python scripts\materialize_first_party_source.py `
 
 脚本在任何 dry-run 或 `--push` 之前都要求本地工作树严格处于干净的
 `HEAD == main == origin/main`，并要求 `origin` 精确为
-`https://github.com/tzf1003/xsec-plugins.git`；它先校验保留的 `releases.json` 及其 KMS sidecar，
+`https://github.com/tzf1003/xsec-plugins.git`，还会以固定 HTTPS、无提示、只读 `ls-remote` 查询该
+远端的当前 `main` 并要求 `HEAD` 精确相等；本地缓存的 `origin/main` 过期时会拒绝执行。它先校验保留的 `releases.json` 及其 KMS sidecar，
 才会读取 artifact。只有明确指定 `--push` 和该插件的精确 GitHub URL 才会写远端。脚本要求远端
 `main` 和 `beta` 都不存在，并用单次 `git push --atomic` 创建两条分支（任何一条不能建立时两条都不写入）；
 它不读取、打印或保存 token/KMS secret：

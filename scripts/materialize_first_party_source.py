@@ -84,6 +84,67 @@ def git_stdout(arguments: list[str], *, cwd: Path) -> str:
     return run_git(arguments, cwd=cwd).stdout.decode("utf-8", errors="strict").strip()
 
 
+def trusted_factory_remote_main(factory_root: Path) -> str:
+    """Resolve the public Factory ``main`` head without trusting local refs.
+
+    A clean clone can retain an obsolete ``origin/main`` indefinitely. Source
+    commits reconstructed from that stale immutable history would later look
+    structurally valid to adoption, so query only the canonical HTTPS Factory
+    remote before any artifact or history is read.  This is deliberately a
+    no-write, no-prompt transport with global/system Git configuration ignored.
+    """
+
+    environment = os.environ.copy()
+    for key in (
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_SSL_NO_VERIFY",
+        "GIT_HTTP_PROXY",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+    ):
+        environment.pop(key, None)
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ALLOW_PROTOCOL": "https",
+        }
+    )
+    output = run_git(
+        [
+            "-c",
+            "credential.helper=",
+            "-c",
+            "http.sslVerify=true",
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "ls-remote",
+            "--refs",
+            TRUSTED_FACTORY_ORIGIN,
+            "refs/heads/main",
+        ],
+        cwd=factory_root,
+        environment=environment,
+    ).stdout.decode("utf-8", errors="strict").splitlines()
+    if len(output) != 1:
+        fail("trusted Factory remote main revision is unavailable")
+    fields = output[0].split("\t")
+    if len(fields) != 2 or fields[1] != "refs/heads/main" or not GIT_SHA_PATTERN.fullmatch(fields[0]):
+        fail("trusted Factory remote main revision is invalid")
+    return fields[0]
+
+
 def safe_plugin_id(value: str) -> str:
     if value not in FIRST_PARTY_APPROVED_SOURCES:
         fail("plugin ID is not one of the eleven approved first-party source mappings")
@@ -316,9 +377,10 @@ def require_factory_history(factory_root: Path) -> Path:
     origin_main = git_stdout(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], cwd=root)
     if not GIT_SHA_PATTERN.fullmatch(origin_main):
         fail("trusted Factory origin/main revision is unavailable")
+    remote_main = trusted_factory_remote_main(root)
     head = git_stdout(["rev-parse", "--verify", "HEAD^{commit}"], cwd=root)
-    if head != main or head != origin_main:
-        fail("materialization requires a checkout at the trusted Factory main commit")
+    if head != main or head != origin_main or head != remote_main:
+        fail("materialization requires a checkout at the current trusted Factory remote main commit")
     if run_git(["status", "--porcelain", "--untracked-files=all"], cwd=root).stdout.strip():
         fail("materialization requires a clean trusted Factory main checkout")
     return root
