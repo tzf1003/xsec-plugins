@@ -65,6 +65,9 @@ retain the restrictive optional-package rules; the exact reviewed
 identity, existing Desktop capabilities and `INSTALLED_BY_DEFAULT`.  The
 split/migration contract, KMS adoption proof and Cloud reconciliation payloads
 are documented in [first-party-plugin-factory.md](docs/first-party-plugin-factory.md).
+That document also defines the default-dry-run materializer that derives the
+eleven split source repositories from retained immutable artifacts without
+moving a channel or activating a Registry record.
 
 An administrator first reviews an allowlist entry in
 `.xsec-factory/official-registry.json`. An entry fixes a GitHub

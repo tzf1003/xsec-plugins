@@ -68,6 +68,47 @@ python scripts/external_source_factory.py adopt-first-party \
 随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。未来 Beta 发布可追加 history，
 但 adoption 中的历史 prefix 永远不能改写。
 
+## 可执行源码 materializer
+
+`scripts/materialize_first_party_source.py` 只用于这 11 个固定第一方映射。它从保留的
+`.xsec-market/releases.json` 选择当前 Beta/Stable pointer，重新验证每个 `any/any`
+artifact 的记录 SHA-256、ZIP 路径、双 manifest 和 entrypoint，然后分别从两个
+artifact 建立 `beta` 与 `main` 的精确源码树。生成的仓库固定为：
+
+```text
+README.md
+.github/workflows/ci.yml
+plugins/<plugin-id>/
+```
+
+历史通过 `git fast-export`/`fast-import` 从 Factory `main` 中仅保留
+`plugins/<plugin-id>`，再在每个历史 commit 的 index 中移除 `.xsec-market`、
+`.xsec-plugin` 和 `.sig.jws.json`。生成后会删除 filter 的 original refs、过期 reflog
+并执行 GC；两条最终分支再次断言没有 Marketplace metadata、artifact 或 signature。
+它不执行插件代码、不会写 adoption/proof，也不会改 Registry。
+
+默认是临时目录 dry-run，stdout **只有**候选 source SHA 与可提交到 Factory PR 的
+`pending-adoption` Registry v2 行：
+
+```powershell
+python scripts\materialize_first_party_source.py `
+  --plugin-id com.xsec.workspace.sub-agent
+```
+
+只有明确指定 `--push` 和该插件的精确 GitHub URL 才会写远端。脚本要求远端 `main` 和
+`beta` 都不存在，使用普通（非 force）push；它不读取、打印或保存 token/KMS secret：
+
+```powershell
+python scripts\materialize_first_party_source.py `
+  --plugin-id com.xsec.workspace.sub-agent `
+  --target https://github.com/tzf1003/xsec-plugin-sub-agent.git `
+  --push
+```
+
+将 stdout 的 Registry 行作为受保护的单独 PR 加入本仓库，保持
+`status: "pending-adoption"`。确认远端分支 SHA 与该输出一致后，才运行上一节的
+`adopt-first-party.yml`；materializer 本身永远不能激活插件。
+
 ## 自动 reconcile payload
 
 Cloud 只能用专用 GitHub App 向 `xsec-plugins` 发 `repository_dispatch`。两个 workflow
