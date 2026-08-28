@@ -1445,6 +1445,20 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             baseline = workspace / "trusted-terminal"
             shutil.copytree(root, baseline)
 
+            # A status file is consumer-readable, not source provenance. A
+            # normal PR cannot invent the next Beta cycle by changing only
+            # this tuple while retaining the old signed evidence history.
+            forged_status_path = factory.status_path(root, PLUGIN_ID)
+            forged_status = json.loads(forged_status_path.read_text(encoding="utf-8"))
+            forged_status["source"]["betaSha"] = "d" * 40
+            forged_status["publication"]["state"] = "waiting_for_smoke"
+            forged_status["publication"]["smokeRunUrl"] = None
+            forged_status["publication"]["marketplaceRevision"] = None
+            write_json(forged_status_path, forged_status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "appended immutable provenance"):
+                factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+            shutil.copy2(factory.status_path(baseline, PLUGIN_ID), forged_status_path)
+
             manifest_path = source / "package" / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["version"] = "1.0.1"

@@ -2474,6 +2474,39 @@ def status_beta_identity(
     return state, beta_release_id, beta_sha
 
 
+def appended_beta_provenance_matches(
+    baseline_events: tuple[str, ...],
+    current_events: tuple[str, ...],
+    *,
+    beta_release_id: str,
+    beta_sha: str,
+) -> bool:
+    """Require a next-cycle status tuple to be newly recorded provenance.
+
+    A readable ``waiting_for_smoke`` sidecar is not signed on its own.  When
+    it replaces a trusted terminal status, permit it only if an immutable Beta
+    event with the exact release/source tuple was appended after the trusted
+    baseline.  The full validator later checks that event's registry/ref and
+    artifact binding before the generated publication PR can merge.
+    """
+
+    for encoded_event in current_events[len(baseline_events) :]:
+        try:
+            event = json.loads(encoded_event)
+        except json.JSONDecodeError as error:
+            raise ExternalSourceFactoryError("current Factory publication provenance is invalid") from error
+        source = event.get("source") if isinstance(event, dict) else None
+        if (
+            isinstance(event, dict)
+            and event.get("channel") == "beta"
+            and event.get("releaseId") == beta_release_id
+            and isinstance(source, dict)
+            and source.get("sha") == beta_sha
+        ):
+            return True
+    return False
+
+
 def needs_smoke_redispatch(root: Path, plugin_id: str, *, beta_sha: str) -> dict[str, str]:
     """Report whether an already-signed Beta needs its lost smoke dispatch replayed.
 
@@ -2668,6 +2701,12 @@ def validate_trusted_baseline_continuity(
                 and current_status[1] is not None
                 and current_status[2] is not None
                 and current_status[1:] != baseline_status[1:]
+                and appended_beta_provenance_matches(
+                    baseline_events,
+                    current_events,
+                    beta_release_id=current_status[1],
+                    beta_sha=current_status[2],
+                )
             ):
                 # A distinct Beta release or source SHA begins a new smoke
                 # cycle. Retaining the old terminal document verbatim would
@@ -2676,7 +2715,7 @@ def validate_trusted_baseline_continuity(
                 continue
             fail(
                 f"published official Factory plugin {plugin_id} must retain its terminal published status "
-                "unless an exact new Beta smoke cycle is recorded"
+                "unless an exact new Beta smoke cycle is recorded by appended immutable provenance"
             )
 
 
