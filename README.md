@@ -174,6 +174,32 @@ It remains the legacy built-in path: a registered external plugin must use the
 external Stable request to `publish.yml`, so its source-main proof cannot be
 bypassed.
 
+### Retained KMS sidecar repair
+
+`Refresh retained immutable Marketplace sidecar` is the only recovery path for
+a release sidecar whose KMS envelope no longer matches the *unchanged* retained
+`releases.json` bytes. It is a manual `workflow_dispatch` that accepts one
+current Marketplace plugin ID and is permitted only on protected `main`, in
+the reviewer-gated `production` environment, with the Factory publisher token
+and GitHub Actions OIDC. It shares the normal publication queue, re-reads
+current protected `main`, validates the immutable release records, artifacts
+and deterministic source build before signing, and asks the Cloud broker to
+sign only `plugins/<plugin-id>/.xsec-market/releases.json`.
+
+The workflow validates that exact new KMS sidecar, runs strict Factory
+validation, and rejects its run unless the sole changed (including untracked)
+path is that `.sig.jws.json` file. It cannot sign the mutable marketplace
+index, choose an arbitrary document path, rebuild an artifact, edit release
+history, move a Beta/Stable pointer, or modify Factory registry/evidence. It
+opens a sidecar-only PR, waits for `validate.yml`, requests `@codex review`,
+and intentionally **never merges** the PR.
+
+Before enabling it, the Cloud signing broker's OIDC policy must allow the
+exact protected `refresh-retained-sidecars.yml` workflow ref in
+`tzf1003/xsec-plugins`; absent that production policy change, the broker must
+reject the request. This fail-closed prerequisite is separate from repository
+source code and no KMS secret is stored here.
+
 Both workflows dispatch the resulting immutable revision to Desktop with an
 explicit `channel` (`beta` or `stable`). Desktop defaults to stable; opting
 into beta must be an explicit Desktop setting. Desktop automatically installs
