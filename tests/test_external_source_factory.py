@@ -1544,6 +1544,76 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(releases[0]["releaseId"], old_release_id)
             self.assertEqual(len(releases), 2)
 
+    def test_first_party_same_artifact_beta_sha_is_a_post_adoption_provenance_cycle(self) -> None:
+        """A source-only change must not be hidden behind the adoption prefix."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-same-artifact-beta-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            plugin_id = "com.xsec.workspace.sub-agent"
+            release_id = self.make_first_party_adoption(root)
+
+            # Complete one terminal cycle from the adopted artifact, so the
+            # trusted baseline has a real KMS-bound publication history.
+            factory.record_beta(root, plugin_id, BETA_SHA, "test-publisher")
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="adopted-beta",
+            )
+            self.assertTrue(promote_release.promote_stable(root, plugin_id, release_id))
+            factory.record_stable(root, plugin_id, STABLE_SHA, release_id, "test-publisher")
+            write_historical_release_sidecar(root, plugin_id)
+            write_publication_proof(root, plugin_id)
+            factory.complete_smoke_status(
+                root,
+                plugin_id,
+                beta_release_id=release_id,
+                stable_sha=STABLE_SHA,
+                delivery_id="adopted-smoke",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/800",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, plugin_id)
+            factory.validate_registry_and_snapshots(root)
+            baseline = workspace / "trusted-adopted-terminal"
+            shutil.copytree(root, baseline)
+
+            # A new source SHA may reproduce the exact adopted artifact (for
+            # example an empty commit). It still gets a distinct immutable
+            # Beta provenance event and must start a new smoke cycle.
+            source = root / "source"
+            shutil.copytree(
+                root / "plugins" / plugin_id,
+                source / "plugins" / plugin_id,
+                ignore=shutil.ignore_patterns(".xsec-market"),
+            )
+            factory.stage_beta(root, plugin_id, source)
+            snapshot = root / "plugins" / plugin_id
+            build_market.build_plugin(snapshot, snapshot)
+            factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha="d" * 40,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="same-artifact-beta",
+            )
+            write_publication_proof(root, plugin_id, source_revision="d" * 40)
+
+            releases = json.loads(factory.release_path(root, plugin_id).read_text(encoding="utf-8"))["releases"]
+            self.assertEqual([release["releaseId"] for release in releases], [release_id])
+            self.assertTrue(factory.first_party_has_post_adoption_history(
+                root,
+                factory.registration_for(root, plugin_id),
+                state_label="current Factory",
+            ))
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_first_party_post_adoption_evidence_is_required_and_append_only(self) -> None:
         """Adoption cannot be used to erase source provenance for newer releases."""
 

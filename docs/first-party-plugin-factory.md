@@ -66,8 +66,9 @@ python scripts/external_source_factory.py adopt-first-party \
 ```
 
 随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。未来 Beta 发布可追加 history，
-但 adoption 中的历史 prefix 永远不能改写。只要当前 `releases.json` 增加了 adoption prefix
-以外的 release，`.xsec-factory/official-publications/<plugin-id>.json` 与其 KMS proof 就成为
+但 adoption 中的历史 prefix 永远不能改写。只要 split source 首次记录 post-adoption Beta/Stable
+provenance（即使新 source SHA 生成的 artifact 与 adoption release 完全相同，未增加 releaseId），
+`.xsec-factory/official-publications/<plugin-id>.json` 与其 KMS proof 就成为
 强制、append-only 的 source provenance；普通 PR 不能删除、重写或用 adoption proof 替代这些
 post-adoption events。
 

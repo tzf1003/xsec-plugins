@@ -1675,7 +1675,13 @@ def adopted_release_ids(root: Path, registration: Registration, *, state_label: 
 
 
 def first_party_has_post_adoption_history(root: Path, registration: Registration, *, state_label: str) -> bool:
-    """Whether immutable history has grown beyond the signed adoption prefix."""
+    """Whether split-source provenance exists beyond the signed adoption.
+
+    A new source SHA may deterministically reproduce a retained adopted
+    artifact, so it does not necessarily append a new release ID.  Its
+    KMS-bound publication event is nevertheless the start of a new Beta
+    lifecycle and must be retained by the trusted-baseline gate.
+    """
 
     adopted_ids = adopted_release_ids(root, registration, state_label=state_label)
     try:
@@ -1690,7 +1696,8 @@ def first_party_has_post_adoption_history(root: Path, registration: Registration
         fail(f"{state_label} first-party release history IDs are invalid")
     if release_ids[: len(adopted_ids)] != adopted_ids:
         fail(f"{state_label} first-party release history does not retain its adopted prefix")
-    return len(release_ids) > len(adopted_ids)
+    evidence = publication_path(root, registration.plugin_id)
+    return len(release_ids) > len(adopted_ids) or evidence.exists() or is_link(evidence)
 
 
 def optional_url(value: object, label: str) -> str | None:
@@ -2430,8 +2437,9 @@ def ownership_history(root: Path, registration: Registration, *, state_label: st
     proof = read_json(path, f"{state_label} first-party adoption proof for {registration.plugin_id}")
     ownership = (json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":")),)
     # Adoption authenticates only the retained legacy prefix. Once a split
-    # source publishes new bytes, append-only evidence is equally immutable and
-    # must survive every trusted-baseline comparison.
+    # source records post-adoption provenance (including a new source SHA that
+    # reproduces an adopted artifact), append-only evidence is equally
+    # immutable and must survive every trusted-baseline comparison.
     if first_party_has_post_adoption_history(root, registration, state_label=state_label):
         return ownership + publication_evidence_history(root, registration, state_label=state_label)
     return ownership
@@ -2936,9 +2944,10 @@ def validate_registry_and_snapshots(
             # its historical release record/artifacts and existing pointers.
             # It is not allowed to self-authorise by adding a registry row.
             validate_adoption(root, registration, require_kms_proof=require_publication_proofs)
-            # Once a split source publishes new bytes, retain the same
+            # Once a split source records provenance, retain the same
             # append-only source evidence/proof used by external packages in
-            # addition to (never instead of) its migration adoption.
+            # addition to (never instead of) its migration adoption. This
+            # includes a new source SHA that reproduces an adopted artifact.
             adopted_ids = adopted_release_ids(root, registration, state_label="current Factory")
             has_post_adoption_history = first_party_has_post_adoption_history(
                 root,
