@@ -1501,6 +1501,48 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "promoting Factory status must not claim Desktop smoke evidence"):
                 factory.validate_registry_and_snapshots(root)
 
+    def test_promoting_status_cannot_pair_current_beta_with_historical_stable(self) -> None:
+        """A signed historical Stable event cannot fabricate a new promotion."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-promoting-current-beta-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            historical_release = self.stage_and_record_beta(root, source)
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, historical_release))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, historical_release, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+
+            source_manifest = source / "package" / "plugin.json"
+            manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(source_manifest, manifest)
+            (source / "package" / "frontend.js").write_text(
+                "export function activate() { return 'new-beta'; }\n",
+                encoding="utf-8",
+            )
+            current_beta_sha = "d" * 40
+            current_release = self.stage_and_record_beta(root, source, source_sha=current_beta_sha)
+            self.assertNotEqual(current_release, historical_release)
+            # The immutable evidence now contains a valid current Beta event
+            # and a valid historical Stable event, but Stable still points to
+            # that old release. A normal PR must not stitch them into an
+            # apparent promotion.
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=current_beta_sha,
+                stable_sha=STABLE_SHA,
+                state="promoting_stable",
+                delivery_id="forged-historical-stable",
+            )
+            write_publication_proof(root, PLUGIN_ID, source_revision=current_beta_sha)
+            with self.assertRaisesRegex(
+                factory.ExternalSourceFactoryError,
+                "promoting Factory status must promote the current Beta release",
+            ):
+                factory.validate_registry_and_snapshots(root)
+
     def test_published_baseline_cannot_roll_back_to_an_older_signed_smoke_outcome(self) -> None:
         """A later valid smoke result cannot be replaced by a prior terminal tuple."""
 

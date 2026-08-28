@@ -2044,6 +2044,8 @@ def validate_status(
         elif state == "promoting_stable":
             if stable_id is None or stable_sha is None:
                 fail("promoting Factory status must retain a Stable release ID and source SHA")
+            if stable_id != beta_id:
+                fail("promoting Factory status must promote the current Beta release")
             if smoke_run_url is not None or marketplace_revision is not None:
                 fail("promoting Factory status must not claim Desktop smoke evidence")
             if not evidence_event_matches(

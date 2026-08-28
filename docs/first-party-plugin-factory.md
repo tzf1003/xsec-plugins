@@ -172,7 +172,7 @@ revision 的普通 PR 因没有匹配的 KMS proof 而失败，adoption 也不�
 source SHA，并精确匹配已 KMS 签名的 Beta provenance event；不能仅靠首次创建可读 status 文件伪造一个
 Desktop 可见的 in-flight 发布周期。`waiting_for_smoke` 的 `stableSha`、smoke URL 和 Marketplace
 revision 必须为 `null`；`promoting_stable` 必须再带精确匹配 KMS Stable event 的 Stable releaseId/source
-SHA，且仍不得声称 smoke/revision。
+SHA，并且其 Stable releaseId 必须等于当前 Beta releaseId，且仍不得声称 smoke/revision。
 当 `reconcile-smoke` 接受 Desktop 的 Beta smoke 成功回调并触发可重建的 Stable
 推广时，会把该回调的精确 Factory revision 和 Desktop Actions URL 带入 Stable 生成
 PR；只有该 PR 的指针/证据校验通过后，状态才成为终态 `published`。重复 Beta delivery
