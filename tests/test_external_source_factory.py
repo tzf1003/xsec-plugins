@@ -935,6 +935,28 @@ class ExternalSourceFactoryTests(unittest.TestCase):
 
             terminal_baseline = workspace / "trusted-terminal-smoke"
             shutil.copytree(root, terminal_baseline)
+            status_path = factory.status_path(root, PLUGIN_ID)
+            original_status = status_path.read_bytes()
+            status_path.unlink()
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain its terminal published status"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    baseline_root=terminal_baseline,
+                    require_publication_proofs=False,
+                )
+
+            status_path.write_bytes(original_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["publication"]["state"] = "waiting_for_smoke"
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain its terminal published status"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    baseline_root=terminal_baseline,
+                    require_publication_proofs=False,
+                )
+
+            status_path.write_bytes(original_status)
             evidence_path = factory.publication_path(root, PLUGIN_ID)
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
             evidence["smokeOutcomes"][0]["smoke"]["marketplaceRevision"] = "d" * 40

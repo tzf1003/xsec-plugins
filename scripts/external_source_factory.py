@@ -2436,6 +2436,30 @@ def ownership_history(root: Path, registration: Registration, *, state_label: st
     return ownership
 
 
+def has_published_status(root: Path, registration: Registration, *, state_label: str) -> bool:
+    """Return whether a regular status sidecar records a terminal publication.
+
+    The strict full status validator runs after baseline continuity. This small
+    reader is intentionally limited to the terminal-state bit that must not be
+    erased by a PR in between two protected Factory publications; malformed
+    status data still fails closed instead of being treated as absent.
+    """
+
+    path = status_path(root, registration.plugin_id)
+    if is_link(path):
+        fail(f"{state_label} Factory status for {registration.plugin_id} must not use a symbolic link")
+    if not path.exists():
+        return False
+    if not path.is_file():
+        fail(f"{state_label} Factory status for {registration.plugin_id} must be a regular file")
+    status = read_json(path, f"{state_label} Factory status for {registration.plugin_id}")
+    publication = require_object(status.get("publication"), f"{state_label} Factory status publication")
+    state = publication.get("state")
+    if not isinstance(state, str) or state not in PUBLICATION_STATES:
+        fail(f"{state_label} Factory status for {registration.plugin_id} has an invalid publication state")
+    return state == "published"
+
+
 def validate_trusted_baseline_continuity(
     root: Path,
     registrations: tuple[Registration, ...],
@@ -2585,6 +2609,17 @@ def validate_trusted_baseline_continuity(
                 fail(
                     f"published official Factory plugin {plugin_id} must retain every immutable smoke outcome "
                     "recorded in the trusted baseline in append-only order"
+                )
+        # A complete smoke-gated result is also durable consumer state. Losing
+        # it makes Desktop show an apparent unpublished plugin and prevents a
+        # later callback from repairing the record (completion requires the
+        # prior Beta status). A generated workflow may update observability
+        # fields, but it must never delete or downgrade a published baseline.
+        if has_published_status(baseline, baseline_registration, state_label="trusted Factory baseline"):
+            if not has_published_status(root, registration, state_label="current Factory"):
+                fail(
+                    f"published official Factory plugin {plugin_id} must retain its terminal published status "
+                    "recorded in the trusted baseline"
                 )
 
 

@@ -171,4 +171,6 @@ smoke outcome 或终态状态。即使 Stable 指针已经等于该 Beta（例�
 release），publisher 也会幂等写入/保留该 Stable source event；这样每个 terminal smoke outcome
 都有精确的 Beta 与 Stable provenance 可绑定。同一 release/source tuple 的晚到 Desktop sweep 会
 复用最早的 KMS-signed smoke outcome（包含 URL 与 Factory revision），不会把一个尚未签名的新
-revision 写入 `published` status。
+revision 写入 `published` status。source gate 对 source provenance 与 smoke outcome 各自执行
+受信基线的 append-only continuity；一旦基线已有 `published` status，普通 PR 也不能删除或把
+Desktop 的该终态降级。
