@@ -270,6 +270,36 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 self.assertNotIn("GIT_CONFIG", environment)
                 self.assertNotIn("HTTPS_PROXY", environment)
 
+    def test_ssh_target_uses_a_safe_openssh_command_without_user_host_rewrites(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-sealed-ssh-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            calls: list[tuple[list[str], dict[str, object]]] = []
+
+            def fake_git(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+                calls.append((arguments, kwargs))
+                return subprocess.CompletedProcess(["git", *arguments], 0, stdout=b"", stderr=b"")
+
+            with patch.dict(os.environ, {"GIT_SSH_COMMAND": "ssh -F attacker-config"}):
+                with patch.object(materializer, "run_git", side_effect=fake_git):
+                    materializer.push_candidate(
+                        repository,
+                        PLUGIN_ID,
+                        "git@github.com:tzf1003/xsec-plugin-sub-agent.git",
+                    )
+            self.assertEqual(len(calls), 2)
+            for _, kwargs in calls:
+                environment = kwargs["environment"]
+                assert isinstance(environment, dict)
+                command = environment["GIT_SSH_COMMAND"]
+                self.assertNotIn("attacker-config", command)
+                self.assertIn(f"-F {os.devnull}", command)
+                self.assertIn("Hostname=github.com", command)
+                self.assertIn("ProxyCommand=none", command)
+                self.assertIn("ProxyJump=none", command)
+                self.assertIn("StrictHostKeyChecking=yes", command)
+                self.assertEqual(environment["GIT_SSH_VARIANT"], "ssh")
+
     def test_rejects_an_artifact_that_no_longer_matches_the_retained_sha256(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-digest-") as directory:
             factory = Path(directory) / "factory"

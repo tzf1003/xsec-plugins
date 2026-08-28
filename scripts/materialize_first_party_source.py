@@ -75,6 +75,49 @@ TRANSPORT_ENVIRONMENT_KEYS = (
 )
 
 
+def safe_openssh_command() -> str:
+    """Return the only SSH transport command accepted for an approved target.
+
+    ``GIT_SSH_COMMAND`` normally inherits ``~/.ssh/config``.  A ``Host
+    github.com`` entry can then replace the hostname or add a ProxyCommand
+    even when Git itself did not rewrite the URL.  The materializer only needs
+    standard GitHub SSH transport, so use the null user configuration and
+    command-line settings that lock down routing and host-key verification.
+    The caller's SSH agent remains available for authentication; this tool
+    never reads a key or token itself.
+    """
+
+    return " ".join(
+        (
+            "ssh",
+            "-F",
+            os.devnull,
+            "-o",
+            "Hostname=github.com",
+            "-o",
+            "User=git",
+            "-o",
+            "ProxyCommand=none",
+            "-o",
+            "ProxyJump=none",
+            "-o",
+            "CanonicalizeHostname=no",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "HostKeyAlias=github.com",
+            "-o",
+            "UserKnownHostsFile=~/.ssh/known_hosts",
+            "-o",
+            "GlobalKnownHostsFile=none",
+            "-o",
+            "UpdateHostKeys=no",
+            "-o",
+            "PermitLocalCommand=no",
+        )
+    )
+
+
 class MaterializationError(ValueError):
     """The migration must stop before producing or pushing a source branch."""
 
@@ -146,6 +189,9 @@ def sealed_transport_environment(
             environment["GIT_CEILING_DIRECTORIES"] = str(repository_discovery_ceiling.resolve(strict=True))
         except OSError as error:
             raise MaterializationError("cannot isolate Git transport from repository discovery") from error
+    if "ssh" in protocols:
+        environment["GIT_SSH_COMMAND"] = safe_openssh_command()
+        environment["GIT_SSH_VARIANT"] = "ssh"
     return environment
 
 
