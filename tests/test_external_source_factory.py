@@ -1158,6 +1158,24 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             # The test moves the immutable pointer directly, so refresh the
             # release sidecar just as the protected Stable publisher would.
             write_historical_release_sidecar(root, "com.xsec.workspace.sub-agent")
+            registration = factory.registration_for(root, "com.xsec.workspace.sub-agent")
+            # A terminal status is not authenticated by adoption alone: the
+            # protected smoke path appends a KMS-signed outcome tied to the
+            # exact Beta/Stable source provenance before it writes Desktop's
+            # readable status sidecar.
+            factory.record_beta(root, "com.xsec.workspace.sub-agent", BETA_SHA, "test-publisher")
+            factory.record_stable(root, "com.xsec.workspace.sub-agent", STABLE_SHA, release_id, "test-publisher")
+            factory.append_smoke_outcome(
+                root,
+                registration,
+                beta_release_id=release_id,
+                stable_release_id=release_id,
+                beta_sha=BETA_SHA,
+                stable_sha=STABLE_SHA,
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/42",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, "com.xsec.workspace.sub-agent")
             factory.record_status(
                 root,
                 "com.xsec.workspace.sub-agent",
@@ -1189,6 +1207,20 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             status["release"]["betaReleaseId"] = "sha256-" + "0" * 64
             write_json(status_path, status)
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "release pointers do not match"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(status_path, valid_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["source"]["betaSha"] = "d" * 40
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match KMS-bound smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(status_path, valid_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["publication"]["marketplaceRevision"] = "d" * 40
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match KMS-bound smoke evidence"):
                 factory.validate_registry_and_snapshots(root)
             self.assertTrue(release_id.startswith("sha256-"))
 
@@ -1235,6 +1267,20 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             )
             self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
             factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
+            # The documented manual recovery has no new Beta argument. It
+            # must retain the source SHA that the pending smoke callback is
+            # bound to, otherwise the later protected completion fails.
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=None,
+                stable_sha=STABLE_SHA,
+                state="promoting_stable",
+                delivery_id="manual-recovery",
+                factory_run_url="https://github.com/acme/factory/actions/runs/150",
+            )
+            recovered = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertEqual(recovered["source"]["betaSha"], BETA_SHA)
 
             completed = factory.complete_smoke_status(
                 root,
@@ -1261,9 +1307,11 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(status["source"]["stableSha"], STABLE_SHA)
             self.assertEqual(status["publication"]["state"], "published")
             self.assertEqual(status["publication"]["deliveryId"], "smoke-delivery")
-            self.assertEqual(status["publication"]["factoryRunUrl"], "https://github.com/acme/factory/actions/runs/100")
+            self.assertEqual(status["publication"]["factoryRunUrl"], "https://github.com/acme/factory/actions/runs/150")
             self.assertEqual(status["publication"]["smokeRunUrl"], "https://github.com/tzf1003/xSecDesktop/actions/runs/200")
             self.assertEqual(status["publication"]["marketplaceRevision"], "c" * 40)
+            write_publication_proof(root, PLUGIN_ID)
+            factory.validate_registry_and_snapshots(root)
             duplicate_beta = factory.record_status(
                 root,
                 PLUGIN_ID,

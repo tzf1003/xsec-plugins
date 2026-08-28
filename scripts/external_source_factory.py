@@ -1185,14 +1185,20 @@ def publication_event(registration: Registration, channel: str, source_sha: str,
 
 def append_evidence(root: Path, registration: Registration, event: dict[str, object]) -> None:
     path = publication_path(root, registration.plugin_id)
+    smoke_outcomes: list[object] | None = None
     if path.exists():
         document = read_json(path, f"official external publication evidence for {registration.plugin_id}")
-        require_exact_keys(document, {"schemaVersion", "pluginId", "events"}, f"official external publication evidence for {registration.plugin_id}")
+        if set(document) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+            fail(f"official external publication evidence for {registration.plugin_id} has invalid keys")
         if document.get("schemaVersion") != 1 or document.get("pluginId") != registration.plugin_id:
             fail("official external publication evidence has invalid identity")
         events = document.get("events")
         if not isinstance(events, list):
             fail("official external publication evidence events must be a list")
+        if "smokeOutcomes" in document:
+            smoke_outcomes = document.get("smokeOutcomes")
+            if not isinstance(smoke_outcomes, list):
+                fail("official external publication evidence smoke outcomes must be a list")
     else:
         events = []
     # A retry can be started by a different GitHub actor. Its immutable
@@ -1214,10 +1220,131 @@ def append_evidence(root: Path, registration: Registration, event: dict[str, obj
         if existing_identity == identity:
             return
     events.append(event)
+    result: dict[str, object] = {"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events}
+    if smoke_outcomes is not None:
+        result["smokeOutcomes"] = smoke_outcomes
+    stable_write(root, path, result, f"official external publication evidence for {registration.plugin_id}")
+
+
+def smoke_outcome(
+    registration: Registration,
+    *,
+    beta_release_id: str,
+    stable_release_id: str,
+    beta_sha: str,
+    stable_sha: str,
+    smoke_run_url: str,
+    marketplace_revision: str,
+) -> dict[str, object]:
+    """Build the KMS-bound record that proves one terminal smoke result.
+
+    The status sidecar remains deliberately small and Desktop-readable, but it
+    is authored in an ordinary generated Factory commit.  A terminal state
+    therefore must also have this exact tuple inside the already KMS-signed
+    publication evidence.  That makes a later hand-written status edit fail
+    closed without giving the status file itself a second signing protocol.
+    """
+
+    if not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id):
+        fail("smoke outcome Beta release ID must be canonical")
+    if not isinstance(stable_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(stable_release_id):
+        fail("smoke outcome Stable release ID must be canonical")
+    return {
+        "betaReleaseId": beta_release_id,
+        "stableReleaseId": stable_release_id,
+        "source": {
+            "betaSha": safe_sha(beta_sha, "smoke outcome Beta source SHA"),
+            "stableSha": safe_sha(stable_sha, "smoke outcome Stable source SHA"),
+        },
+        "smoke": {
+            "runUrl": optional_url(smoke_run_url, "smoke outcome run URL"),
+            "marketplaceRevision": safe_sha(marketplace_revision, "smoke outcome Marketplace revision"),
+        },
+    }
+
+
+def evidence_event_matches(
+    events: list[object],
+    *,
+    channel: str,
+    release_id_value: str,
+    source_sha: str,
+) -> bool:
+    """Return whether signed provenance has the exact source/release tuple."""
+
+    return any(
+        isinstance(event, dict)
+        and event.get("channel") == channel
+        and event.get("releaseId") == release_id_value
+        and isinstance(event.get("source"), dict)
+        and event["source"].get("sha") == source_sha
+        for event in events
+    )
+
+
+def append_smoke_outcome(
+    root: Path,
+    registration: Registration,
+    *,
+    beta_release_id: str,
+    stable_release_id: str,
+    beta_sha: str,
+    stable_sha: str,
+    smoke_run_url: str,
+    marketplace_revision: str,
+) -> None:
+    """Append one immutable, KMS-signed terminal smoke evidence record."""
+
+    path = publication_path(root, registration.plugin_id)
+    if is_link(path) or not path.is_file():
+        fail("completed smoke status requires immutable publication evidence")
+    document = read_json(path, f"official external publication evidence for {registration.plugin_id}")
+    if set(document) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+        fail("completed smoke status publication evidence has invalid keys")
+    if document.get("schemaVersion") != 1 or document.get("pluginId") != registration.plugin_id:
+        fail("completed smoke status publication evidence has invalid identity")
+    events = document.get("events")
+    if not isinstance(events, list):
+        fail("completed smoke status publication evidence events are invalid")
+    outcome = smoke_outcome(
+        registration,
+        beta_release_id=beta_release_id,
+        stable_release_id=stable_release_id,
+        beta_sha=beta_sha,
+        stable_sha=stable_sha,
+        smoke_run_url=smoke_run_url,
+        marketplace_revision=marketplace_revision,
+    )
+    source = require_object(outcome["source"], "smoke outcome source")
+    if not evidence_event_matches(events, channel="beta", release_id_value=beta_release_id, source_sha=str(source["betaSha"])):
+        fail("completed smoke status Beta source is not recorded in immutable publication evidence")
+    if not evidence_event_matches(events, channel="stable", release_id_value=stable_release_id, source_sha=str(source["stableSha"])):
+        fail("completed smoke status Stable source is not recorded in immutable publication evidence")
+    outcomes = document.get("smokeOutcomes", [])
+    if not isinstance(outcomes, list):
+        fail("completed smoke status publication evidence smoke outcomes are invalid")
+    identity = (beta_release_id, stable_release_id, str(source["betaSha"]), str(source["stableSha"]))
+    for existing in outcomes:
+        if not isinstance(existing, dict):
+            continue
+        existing_source = existing.get("source")
+        existing_identity = (
+            existing.get("betaReleaseId"),
+            existing.get("stableReleaseId"),
+            existing_source.get("betaSha") if isinstance(existing_source, dict) else None,
+            existing_source.get("stableSha") if isinstance(existing_source, dict) else None,
+        )
+        if existing_identity == identity:
+            # GitHub can redeliver the same accepted smoke completion with a
+            # different run attempt URL. The original KMS-bound outcome is
+            # the immutable audit record, so keep it rather than either
+            # replacing it or treating the retry as a publication failure.
+            return
+    outcomes.append(outcome)
     stable_write(
         root,
         path,
-        {"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events},
+        {"schemaVersion": 1, "pluginId": registration.plugin_id, "events": events, "smokeOutcomes": outcomes},
         f"official external publication evidence for {registration.plugin_id}",
     )
 
@@ -1635,6 +1762,20 @@ def record_status(
     marketplace_revision: str | None = None,
 ) -> dict[str, str]:
     registration = registration_for(root, plugin_id, active=False)
+    path = status_path(root, registration.plugin_id)
+    existing: dict[str, object] | None = None
+    if path.exists():
+        existing = read_json(path, f"official Factory status for {registration.plugin_id}")
+        # A manual Stable recovery deliberately supplies only the newly
+        # verified main SHA. It is not a new Beta delivery, so clearing the
+        # already smoke-bound Beta SHA would make the later genuine smoke
+        # callback fail its exact-pointer recheck. Preserve only this missing
+        # value; a Beta publication always supplies a replacement explicitly
+        # and therefore still clears stale Stable metadata as intended.
+        if beta_sha is None:
+            existing_source = existing.get("source")
+            if isinstance(existing_source, dict):
+                beta_sha = optional_sha(existing_source.get("betaSha"), "existing official Factory status betaSha")
     document = status_document(
         root,
         registration,
@@ -1646,9 +1787,7 @@ def record_status(
         smoke_run_url=smoke_run_url,
         marketplace_revision=marketplace_revision,
     )
-    path = status_path(root, registration.plugin_id)
-    if path.exists():
-        existing = read_json(path, f"official Factory status for {registration.plugin_id}")
+    if existing is not None:
         # A redelivered Beta event may arrive after its exact immutable
         # release has completed Desktop smoke and reached Stable.  Its
         # generated waiting_for_smoke document intentionally has no Stable
@@ -1766,14 +1905,29 @@ def complete_smoke_status(
         current_document = load_release_document(current_release, registration.plugin_id)
     except ValueError as error:
         raise ExternalSourceFactoryError(str(error)) from error
-    current_beta, _ = release_channels(current_document)
+    current_beta, current_stable = release_channels(current_document)
     if current_beta != beta_release_id:
         fail("completed smoke status Beta release does not match immutable release metadata")
+    if current_stable != beta_release_id:
+        fail("completed smoke status requires the Stable pointer to match its smoke-verified Beta")
+    resolved_stable_sha = optional_sha(stable_sha, "completed smoke status stableSha") if stable_sha is not None else prior_stable_sha
+    if resolved_stable_sha is None:
+        fail("completed smoke status has no Stable source SHA")
+    append_smoke_outcome(
+        root,
+        registration,
+        beta_release_id=beta_release_id,
+        stable_release_id=current_stable,
+        beta_sha=beta_sha,
+        stable_sha=resolved_stable_sha,
+        smoke_run_url=smoke_run_url,
+        marketplace_revision=marketplace_revision,
+    )
     return record_status(
         root,
         registration.plugin_id,
         beta_sha=beta_sha,
-        stable_sha=optional_sha(stable_sha, "completed smoke status stableSha") if stable_sha is not None else prior_stable_sha,
+        stable_sha=resolved_stable_sha,
         state="published",
         delivery_id=delivery_id,
         factory_run_url=factory_run_url,
@@ -1782,7 +1936,12 @@ def complete_smoke_status(
     )
 
 
-def validate_status(root: Path, registration: Registration) -> None:
+def validate_status(
+    root: Path,
+    registration: Registration,
+    *,
+    require_publication_proofs: bool = True,
+) -> None:
     path = status_path(root, registration.plugin_id)
     if not path.exists():
         return
@@ -1838,13 +1997,28 @@ def validate_status(root: Path, registration: Registration) -> None:
             fail("published Factory status must retain Desktop smoke evidence and Marketplace revision")
         if not smoke_run_url.startswith("https://github.com/tzf1003/xSecDesktop/actions/runs/"):
             fail("published Factory status smoke evidence must name the approved Desktop smoke workflow")
-        # Published status must be backed by immutable evidence as well as the
-        # smoke fields above. First-party adoption is the initial evidence for
-        # retained releases; normal publications then add source events.
+        # The readable status file is not itself a trust root. Bind every
+        # terminal field to the KMS-signed publication evidence produced only
+        # after reconcile-smoke accepted a retained Factory revision. The
+        # adoption proof still validates a first-party's legacy prefix, but
+        # it cannot on its own attest a later Desktop smoke run.
+        adopted_ids = frozenset()
         if registration.trust_tier == "first-party":
             validate_adoption(root, registration)
-        else:
-            validate_evidence(root, registration, releases)
+            adopted_ids = frozenset(adopted_release_ids(root, registration, state_label="published Factory status"))
+        evidence = validate_evidence(root, registration, releases, adopted_release_ids=adopted_ids)
+        if require_publication_proofs:
+            validate_publication_proof(root, registration)
+        require_published_smoke_outcome(
+            evidence,
+            registration,
+            beta_release_id=beta_id,
+            stable_release_id=stable_id,
+            beta_sha=beta_sha,
+            stable_sha=stable_sha,
+            smoke_run_url=smoke_run_url,
+            marketplace_revision=marketplace_revision,
+        )
 
 
 def validate_evidence(
@@ -1853,12 +2027,13 @@ def validate_evidence(
     document: dict[str, object],
     *,
     adopted_release_ids: frozenset[str] = frozenset(),
-) -> None:
+) -> dict[str, object]:
     path = publication_path(root, registration.plugin_id)
     if not path.exists():
         fail(f"external official plugin {registration.plugin_id} has no publication evidence")
     evidence = read_json(path, f"official external publication evidence for {registration.plugin_id}")
-    require_exact_keys(evidence, {"schemaVersion", "pluginId", "events"}, f"official external publication evidence for {registration.plugin_id}")
+    if set(evidence) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"}):
+        fail(f"official external publication evidence for {registration.plugin_id} has invalid keys")
     if evidence.get("schemaVersion") != 1 or evidence.get("pluginId") != registration.plugin_id:
         fail("official external publication evidence has invalid identity")
     events = evidence.get("events")
@@ -1907,6 +2082,92 @@ def validate_evidence(
     stable_id = stable.get("releaseId") if isinstance(stable, dict) else None
     if isinstance(stable_id, str) and stable_id not in stable_seen and stable_id not in adopted_release_ids:
         fail(f"external official plugin {registration.plugin_id} lacks Stable provenance")
+    validate_smoke_outcomes(evidence, registration, records)
+    return evidence
+
+
+def validate_smoke_outcomes(
+    evidence: dict[str, object],
+    registration: Registration,
+    records: dict[object, dict[str, object]],
+) -> None:
+    """Validate immutable smoke outcomes embedded in KMS-signed provenance."""
+
+    raw_outcomes = evidence.get("smokeOutcomes", [])
+    if not isinstance(raw_outcomes, list):
+        fail(f"external official plugin {registration.plugin_id} smoke outcomes are invalid")
+    events = evidence.get("events")
+    if not isinstance(events, list):
+        fail(f"external official plugin {registration.plugin_id} evidence events are invalid")
+    identities: set[tuple[str, str, str, str]] = set()
+    for index, raw_outcome in enumerate(raw_outcomes):
+        label = f"official external publication smoke outcome {index}"
+        outcome = require_object(raw_outcome, label)
+        require_exact_keys(outcome, {"betaReleaseId", "stableReleaseId", "source", "smoke"}, label)
+        beta_release_id = outcome.get("betaReleaseId")
+        stable_release_id = outcome.get("stableReleaseId")
+        if (
+            not isinstance(beta_release_id, str)
+            or not RELEASE_ID_PATTERN.fullmatch(beta_release_id)
+            or not isinstance(stable_release_id, str)
+            or not RELEASE_ID_PATTERN.fullmatch(stable_release_id)
+            or beta_release_id not in records
+            or stable_release_id not in records
+        ):
+            fail(f"{label} has invalid release pointers")
+        source = require_object(outcome.get("source"), f"{label}.source")
+        require_exact_keys(source, {"betaSha", "stableSha"}, f"{label}.source")
+        beta_sha = safe_sha(source.get("betaSha"), f"{label}.source.betaSha")
+        stable_sha = safe_sha(source.get("stableSha"), f"{label}.source.stableSha")
+        smoke = require_object(outcome.get("smoke"), f"{label}.smoke")
+        require_exact_keys(smoke, {"runUrl", "marketplaceRevision"}, f"{label}.smoke")
+        run_url = optional_url(smoke.get("runUrl"), f"{label}.smoke.runUrl")
+        revision = optional_sha(smoke.get("marketplaceRevision"), f"{label}.smoke.marketplaceRevision")
+        if run_url is None or revision is None or not run_url.startswith("https://github.com/tzf1003/xSecDesktop/actions/runs/"):
+            fail(f"{label} does not contain approved Desktop smoke evidence")
+        if not evidence_event_matches(events, channel="beta", release_id_value=beta_release_id, source_sha=beta_sha):
+            fail(f"{label} Beta source is not bound to immutable publication evidence")
+        if not evidence_event_matches(events, channel="stable", release_id_value=stable_release_id, source_sha=stable_sha):
+            fail(f"{label} Stable source is not bound to immutable publication evidence")
+        identity = (beta_release_id, stable_release_id, beta_sha, stable_sha)
+        if identity in identities:
+            fail(f"{label} duplicates an immutable smoke outcome")
+        identities.add(identity)
+
+
+def require_published_smoke_outcome(
+    evidence: dict[str, object],
+    registration: Registration,
+    *,
+    beta_release_id: str,
+    stable_release_id: str,
+    beta_sha: str,
+    stable_sha: str,
+    smoke_run_url: str,
+    marketplace_revision: str,
+) -> None:
+    """Require a terminal status to be exactly represented in signed evidence."""
+
+    outcomes = evidence.get("smokeOutcomes", [])
+    if not isinstance(outcomes, list):
+        fail(f"published Factory status for {registration.plugin_id} has invalid smoke evidence")
+    for raw_outcome in outcomes:
+        if not isinstance(raw_outcome, dict):
+            continue
+        source = raw_outcome.get("source")
+        smoke = raw_outcome.get("smoke")
+        if (
+            raw_outcome.get("betaReleaseId") == beta_release_id
+            and raw_outcome.get("stableReleaseId") == stable_release_id
+            and isinstance(source, dict)
+            and source.get("betaSha") == beta_sha
+            and source.get("stableSha") == stable_sha
+            and isinstance(smoke, dict)
+            and smoke.get("runUrl") == smoke_run_url
+            and smoke.get("marketplaceRevision") == marketplace_revision
+        ):
+            return
+    fail(f"published Factory status for {registration.plugin_id} does not match KMS-bound smoke evidence")
 
 
 def validate_publication_proof(root: Path, registration: Registration) -> None:
@@ -2386,7 +2647,7 @@ def validate_registry_and_snapshots(
                 fail(f"pending first-party plugin {registration.plugin_id} snapshot does not match its Beta release")
             validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
             validate_disabled_release_sidecar(root, registration)
-            validate_status(root, registration)
+            validate_status(root, registration, require_publication_proofs=require_publication_proofs)
             continue
         if registration.status == "disabled":
             if entry is not None:
@@ -2460,7 +2721,7 @@ def validate_registry_and_snapshots(
         if registration.status == "disabled" and registration.trust_tier == "external":
             validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
             validate_disabled_release_sidecar(root, registration)
-        validate_status(root, registration)
+        validate_status(root, registration, require_publication_proofs=require_publication_proofs)
 
 
 def write_outputs(values: dict[str, str], output_path: Path | None) -> None:

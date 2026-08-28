@@ -156,11 +156,15 @@ publisher 中重新读取当前 Beta pointer，并证明 main 可达性与可重
 repository/path/refs/betaSha/stableSha、当前 Beta/Stable releaseId，以及
 `waiting_for_beta|building_beta|waiting_for_smoke|promoting_stable|published|failed` 状态、
 delivery、Factory/smoke run URL 和 Marketplace revision（如有）。已标记 `published` 的
-状态必须能回溯到 adoption 或不可变 publication evidence，且必须有 `stableReleaseId ==
-betaReleaseId`、两端 source SHA、`xSecDesktop` smoke run URL 与 Marketplace revision；不能把
-仅有签名 Beta 的状态单独宣称为 published。
+状态必须能回溯到 adoption 与不可变 publication evidence，且必须有 `stableReleaseId ==
+betaReleaseId`、两端 source SHA、`xSecDesktop` smoke run URL 与 Marketplace revision。Factory 会把
+这五项精确值追加到同一份已经由 KMS JWS 签名的 `official-publications/<id>.json` smoke outcome；source
+gate 会逐项把状态与该 outcome、Beta/Stable source event 对齐。仅填写 SHA 形状、GitHub URL 或手工
+revision 的普通 PR 因没有匹配的 KMS proof 而失败，adoption 也不能单独宣称已 smoke/published。
 当 `reconcile-smoke` 接受 Desktop 的 Beta smoke 成功回调并触发可重建的 Stable
 推广时，会把该回调的精确 Factory revision 和 Desktop Actions URL 带入 Stable 生成
 PR；只有该 PR 的指针/证据校验通过后，状态才成为终态 `published`。重复 Beta delivery
 使用 `git status --porcelain --untracked-files=all` 检查 Factory 目录，未跟踪的
-provenance/status 文件绝不会被错误地当作可跳过的空操作。
+provenance/status 文件绝不会被错误地当作可跳过的空操作。受控的手动 Stable recovery 只会记录
+`promoting_stable`，并保留既有 `betaSha` 以便随后合法的 smoke callback 仍能完成；它不会生成
+smoke outcome 或终态状态。
