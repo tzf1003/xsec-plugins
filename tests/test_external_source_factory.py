@@ -1154,6 +1154,10 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-status-") as directory:
             root = Path(directory)
             release_id = self.make_first_party_adoption(root)
+            self.assertTrue(promote_release.promote_stable(root, "com.xsec.workspace.sub-agent", release_id))
+            # The test moves the immutable pointer directly, so refresh the
+            # release sidecar just as the protected Stable publisher would.
+            write_historical_release_sidecar(root, "com.xsec.workspace.sub-agent")
             factory.record_status(
                 root,
                 "com.xsec.workspace.sub-agent",
@@ -1161,10 +1165,26 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 stable_sha=STABLE_SHA,
                 state="published",
                 delivery_id="delivery-42",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/42",
                 marketplace_revision="c" * 40,
             )
             factory.validate_registry_and_snapshots(root)
             status_path = factory.status_path(root, "com.xsec.workspace.sub-agent")
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            valid_status = json.loads(json.dumps(status))
+            status["publication"]["smokeRunUrl"] = None
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain Desktop smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(status_path, valid_status)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["source"]["stableSha"] = None
+            write_json(status_path, status)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain both Beta and Stable source SHAs"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(status_path, valid_status)
             status = json.loads(status_path.read_text(encoding="utf-8"))
             status["release"]["betaReleaseId"] = "sha256-" + "0" * 64
             write_json(status_path, status)

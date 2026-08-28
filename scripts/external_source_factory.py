@@ -1796,8 +1796,8 @@ def validate_status(root: Path, registration: Registration) -> None:
     require_exact_keys(refs, {"beta", "stable"}, "official Factory status source.refs")
     if source.get("repository") != registration.repository or source.get("path") != registration.source_path.as_posix() or refs.get("beta") != registration.beta_ref or refs.get("stable") != registration.stable_ref:
         fail("official Factory status source does not match the official registry")
-    optional_sha(source.get("betaSha"), "official Factory status betaSha")
-    optional_sha(source.get("stableSha"), "official Factory status stableSha")
+    beta_sha = optional_sha(source.get("betaSha"), "official Factory status betaSha")
+    stable_sha = optional_sha(source.get("stableSha"), "official Factory status stableSha")
     release = require_object(status.get("release"), "official Factory status release")
     require_exact_keys(release, {"betaReleaseId", "stableReleaseId"}, "official Factory status release")
     beta_id = release.get("betaReleaseId")
@@ -1823,12 +1823,24 @@ def validate_status(root: Path, registration: Registration) -> None:
         fail("official Factory status publication state is invalid")
     require_text(publication.get("deliveryId"), "official Factory status deliveryId", maximum=160)
     optional_url(publication.get("factoryRunUrl"), "official Factory status factoryRunUrl")
-    optional_url(publication.get("smokeRunUrl"), "official Factory status smokeRunUrl")
-    optional_sha(publication.get("marketplaceRevision"), "official Factory status marketplaceRevision")
-    # Published status must be backed by immutable evidence, not merely by a
-    # caller supplied UI record.  First-party adoption is the initial evidence
-    # for retained releases; normal publications then add source events.
-    if publication.get("state") == "published" and beta_id is not None:
+    smoke_run_url = optional_url(publication.get("smokeRunUrl"), "official Factory status smokeRunUrl")
+    marketplace_revision = optional_sha(publication.get("marketplaceRevision"), "official Factory status marketplaceRevision")
+    # ``published`` is a terminal smoke result, never a cosmetic synonym for
+    # a signed Beta. Validate all of the data written exclusively by the
+    # smoke-gated Stable path before accepting the status sidecar; immutable
+    # release provenance alone cannot establish that Desktop smoke completed.
+    if publication.get("state") == "published":
+        if beta_id is None or stable_id != beta_id:
+            fail("published Factory status must bind the smoke-verified Beta to the Stable pointer")
+        if beta_sha is None or stable_sha is None:
+            fail("published Factory status must retain both Beta and Stable source SHAs")
+        if marketplace_revision is None or smoke_run_url is None:
+            fail("published Factory status must retain Desktop smoke evidence and Marketplace revision")
+        if not smoke_run_url.startswith("https://github.com/tzf1003/xSecDesktop/actions/runs/"):
+            fail("published Factory status smoke evidence must name the approved Desktop smoke workflow")
+        # Published status must be backed by immutable evidence as well as the
+        # smoke fields above. First-party adoption is the initial evidence for
+        # retained releases; normal publications then add source events.
         if registration.trust_tier == "first-party":
             validate_adoption(root, registration)
         else:
