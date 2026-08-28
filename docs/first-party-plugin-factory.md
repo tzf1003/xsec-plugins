@@ -176,4 +176,8 @@ release），publisher 也会幂等写入/保留该 Stable source event；这样
 复用最早的 KMS-signed smoke outcome（包含 URL 与 Factory revision），不会把一个尚未签名的新
 revision 写入 `published` status。source gate 对 source provenance 与 smoke outcome 各自执行
 受信基线的 append-only continuity；一旦基线已有 `published` status，普通 PR 也不能删除或把
-Desktop 的该终态降级。
+同一 Beta release/source tuple 的 Desktop 终态降级。随后一个**不同**的 Beta release 或 source SHA
+会合法开始新的 `waiting_for_smoke` 周期，旧 terminal smoke outcome 仍保留在 append-only 证据中。
+若该新 Beta 的生成 PR 已合并而 Desktop dispatch 因临时网络错误失败，完全相同的重复 delivery 不会
+重新签名或修改 Factory；它只会在 status 仍精确为该 SHA 的 `waiting_for_smoke` 时，重新 dispatch 当前
+受保护 main 的 Marketplace revision。其他状态、过期 SHA 或已完成 `published` 均不会触发 replay。

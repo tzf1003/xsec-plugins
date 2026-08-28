@@ -1412,6 +1412,63 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                     marketplace_revision="c" * 40,
                 )
 
+    def test_published_baseline_allows_a_distinct_beta_to_begin_its_next_smoke_cycle(self) -> None:
+        """A terminal status protects its own tuple, not every future Beta."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-factory-next-beta-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            initial_release = self.stage_and_record_beta(root, source)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="initial-beta",
+            )
+            self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, initial_release))
+            factory.record_stable(root, PLUGIN_ID, STABLE_SHA, initial_release, "test-publisher")
+            write_publication_proof(root, PLUGIN_ID)
+            factory.complete_smoke_status(
+                root,
+                PLUGIN_ID,
+                beta_release_id=initial_release,
+                stable_sha=STABLE_SHA,
+                delivery_id="initial-smoke",
+                smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/400",
+                marketplace_revision="c" * 40,
+            )
+            write_publication_proof(root, PLUGIN_ID)
+            baseline = workspace / "trusted-terminal"
+            shutil.copytree(root, baseline)
+
+            manifest_path = source / "package" / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(manifest_path, manifest)
+            (source / "package" / "frontend.js").write_text(
+                "export function activate() { return 'next-beta'; }\n",
+                encoding="utf-8",
+            )
+            next_sha = "d" * 40
+            next_release = self.stage_and_record_beta(root, source, source_sha=next_sha)
+            self.assertNotEqual(next_release, initial_release)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=next_sha,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="next-beta",
+            )
+            write_publication_proof(root, PLUGIN_ID, source_revision=next_sha)
+            self.assertEqual(factory.needs_smoke_redispatch(root, PLUGIN_ID, beta_sha=next_sha), {"redispatch": "true"})
+            self.assertEqual(factory.needs_smoke_redispatch(root, PLUGIN_ID, beta_sha=BETA_SHA), {"redispatch": "false"})
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_first_party_beta_after_adoption_appends_history_without_rewriting_the_adopted_prefix(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-followup-beta-") as directory:
             root = Path(directory)

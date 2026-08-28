@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 LIFECYCLE = ROOT / "docs" / "plugin-development-release-lifecycle.md"
+PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish.yml"
 
 
 class ReleaseLifecycleDocumentationTests(unittest.TestCase):
@@ -66,6 +67,13 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("trusted pre-change\nFactory revision", readme)
         self.assertIn("同一 PR 同时删除 registry、快照和证据", document)
         self.assertIn("设为 `disabled`", document)
+
+    def test_duplicate_beta_delivery_replays_only_the_current_waiting_smoke_status(self) -> None:
+        workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("needs-smoke-redispatch", workflow)
+        self.assertIn("smoke_redispatch=true", workflow)
+        self.assertIn("marketplace_revision=$(git rev-parse HEAD)", workflow)
+        self.assertIn("steps.publication-decision.outputs.smoke_redispatch == 'true'", workflow)
 
 
 if __name__ == "__main__":

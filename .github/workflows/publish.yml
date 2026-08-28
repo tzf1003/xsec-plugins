@@ -390,6 +390,8 @@ jobs:
           EXTERNAL: ${{ steps.request.outputs.external }}
           CHANNEL: ${{ steps.request.outputs.channel }}
           STABLE_CHANGED: ${{ steps.external-stable.outputs.changed }}
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
         run: |
           set -euo pipefail
           if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ] && [ "$STABLE_CHANGED" != "true" ] \
@@ -410,9 +412,20 @@ jobs:
           elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "beta" ] && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory)"; then
             # A duplicate source delivery has neither changed the immutable
             # beta record/provenance nor its UI state.  Do not request a new
-            # KMS signature or produce a metadata commit for it.
+            # KMS signature or produce a metadata commit for it.  The prior
+            # metadata merge may nevertheless have reached main just before a
+            # transient Desktop dispatch failure, so replay only the exact
+            # current waiting-for-smoke tuple without mutating Factory state.
             python scripts/external_source_factory.py validate
+            redispatch="$(python scripts/external_source_factory.py needs-smoke-redispatch \
+              --plugin-id "$PLUGIN_ID" --beta-sha "$SOURCE_SHA")"
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            if [ "$redispatch" = "redispatch=true" ]; then
+              echo "smoke_redispatch=true" >> "$GITHUB_OUTPUT"
+              echo "marketplace_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            else
+              echo "smoke_redispatch=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
@@ -523,10 +536,10 @@ jobs:
           echo "marketplace_revision=$(printf '%s' "$merge_result" | jq -r .sha)" >> "$GITHUB_OUTPUT"
           echo "published=true" >> "$GITHUB_OUTPUT"
       - name: Dispatch the immutable marketplace revision to the Desktop smoke gate
-        if: ${{ steps.publication-decision.outputs.should_publish == 'true' && steps.publish.outputs.published == 'true' }}
+        if: ${{ (steps.publication-decision.outputs.should_publish == 'true' && steps.publish.outputs.published == 'true') || steps.publication-decision.outputs.smoke_redispatch == 'true' }}
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
-          MARKETPLACE_REVISION: ${{ steps.publish.outputs.marketplace_revision }}
+          MARKETPLACE_REVISION: ${{ steps.publish.outputs.marketplace_revision || steps.publication-decision.outputs.marketplace_revision }}
           MARKETPLACE_CHANNEL: ${{ steps.request.outputs.channel }}
         run: |
           if [ -z "$XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN" ] || [ -z "$MARKETPLACE_REVISION" ]; then

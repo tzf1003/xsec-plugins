@@ -1075,11 +1075,12 @@ def require_owned_publication(root: Path, registration: Registration) -> None:
         )
     evidence = read_json(path, f"official external publication evidence for {registration.plugin_id}")
     if (
-        set(evidence) != {"schemaVersion", "pluginId", "events"}
+        set(evidence) not in ({"schemaVersion", "pluginId", "events"}, {"schemaVersion", "pluginId", "events", "smokeOutcomes"})
         or evidence.get("schemaVersion") != 1
         or evidence.get("pluginId") != registration.plugin_id
         or not isinstance(evidence.get("events"), list)
         or not evidence["events"]
+        or "smokeOutcomes" in evidence and not isinstance(evidence["smokeOutcomes"], list)
     ):
         fail(f"official external publication evidence for {registration.plugin_id} has invalid ownership metadata")
 
@@ -2436,28 +2437,62 @@ def ownership_history(root: Path, registration: Registration, *, state_label: st
     return ownership
 
 
-def has_published_status(root: Path, registration: Registration, *, state_label: str) -> bool:
-    """Return whether a regular status sidecar records a terminal publication.
+def status_beta_identity(
+    root: Path,
+    registration: Registration,
+    *,
+    state_label: str,
+) -> tuple[str, str | None, str | None] | None:
+    """Read the status state plus its current Beta release/source identity.
 
-    The strict full status validator runs after baseline continuity. This small
-    reader is intentionally limited to the terminal-state bit that must not be
-    erased by a PR in between two protected Factory publications; malformed
-    status data still fails closed instead of being treated as absent.
+    This deliberately parses only the fields needed by the protected-baseline
+    continuity rule.  Full status/provenance validation still runs later in
+    :func:`validate_registry_and_snapshots`; malformed data must not be
+    mistaken for a legitimate transition away from a terminal result.
     """
 
     path = status_path(root, registration.plugin_id)
     if is_link(path):
         fail(f"{state_label} Factory status for {registration.plugin_id} must not use a symbolic link")
     if not path.exists():
-        return False
+        return None
     if not path.is_file():
         fail(f"{state_label} Factory status for {registration.plugin_id} must be a regular file")
     status = read_json(path, f"{state_label} Factory status for {registration.plugin_id}")
+    source = require_object(status.get("source"), f"{state_label} Factory status source")
+    release = require_object(status.get("release"), f"{state_label} Factory status release")
     publication = require_object(status.get("publication"), f"{state_label} Factory status publication")
     state = publication.get("state")
     if not isinstance(state, str) or state not in PUBLICATION_STATES:
         fail(f"{state_label} Factory status for {registration.plugin_id} has an invalid publication state")
-    return state == "published"
+    beta_release_id = release.get("betaReleaseId")
+    if beta_release_id is not None and (
+        not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id)
+    ):
+        fail(f"{state_label} Factory status for {registration.plugin_id} has an invalid Beta release ID")
+    beta_sha = optional_sha(source.get("betaSha"), f"{state_label} Factory status betaSha")
+    return state, beta_release_id, beta_sha
+
+
+def needs_smoke_redispatch(root: Path, plugin_id: str, *, beta_sha: str) -> dict[str, str]:
+    """Report whether an already-signed Beta needs its lost smoke dispatch replayed.
+
+    This is intentionally narrow: it never changes a channel, sidecar or
+    status.  The protected workflow calls it only after finding no Factory
+    diff for a duplicate Beta delivery.  Re-dispatching is safe only while
+    that exact source SHA is still the current waiting-for-smoke Beta.
+    """
+
+    registration = registration_for(root, plugin_id)
+    expected_beta_sha = safe_sha(beta_sha, "smoke redispatch Beta source SHA")
+    validate_status(root, registration)
+    identity = status_beta_identity(root, registration, state_label="current Factory")
+    if identity is None:
+        return {"redispatch": "false"}
+    state, beta_release_id, recorded_beta_sha = identity
+    if state != "waiting_for_smoke" or beta_release_id is None or recorded_beta_sha != expected_beta_sha:
+        return {"redispatch": "false"}
+    return {"redispatch": "true"}
 
 
 def validate_trusted_baseline_continuity(
@@ -2615,12 +2650,34 @@ def validate_trusted_baseline_continuity(
         # later callback from repairing the record (completion requires the
         # prior Beta status). A generated workflow may update observability
         # fields, but it must never delete or downgrade a published baseline.
-        if has_published_status(baseline, baseline_registration, state_label="trusted Factory baseline"):
-            if not has_published_status(root, registration, state_label="current Factory"):
-                fail(
-                    f"published official Factory plugin {plugin_id} must retain its terminal published status "
-                    "recorded in the trusted baseline"
-                )
+        baseline_status = status_beta_identity(
+            baseline,
+            baseline_registration,
+            state_label="trusted Factory baseline",
+        )
+        if baseline_status is not None and baseline_status[0] == "published":
+            current_status = status_beta_identity(root, registration, state_label="current Factory")
+            if current_status is not None and current_status[0] == "published":
+                # A later smoke-gated Stable promotion legitimately replaces
+                # the one current Desktop status with a newer terminal tuple;
+                # its old KMS outcome remains append-only above.
+                continue
+            if (
+                current_status is not None
+                and current_status[0] == "waiting_for_smoke"
+                and current_status[1] is not None
+                and current_status[2] is not None
+                and current_status[1:] != baseline_status[1:]
+            ):
+                # A distinct Beta release or source SHA begins a new smoke
+                # cycle. Retaining the old terminal document verbatim would
+                # incorrectly make future legitimate Beta publications fail
+                # the protected source gate.
+                continue
+            fail(
+                f"published official Factory plugin {plugin_id} must retain its terminal published status "
+                "unless an exact new Beta smoke cycle is recorded"
+            )
 
 
 def validate_registry_and_snapshots(
@@ -2887,6 +2944,9 @@ def main() -> None:
     complete_status_parser.add_argument("--delivery-id", required=True)
     complete_status_parser.add_argument("--smoke-run-url", required=True)
     complete_status_parser.add_argument("--marketplace-revision", required=True)
+    redispatch_parser = commands.add_parser("needs-smoke-redispatch")
+    redispatch_parser.add_argument("--plugin-id", required=True)
+    redispatch_parser.add_argument("--beta-sha", required=True)
     source_reconcile_parser = commands.add_parser("prepare-reconcile-source")
     source_reconcile_parser.add_argument("--delivery-key", required=True)
     source_reconcile_parser.add_argument("--plugin-id", required=True)
@@ -2970,6 +3030,8 @@ def main() -> None:
                 smoke_run_url=args.smoke_run_url,
                 marketplace_revision=args.marketplace_revision,
             )
+        elif args.command == "needs-smoke-redispatch":
+            result = needs_smoke_redispatch(root, args.plugin_id, beta_sha=args.beta_sha)
         elif args.command == "prepare-reconcile-source":
             result = prepare_reconcile_source(
                 root,
