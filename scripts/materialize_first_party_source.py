@@ -44,6 +44,7 @@ ARTIFACT_DIGEST_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 FORBIDDEN_SOURCE_SUFFIXES = (".xsec-plugin", ".sig.jws.json")
 MIGRATION_AUTHOR_NAME = "XSEC Marketplace Migration"
 MIGRATION_AUTHOR_EMAIL = "xsec-marketplace-migration@users.noreply.github.com"
+TRUSTED_FACTORY_ORIGIN = "https://github.com/tzf1003/xsec-plugins.git"
 
 
 class MaterializationError(ValueError):
@@ -306,6 +307,9 @@ def require_factory_history(factory_root: Path) -> Path:
         raise MaterializationError("cannot resolve Factory Git worktree") from error
     if resolved_top_level != root:
         fail("Factory root must be the Git worktree top level")
+    origin = git_stdout(["config", "--get", "remote.origin.url"], cwd=root)
+    if origin != TRUSTED_FACTORY_ORIGIN:
+        fail("Factory origin must be the canonical trusted xsec-plugins GitHub HTTPS remote")
     main = git_stdout(["rev-parse", "--verify", "main^{commit}"], cwd=root)
     if not GIT_SHA_PATTERN.fullmatch(main):
         fail("Factory protected main revision is unavailable")

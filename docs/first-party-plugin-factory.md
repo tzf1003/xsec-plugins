@@ -96,9 +96,10 @@ python scripts\materialize_first_party_source.py `
 ```
 
 脚本在任何 dry-run 或 `--push` 之前都要求本地工作树严格处于干净的
-`HEAD == main == origin/main`；它先校验保留的 `releases.json` 及其 KMS sidecar，才会读取
-artifact。只有明确指定 `--push` 和该插件的精确 GitHub URL 才会写远端。脚本要求远端 `main`
-和 `beta` 都不存在，并用单次 `git push --atomic` 创建两条分支（任何一条不能建立时两条都不写入）；
+`HEAD == main == origin/main`，并要求 `origin` 精确为
+`https://github.com/tzf1003/xsec-plugins.git`；它先校验保留的 `releases.json` 及其 KMS sidecar，
+才会读取 artifact。只有明确指定 `--push` 和该插件的精确 GitHub URL 才会写远端。脚本要求远端
+`main` 和 `beta` 都不存在，并用单次 `git push --atomic` 创建两条分支（任何一条不能建立时两条都不写入）；
 它不读取、打印或保存 token/KMS secret：
 
 ```powershell
@@ -137,8 +138,9 @@ smoke callback payload：
 Factory 要求 smoke revision 是当前 protected main 的祖先。仅 `beta` smoke 会读取该精确
 revision 的 Beta pointer；如果 current Factory 仍指向同一 Beta，才读取每个注册来源的
 当前 `main` SHA 并调度 `publish.yml` Stable。后者仍会在有只读 GitHub App token 的
-publisher 中证明 main 可达性与可重建同一个 `releaseId`。任何更晚的 Beta、未知仓库、
-错误 ref、过期 SHA 或非专用 App 调度都不会移动 Stable。
+publisher 中重新读取当前 Beta pointer，并证明 main 可达性与可重建同一个当前 `releaseId`。
+它还会比对 smoke revision 中记录的 Beta source SHA；因此即使两个 commit 生成相同 artifact，
+任何在排队期间合入的更晚 Beta、未知仓库、错误 ref、过期 SHA 或非专用 App 调度都不会移动 Stable。
 
 `publish.yml` 会将前端状态写到
 `.xsec-factory/official-status/<plugin-id>.json`：schema 1，包含 `trustTier`、来源

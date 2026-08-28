@@ -424,6 +424,56 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(events[-1]["channel"], "stable")
             self.assertEqual(events[-1]["source"]["sha"], STABLE_SHA)
 
+    def test_stable_rejects_a_smoke_selected_historical_beta_after_a_newer_beta_exists(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-stale-stable-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            historical_release_id = self.stage_and_record_beta(root, source)
+            historical_source = root / "historical-source"
+            shutil.copytree(source, historical_source)
+            manifest_path = source / "package" / "plugin.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["version"] = "1.0.1"
+            write_json(manifest_path, manifest)
+            (source / "package" / "frontend.js").write_text("export function activate() { return 'new-beta'; }\n", encoding="utf-8")
+            self.stage_and_record_beta(root, source, source_sha=STABLE_SHA)
+
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the current Beta pointer"):
+                factory.verify_stable(root, PLUGIN_ID, historical_source, historical_release_id)
+
+    def test_stable_rechecks_the_smoke_verified_beta_source_sha_inside_the_publish_slot(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-stale-beta-sha-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            release_id = self.stage_and_record_beta(root, source)
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-a",
+            )
+            self.assertEqual(
+                factory.verify_stable(root, PLUGIN_ID, source, release_id, expected_beta_sha=BETA_SHA)["release_id"],
+                release_id,
+            )
+            # A later Beta source commit can have exactly the same artifact
+            # and releaseId. Its status SHA, not the releaseId, tells Stable
+            # that the prior Desktop smoke callback is no longer current.
+            factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=STABLE_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="beta-b-same-release",
+            )
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the smoke-verified Beta"):
+                factory.verify_stable(root, PLUGIN_ID, source, release_id, expected_beta_sha=BETA_SHA)
+
     def test_committed_node_modules_do_not_break_beta_to_stable_content_identity(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-node-modules-") as directory:
             root = Path(directory)
@@ -1194,6 +1244,18 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(status["publication"]["factoryRunUrl"], "https://github.com/acme/factory/actions/runs/100")
             self.assertEqual(status["publication"]["smokeRunUrl"], "https://github.com/tzf1003/xSecDesktop/actions/runs/200")
             self.assertEqual(status["publication"]["marketplaceRevision"], "c" * 40)
+            duplicate_beta = factory.record_status(
+                root,
+                PLUGIN_ID,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="redelivered-beta",
+                factory_run_url="https://github.com/acme/factory/actions/runs/300",
+            )
+            self.assertEqual(duplicate_beta, {"plugin_id": PLUGIN_ID, "state": "published", "unchanged": "true"})
+            preserved = json.loads(factory.status_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
+            self.assertEqual(preserved, status)
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match the current Factory status"):
                 factory.complete_smoke_status(
                     root,
@@ -1283,7 +1345,10 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("Record Factory Beta state", publisher_workflow)
         self.assertIn("complete-smoke-status", publisher_workflow)
         self.assertIn("--stable-sha \"$SOURCE_SHA\"", publisher_workflow)
+        self.assertIn("expected_beta_sha", publisher_workflow)
         self.assertIn("already-published identical outcome idempotent", publisher_workflow)
+        self.assertIn("does not match the current Beta pointer", (ROOT / "scripts" / "external_source_factory.py").read_text(encoding="utf-8"))
+        self.assertIn("smoke_beta_sha", smoke_workflow)
         self.assertIn("smoke_marketplace_revision", publisher_workflow)
         self.assertIn("smoke_run_url", publisher_workflow)
         self.assertIn("smoke_marketplace_revision", smoke_workflow)

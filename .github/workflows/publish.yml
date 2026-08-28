@@ -23,6 +23,10 @@ on:
         description: Existing external Beta releaseId. Required only for an external Stable promotion.
         required: false
         type: string
+      expected_beta_sha:
+        description: Exact Beta source SHA bound to a successful Desktop smoke callback. Required with smoke-gated external Stable promotion.
+        required: false
+        type: string
       smoke_run_url:
         description: Exact Desktop smoke Actions URL. Accepted only for a smoke-gated external Stable promotion.
         required: false
@@ -59,6 +63,7 @@ jobs:
           PLUGIN_ID: ${{ inputs.plugin_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
           SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
           SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
         run: |
@@ -79,8 +84,8 @@ jobs:
           if [ -n "$PLUGIN_ID" ]; then
             [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit protected-main dispatch." >&2; exit 1; }
             [ -n "$SOURCE_SHA" ] || { echo "External source publication requires source_sha." >&2; exit 1; }
-            if [ "$channel" = "beta" ] && [ -n "$RELEASE_ID" ]; then
-              echo "release_id is only valid for an external Stable promotion." >&2
+            if [ "$channel" = "beta" ] && { [ -n "$RELEASE_ID" ] || [ -n "$EXPECTED_BETA_SHA" ]; }; then
+              echo "release_id and expected_beta_sha are only valid for an external Stable promotion." >&2
               exit 1
             fi
             if [ "$channel" = "stable" ] && [ -z "$RELEASE_ID" ]; then
@@ -88,14 +93,17 @@ jobs:
               exit 1
             fi
             if [ -n "$SMOKE_RUN_URL" ] || [ -n "$SMOKE_MARKETPLACE_REVISION" ]; then
-              [ "$channel" = "stable" ] && [ -n "$SMOKE_RUN_URL" ] && [ -n "$SMOKE_MARKETPLACE_REVISION" ] || {
-                echo "Smoke outcome metadata is valid only as a complete external Stable promotion pair." >&2
+              [ "$channel" = "stable" ] && [ -n "$SMOKE_RUN_URL" ] && [ -n "$SMOKE_MARKETPLACE_REVISION" ] && [ -n "$EXPECTED_BETA_SHA" ] || {
+                echo "Smoke outcome metadata and expected_beta_sha are valid only as a complete external Stable promotion binding." >&2
                 exit 1
               }
+            elif [ -n "$EXPECTED_BETA_SHA" ]; then
+              echo "expected_beta_sha requires the complete Desktop smoke outcome binding." >&2
+              exit 1
             fi
           else
-            [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] && [ -z "$SMOKE_RUN_URL" ] && [ -z "$SMOKE_MARKETPLACE_REVISION" ] && [ "$channel" = "beta" ] || {
-              echo "Built-in publication accepts no source_sha/release_id and only the beta channel; provide plugin_id for an external publication." >&2
+            [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] && [ -z "$EXPECTED_BETA_SHA" ] && [ -z "$SMOKE_RUN_URL" ] && [ -z "$SMOKE_MARKETPLACE_REVISION" ] && [ "$channel" = "beta" ] || {
+              echo "Built-in publication accepts no source_sha/release_id/expected_beta_sha and only the beta channel; provide plugin_id for an external publication." >&2
               exit 1
             }
           fi
@@ -288,10 +296,14 @@ jobs:
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
         run: |
           set -euo pipefail
-          python scripts/external_source_factory.py verify-stable \
-            --plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source --release-id "$RELEASE_ID"
+          args=(--plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source --release-id "$RELEASE_ID")
+          if [ -n "$EXPECTED_BETA_SHA" ]; then
+            args+=(--expected-beta-sha "$EXPECTED_BETA_SHA")
+          fi
+          python scripts/external_source_factory.py verify-stable "${args[@]}"
           python scripts/promote_release.py --root . --plugin-id "$PLUGIN_ID" --release-id "$RELEASE_ID"
           if git diff --quiet -- plugins; then
             echo "changed=false" >> "$GITHUB_OUTPUT"

@@ -74,21 +74,25 @@ jobs:
           set -euo pipefail
           # Read current Registry again, and compare its current beta pointer
           # to the exact smoke-tested revision. A later beta cannot inherit an
-          # earlier callback. publish.yml then rechecks the selected source
-          # SHA/main reachability and deterministic releaseId before moving
-          # only channels.stable.
+          # earlier callback. publish.yml then rechecks the release ID *and*
+          # exact Beta source SHA after it acquires the publication slot,
+          # before moving only channels.stable.
           while IFS= read -r registration; do
             plugin_id="$(printf '%s' "$registration" | jq -r .pluginId)"
             repository="$(printf '%s' "$registration" | jq -r .source.repository)"
             active="$(printf '%s' "$registration" | jq -r .status)"
             [ "$active" = "active" ] || continue
             smoke_beta="$(git show "${MARKETPLACE_REVISION}:plugins/${plugin_id}/.xsec-market/releases.json" 2>/dev/null | jq -r '.channels.beta.releaseId // empty' || true)"
+            smoke_status="$(git show "${MARKETPLACE_REVISION}:.xsec-factory/official-status/${plugin_id}.json" 2>/dev/null || true)"
+            smoke_status_beta="$(printf '%s' "$smoke_status" | jq -r '.release.betaReleaseId // empty' 2>/dev/null || true)"
+            smoke_beta_sha="$(printf '%s' "$smoke_status" | jq -r '.source.betaSha // empty' 2>/dev/null || true)"
             current_beta="$(jq -r '.channels.beta.releaseId // empty' "plugins/${plugin_id}/.xsec-market/releases.json" 2>/dev/null || true)"
-            [ -n "$smoke_beta" ] && [ "$smoke_beta" = "$current_beta" ] || continue
+            [ -n "$smoke_beta" ] && [ "$smoke_beta" = "$smoke_status_beta" ] && [ "$smoke_beta" = "$current_beta" ] || continue
+            [[ "$smoke_beta_sha" =~ ^[a-f0-9]{40}$ ]] || continue
             main_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${repository}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
             [ -n "$main_sha" ] || { echo "Cannot resolve registered source main for ${plugin_id}." >&2; exit 1; }
             gh workflow run publish.yml --ref main \
-              -f channel=stable -f plugin_id="$plugin_id" -f source_sha="$main_sha" -f release_id="$current_beta" \
+              -f channel=stable -f plugin_id="$plugin_id" -f source_sha="$main_sha" -f release_id="$current_beta" -f expected_beta_sha="$smoke_beta_sha" \
               -f smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/${SMOKE_RUN_ID}" \
               -f smoke_marketplace_revision="$MARKETPLACE_REVISION"
           done < <(jq -c '.plugins[]' .xsec-factory/official-registry.json)

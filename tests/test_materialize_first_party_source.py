@@ -122,6 +122,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
         git(root, "init", "--quiet", "--initial-branch=main")
         git(root, "config", "user.name", "Factory Test")
         git(root, "config", "user.email", "factory-test@example.invalid")
+        git(root, "remote", "add", "origin", materializer.TRUSTED_FACTORY_ORIGIN)
         git(root, "add", "--all")
         git(root, "commit", "--quiet", "-m", "feat: retain plugin source history")
         git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
@@ -234,6 +235,15 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             git(factory, "add", "untrusted.txt")
             git(factory, "commit", "--quiet", "-m", "untrusted local main lookalike")
             with self.assertRaisesRegex(materializer.MaterializationError, "trusted Factory main commit"):
+                materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
+
+    def test_rejects_a_clean_clone_with_an_untrusted_factory_origin(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-untrusted-origin-") as directory:
+            factory = Path(directory) / "factory"
+            factory.mkdir()
+            self.make_factory(factory)
+            git(factory, "remote", "set-url", "origin", "https://github.com/attacker/xsec-plugins.git")
+            with self.assertRaisesRegex(materializer.MaterializationError, "canonical trusted xsec-plugins"):
                 materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
 
     def test_rejects_a_retained_release_index_without_a_valid_kms_sidecar(self) -> None:

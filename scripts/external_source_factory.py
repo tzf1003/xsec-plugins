@@ -1248,13 +1248,34 @@ def candidate_release_id(source_dir: Path, registration: Registration) -> str:
         )
 
 
-def verify_stable(root: Path, plugin_id: str, source_root: Path, release_id_value: str) -> dict[str, str]:
+def verify_stable(
+    root: Path,
+    plugin_id: str,
+    source_root: Path,
+    release_id_value: str,
+    *,
+    expected_beta_sha: str | None = None,
+) -> dict[str, str]:
     registration = registration_for(root, plugin_id)
     if not isinstance(release_id_value, str) or not RELEASE_ID_PATTERN.fullmatch(release_id_value):
         fail("stable promotion release ID must be canonical")
     source_dir = resolve_source_directory(source_root, registration.source_path, f"external stable source for {registration.plugin_id}")
     candidate = candidate_release_id(source_dir, registration)
-    document, _ = current_beta_record(root, registration.plugin_id)
+    document, current_beta = current_beta_record(root, registration.plugin_id)
+    if current_beta.get("releaseId") != release_id_value:
+        fail("stable promotion release ID does not match the current Beta pointer")
+    if expected_beta_sha is not None:
+        expected = safe_sha(expected_beta_sha, "smoke-verified Beta source SHA")
+        # This recheck runs in publish.yml after it acquired the shared
+        # publication slot and checked out current protected Factory main.
+        # A later beta commit can have identical artifact bytes/releaseId, so
+        # releaseId alone cannot bind an older Desktop smoke callback.
+        validate_status(root, registration)
+        status = read_json(status_path(root, registration.plugin_id), f"official Factory status for {registration.plugin_id}")
+        source = require_object(status.get("source"), "smoke-verified Factory status source")
+        status_release = require_object(status.get("release"), "smoke-verified Factory status release")
+        if source.get("betaSha") != expected or status_release.get("betaReleaseId") != release_id_value:
+            fail("current Beta source SHA does not match the smoke-verified Beta")
     selected = release_record(document, release_id_value)
     if candidate != release_id_value:
         fail("external main source does not deterministically rebuild the selected Beta releaseId")
@@ -1267,7 +1288,9 @@ def record_stable(root: Path, plugin_id: str, source_sha: str, release_id_value:
     registration = registration_for(root, plugin_id)
     if not isinstance(release_id_value, str) or not RELEASE_ID_PATTERN.fullmatch(release_id_value):
         fail("stable promotion release ID must be canonical")
-    document, _ = current_beta_record(root, registration.plugin_id)
+    document, current_beta = current_beta_record(root, registration.plugin_id)
+    if current_beta.get("releaseId") != release_id_value:
+        fail("stable provenance can be recorded only for the current Beta release")
     channels = document.get("channels")
     stable = channels.get("stable") if isinstance(channels, dict) else None
     if not isinstance(stable, dict) or stable.get("releaseId") != release_id_value:
@@ -1581,6 +1604,30 @@ def record_status(
     path = status_path(root, registration.plugin_id)
     if path.exists():
         existing = read_json(path, f"official Factory status for {registration.plugin_id}")
+        # A redelivered Beta event may arrive after its exact immutable
+        # release has completed Desktop smoke and reached Stable.  Its
+        # generated waiting_for_smoke document intentionally has no Stable
+        # source/SHA or smoke fields, so comparing whole source/publication
+        # objects would regress an audited terminal state. Preserve it only
+        # when the current release pointers and Beta source SHA are exactly
+        # identical; a new Beta, pointer movement, or source revision still
+        # starts a new state transition.
+        if (
+            state == "waiting_for_smoke"
+            and existing.get("schemaVersion") == document["schemaVersion"]
+            and existing.get("pluginId") == document["pluginId"]
+            and existing.get("trustTier") == document["trustTier"]
+            and isinstance(existing.get("source"), dict)
+            and isinstance(document.get("source"), dict)
+            and existing["source"].get("repository") == document["source"].get("repository")
+            and existing["source"].get("path") == document["source"].get("path")
+            and existing["source"].get("refs") == document["source"].get("refs")
+            and existing["source"].get("betaSha") == document["source"].get("betaSha")
+            and existing.get("release") == document["release"]
+            and isinstance(existing.get("publication"), dict)
+            and existing["publication"].get("state") == "published"
+        ):
+            return {"plugin_id": registration.plugin_id, "state": "published", "unchanged": "true"}
         # Delivery/run URLs are observability hints, not release identity.  A
         # duplicate Cloud delivery must not create a fresh signed Factory
         # commit merely because it has a new Actions run id.  Keep the first
@@ -2373,6 +2420,7 @@ def main() -> None:
     verify_parser.add_argument("--plugin-id", required=True)
     verify_parser.add_argument("--source-root", type=Path, required=True)
     verify_parser.add_argument("--release-id", required=True)
+    verify_parser.add_argument("--expected-beta-sha")
     stable_parser = commands.add_parser("record-stable")
     stable_parser.add_argument("--plugin-id", required=True)
     stable_parser.add_argument("--source-sha", required=True)
@@ -2443,7 +2491,13 @@ def main() -> None:
         elif args.command == "record-beta":
             result = record_beta(root, args.plugin_id, args.source_sha, args.publisher)
         elif args.command == "verify-stable":
-            result = verify_stable(root, args.plugin_id, args.source_root, args.release_id)
+            result = verify_stable(
+                root,
+                args.plugin_id,
+                args.source_root,
+                args.release_id,
+                expected_beta_sha=args.expected_beta_sha,
+            )
         elif args.command == "record-stable":
             result = record_stable(root, args.plugin_id, args.source_sha, args.release_id, args.publisher)
         elif args.command == "adopt-first-party":
