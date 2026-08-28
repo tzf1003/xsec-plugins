@@ -50,13 +50,13 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
         # reading artifacts. Unit fixtures use isolated repositories, so make
         # that read-only remote result equal their actual local HEAD while
         # retaining a dedicated stale-remote regression below.
-        remote_main = patch.object(
+        self.remote_main = patch.object(
             materializer,
             "trusted_factory_remote_main",
             side_effect=lambda root: git(root, "rev-parse", "HEAD"),
         )
-        remote_main.start()
-        self.addCleanup(remote_main.stop)
+        self.remote_main.start()
+        self.addCleanup(self.remote_main.stop)
 
     def manifest(self, version: str) -> dict[str, object]:
         return {
@@ -199,6 +199,76 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             materializer.require_exact_target(PLUGIN_ID, "https://github.com/tzf1003/xsec-plugin-approvals.git")
         script = (SCRIPTS / "materialize_first_party_source.py").read_text(encoding="utf-8")
         self.assertIn('"--atomic"', script)
+
+    def test_remote_factory_lookup_uses_an_isolated_sealed_transport(self) -> None:
+        self.remote_main.stop()
+        factory = Path(tempfile.gettempdir()) / "factory-with-local-url-rewrite"
+        completed = subprocess.CompletedProcess(
+            ["git"],
+            0,
+            stdout=(b"a" * 40) + b"\trefs/heads/main\n",
+            stderr=b"",
+        )
+        with patch.dict(os.environ, {"GIT_DIR": "attacker-worktree", "GIT_SSH_COMMAND": "attacker-ssh"}):
+            with patch.object(materializer, "run_git", return_value=completed) as invoke:
+                self.assertEqual(materializer.trusted_factory_remote_main(factory), "a" * 40)
+        arguments = invoke.call_args.args[0]
+        kwargs = invoke.call_args.kwargs
+        self.assertIn("ls-remote", arguments)
+        self.assertIn(materializer.TRUSTED_FACTORY_ORIGIN, arguments)
+        self.assertNotEqual(kwargs["cwd"], factory)
+        self.assertEqual(kwargs["environment"]["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(kwargs["environment"]["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(kwargs["environment"]["GIT_ALLOW_PROTOCOL"], "https")
+        self.assertEqual(kwargs["environment"]["GIT_CEILING_DIRECTORIES"], str(kwargs["cwd"].resolve()))
+        self.assertNotIn("GIT_DIR", kwargs["environment"])
+        self.assertNotIn("GIT_SSH_COMMAND", kwargs["environment"])
+
+    def test_push_rejects_local_url_rewrite_before_remote_preflight(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-url-rewrite-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            git(repository, "config", "url.https://attacker.invalid/.insteadOf", "https://github.com/")
+            with patch.object(materializer, "run_git") as invoke:
+                with self.assertRaisesRegex(materializer.MaterializationError, "URL rewrite"):
+                    materializer.push_candidate(
+                        repository,
+                        PLUGIN_ID,
+                        "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                    )
+            invoke.assert_not_called()
+
+    def test_push_preflight_and_write_seal_global_url_rewrite_configuration(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-sealed-push-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            calls: list[tuple[list[str], dict[str, object]]] = []
+
+            def fake_git(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+                calls.append((arguments, kwargs))
+                return subprocess.CompletedProcess(["git", *arguments], 0, stdout=b"", stderr=b"")
+
+            with patch.dict(os.environ, {"GIT_CONFIG": "injected", "HTTPS_PROXY": "https://attacker.invalid"}):
+                with patch.object(materializer, "run_git", side_effect=fake_git):
+                    materializer.push_candidate(
+                        repository,
+                        PLUGIN_ID,
+                        "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                    )
+            self.assertEqual(len(calls), 2)
+            preflight_arguments, preflight_kwargs = calls[0]
+            push_arguments, push_kwargs = calls[1]
+            self.assertIn("ls-remote", preflight_arguments)
+            self.assertNotEqual(preflight_kwargs["cwd"], repository)
+            self.assertIn("push", push_arguments)
+            self.assertEqual(push_kwargs["cwd"], repository)
+            for _, kwargs in calls:
+                environment = kwargs["environment"]
+                assert isinstance(environment, dict)
+                self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+                self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+                self.assertNotIn("GIT_CONFIG", environment)
+                self.assertNotIn("HTTPS_PROXY", environment)
 
     def test_rejects_an_artifact_that_no_longer_matches_the_retained_sha256(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-digest-") as directory:
