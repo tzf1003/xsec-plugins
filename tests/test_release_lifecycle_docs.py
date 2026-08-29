@@ -84,6 +84,25 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
         self.assertIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
 
+    def test_status_smoke_gate_is_kms_bound_and_cloud_deployment_is_explicit(self) -> None:
+        readme = README.read_text(encoding="utf-8")
+        publisher = (ROOT / "scripts" / "kms_marketplace_publisher.py").read_text(encoding="utf-8")
+        verifier = (ROOT / "scripts" / "verify_merged_stable_promotion.py").read_text(encoding="utf-8")
+        dispatcher = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
+        for required_rule in (
+            "xsec.plugin-marketplace.official-status",
+            "official-status-proofs/<plugin-id>.json",
+            "paired `xsec-cloud` broker allowlist",
+            "unsigned `waiting_for_smoke`",
+        ):
+            with self.subTest(readme_rule=required_rule):
+                self.assertIn(required_rule, readme)
+        self.assertIn("OFFICIAL_STATUS_PURPOSE", publisher)
+        self.assertIn("OFFICIAL_STATUS_PROOFS_RELATIVE_PATH", publisher)
+        self.assertIn("STATUS_PROOF_PATTERN", verifier)
+        self.assertIn("status KMS proof", verifier)
+        self.assertIn("--verify-active-marketplace-signatures", dispatcher)
+
     def test_reviewed_merge_dispatcher_requires_signed_diff_review_and_fresh_sources(self) -> None:
         dispatcher = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
         merge_guard = MERGE_GUARD_WORKFLOW.read_text(encoding="utf-8")
@@ -141,6 +160,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("PR head/base changed while final revalidation ran", final_merge)
         self.assertIn("factory-final-merge-gate", final_merge)
         self.assertIn("stable-maintenance", final_merge)
+        self.assertIn("beta-smoke-ready", final_merge)
         self.assertIn("external-stable-*", final_merge)
         self.assertIn("adopt-first-party-*", final_merge)
         self.assertIn("validate --baseline-root .", final_merge)

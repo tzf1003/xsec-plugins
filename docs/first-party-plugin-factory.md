@@ -153,10 +153,18 @@ source event payload：
 {"trigger_kind":"source_event","delivery_key":"...","plugin_id":"...","source_repository":"owner/repository","source_ref":"refs/heads/beta|refs/heads/main","source_sha":"40-hex","marketplace_revision":"","channel":"","smoke_workflow_run_id":"","smoke_workflow_run_attempt":""}
 ```
 
-Factory 再读 protected Registry、固定 HTTPS 查询当前分支头并拒绝过期 SHA；`beta` 才调度
-现有 `publish.yml`。Publisher 在取得全局 publication slot 后还会重新拉取注册分支，并要求
-`source_sha` 仍是该分支**精确 head**（不能只是不早于 head 的 ancestor）；因此晚到或排队的
-旧 Beta 永远不能覆盖较新的 Beta。`main` 只进入等待状态，绝不因 push 直接推广 Stable。
+Factory 再读 protected Registry、固定 HTTPS 查询当前分支头并拒绝过期 SHA。`beta` 调度
+`publish.yml`；`main` 会重新读取同一 Registry 行的**当前 beta head**并调度同一个 Beta
+reconcile，而不是直接推广 Stable。Publisher 在取得全局 publication slot 后还会重新拉取注册
+分支，并要求 `source_sha` 仍是该分支**精确 head**（不能只是不早于 head 的 ancestor）；因此晚到
+或排队的旧 Beta 永远不能覆盖较新的 Beta。
+
+每个 Beta reconcile 都从只读 Source App 的同一固定 HTTPS fetch 中 materialize 当前注册的
+`main`，并确定性重建当前 Beta releaseId。若两者不一致，Factory 只把已 KMS 绑定到该 Beta
+provenance 的可读状态置为 `waiting_for_beta`：它不会请求 Desktop smoke、调用 Stable publisher、
+追加 Stable/smoke evidence 或移动任何频道指针。后续 `main` source event 会重跑上述比较；只有
+main 已精确重建该 Beta 时才转回 `waiting_for_smoke` 并请求一个**新的** Desktop Beta smoke。
+这使 beta 领先 main 是正常的等待状态，而不是一次失败的 Stable 发布。
 
 生成 Factory PR 通过 source gate 后仍占用发布语义上的队列：所有会调用 KMS 的发布、
 Stable、sidecar repair 和 adoption 工作流都先拒绝任何尚未合并的
@@ -190,6 +198,13 @@ KMS/JWS 验签、source gate 与 Codex review；它不改变 release history 或
 唯一允许的 no-pointer 例外是当前 Stable 已选中当前 Beta 的 registered external Stable completion：
 它必须只包含严格形状的已签名 provenance/status 更新，重新校验外部 `main` ref 后才可合并，且不会
 再次触发 Desktop smoke。
+另一条独立的 no-pointer 形状是 `beta-smoke-ready`：仅当既有等待状态的不可变 Beta
+release/source SHA 未变、注册 `main` 出现一个新的精确头时才允许重绑该 Beta 的可重建性；结果只能是
+`waiting_for_beta` 或 `waiting_for_smoke`。只有后者才会请求新的 Desktop smoke；前者会使已经排队的旧
+smoke callback 失效。它必须重签 Marketplace/release/provenance sidecar，并同时携带该次比较的精确
+`mainGateSha`；release history、Beta/Stable 指针和 Beta evidence 均不得改变。finalizer 在
+protected merge 前用只读 Source App 同时复验记录的 `beta` 与 `main` 分支头，任一推进便拒绝该
+候选，因而旧的可重建决定绝不会触发 Desktop smoke。
 
 `enforce-factory-main-protection.yml` 是唯一的保护配置自动化，须在 protected `main` 的
 production 环境中手工运行，且需要仓库管理权限的
@@ -214,15 +229,17 @@ smoke callback payload：
 ```
 
 Factory 要求 smoke revision 是当前 protected main 的祖先。仅 `beta` smoke 会读取该精确
-revision 的 Beta pointer；如果 current Factory 仍指向同一 Beta，才读取每个注册来源的
-当前 `main` SHA 并调度 `publish.yml` Stable。后者仍会在有只读 GitHub App token 的
-publisher 中重新读取当前 Beta pointer，并证明 main 可达性与可重建同一个当前 `releaseId`。
-它还会比对 smoke revision 中记录的 Beta source SHA；因此即使两个 commit 生成相同 artifact，
-任何在排队期间合入的更晚 Beta、未知仓库、错误 ref、过期 SHA 或非专用 App 调度都不会移动 Stable。
+revision 的 Beta pointer；只有 smoke revision 和当前 Factory status 都仍为同一个
+`waiting_for_smoke` Beta releaseId/source SHA，才读取每个注册来源的当前 `main` SHA 并调度
+`publish.yml` Stable。若较新的 main reconcile 已将相同 Beta 改为 `waiting_for_beta`，旧的保留
+smoke callback 会被忽略，绝不能绕过这一门禁。Stable publisher 仍会在有只读 GitHub App token 的
+publish slot 中重新读取当前 Beta pointer，并证明 main 可达性与可重建同一个当前 `releaseId`。
+因此即使两个 commit 生成相同 artifact，任何在排队期间合入的更晚 Beta、未知仓库、错误 ref、
+过期 SHA 或非专用 App 调度都不会移动 Stable。
 
 `publish.yml` 会将前端状态写到
 `.xsec-factory/official-status/<plugin-id>.json`：schema 1，包含 `trustTier`、来源
-repository/path/refs/betaSha/stableSha、当前 Beta/Stable releaseId，以及
+repository/path/refs/betaSha/stableSha/mainGateSha、当前 Beta/Stable releaseId，以及
 `waiting_for_beta|building_beta|waiting_for_smoke|promoting_stable|published|failed` 状态、
 delivery、Factory/smoke run URL 和 Marketplace revision（如有）。已标记 `published` 的
 状态必须能回溯到 adoption 与不可变 publication evidence，且必须有 `stableReleaseId ==
@@ -230,11 +247,14 @@ betaReleaseId`、两端 source SHA、`xSecDesktop` smoke run URL 与 Marketplace
 这五项精确值追加到同一份已经由 KMS JWS 签名的 `official-publications/<id>.json` smoke outcome；source
 gate 会逐项把状态与该 outcome、Beta/Stable source event 对齐。仅填写 SHA 形状、GitHub URL 或手工
 revision 的普通 PR 因没有匹配的 KMS proof 而失败，adoption 也不能单独宣称已 smoke/published。
-即使此前从未写过 status，`waiting_for_smoke` 与 `promoting_stable` 也必须同时带有当前 Beta releaseId/
-source SHA，并精确匹配已 KMS 签名的 Beta provenance event；不能仅靠首次创建可读 status 文件伪造一个
-Desktop 可见的 in-flight 发布周期。`waiting_for_smoke` 的 `stableSha`、smoke URL 和 Marketplace
+即使此前从未写过 status，`waiting_for_beta`、`waiting_for_smoke` 与 `promoting_stable` 也必须同时带有
+当前 Beta releaseId/source SHA，并精确匹配已 KMS 签名的 Beta provenance event；不能仅靠首次创建可读
+status 文件伪造一个 Desktop 可见的 in-flight 发布周期。两个 waiting 状态的 `stableSha`、smoke URL 和 Marketplace
 revision 必须为 `null`；`promoting_stable` 必须再带精确匹配 KMS Stable event 的 Stable releaseId/source
 SHA，并且其 Stable releaseId 必须等于当前 Beta releaseId，且仍不得声称 smoke/revision。
+`mainGateSha` 是最近一次决定 Beta 是否可进入 smoke 的受保护来源 `main` 精确头，不是 Stable
+promotion 证据；每个生成的 registered Beta PR 和 `beta-smoke-ready` PR 都会把它作为第二个 source
+proof，在最终 merge 时与 `betaSha` 一并重新读取。
 当 `reconcile-smoke` 接受 Desktop 的 Beta smoke 成功回调并触发可重建的 Stable
 推广时，会把该回调的精确 Factory revision 和 Desktop Actions URL 带入 Stable 生成
 PR；只有该 PR 的指针/证据校验通过后，状态才成为终态 `published`。重复 Beta delivery
@@ -255,7 +275,8 @@ outcome。终态 sidecar 必须原样保留，或精确匹配基线之后追加�
 若该新 Beta 的生成 PR 已合并而 Desktop dispatch 因临时网络错误失败，完全相同的重复 delivery 不会
 重新签名或修改 Factory；它只会在 status 仍精确为该 SHA 的 `waiting_for_smoke` 时，重新 dispatch 当前
 受保护 main 的 Marketplace revision。其他状态、过期 SHA 或已完成 `published` 均不会触发 replay。
-受信基线中的 `waiting_for_smoke` 与 `promoting_stable` 也是不可丢失的 in-flight 绑定：普通 PR 不能
-删除它们或改成无关状态，否则仍在飞行的 Desktop callback 会失去其 Beta source/release 证据。它们只能
-保留，沿相同 Beta 从 `waiting_for_smoke` 前进到 `promoting_stable`，完成为已验证的 `published`，或由带有
-基线后新增 Beta provenance 的精确新 Beta 周期取代；不能从 `promoting_stable` 回退为 `waiting_for_smoke`。
+受信基线中的 `waiting_for_beta`、`waiting_for_smoke` 与 `promoting_stable` 也是不可丢失的 in-flight 绑定：
+普通 PR 不能删除它们或改成无关状态，否则仍在飞行的 Desktop callback 会失去其 Beta source/release 证据。
+同一 Beta 只允许在两个 waiting 状态间随注册 main 的可重建性转换，随后从 `waiting_for_smoke` 前进到
+`promoting_stable`，完成为已验证的 `published`，或由带有基线后新增 Beta provenance 的精确新 Beta 周期取代；
+不能从 `promoting_stable` 回退为任一 waiting 状态。

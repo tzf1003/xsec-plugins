@@ -143,6 +143,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         document: publisher.MarketplaceDocument,
         *,
         detached: bool = False,
+        source_revision: str = REVISION,
     ) -> bytes:
         """Build a real, historical KMS sidecar without a network request."""
 
@@ -151,7 +152,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             "purpose": document.purpose,
             "subject": document.subject,
             "content_sha256": hashlib.sha256(document.path.read_bytes()).hexdigest(),
-            "source_revision": REVISION,
+            "source_revision": source_revision,
             "issued_at": 1_700_000_000,
         }
         envelope_bytes = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
@@ -342,6 +343,28 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 self.assertIsNone(publisher.main())
             self.assertEqual(json.loads(output.getvalue()), {"documents": len(documents), "source_revision": REVISION})
 
+    def test_active_signature_verification_allows_independently_renewed_status_proofs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-independent-status-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            status = root / ".xsec-factory" / "official-status" / "com.example.alpha.json"
+            status.parent.mkdir(parents=True)
+            status.write_bytes(b'{"schemaVersion":1,"pluginId":"com.example.alpha"}\n')
+            documents = publisher.marketplace_documents(root)
+            for document in documents:
+                source_revision = "b" * 40 if document.purpose == publisher.OFFICIAL_STATUS_PURPOSE else REVISION
+                publisher.sidecar_path_for(document).parent.mkdir(parents=True, exist_ok=True)
+                publisher.sidecar_path_for(document).write_bytes(
+                    self.signed_historical_sidecar(document, source_revision=source_revision)
+                )
+            with patch.object(publisher, "download_pinned_issuer_jwks", return_value=TEST_KMS_JWKS), patch.object(
+                sys,
+                "argv",
+                ["kms_marketplace_publisher.py", "--root", str(root), "--verify-active-marketplace-signatures"],
+            ), patch("sys.stdout", new_callable=StringIO) as output:
+                self.assertIsNone(publisher.main())
+            self.assertEqual(json.loads(output.getvalue()), {"documents": len(documents), "source_revision": REVISION})
+
     def test_publisher_signs_external_factory_provenance_in_a_separate_fixed_proof_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-") as directory:
             root = Path(directory)
@@ -390,6 +413,63 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             written = publisher.publish_sidecars(root, REVISION, self.broker_response)
             self.assertIn(publisher.sidecar_path_for(provenance), written)
             self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+
+    def test_publisher_signs_factory_status_in_its_own_fixed_proof_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-status-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            status = root / ".xsec-factory" / "official-status" / "com.example.alpha.json"
+            status.parent.mkdir(parents=True)
+            status.write_bytes(b'{"schemaVersion":1,"pluginId":"com.example.alpha"}\n')
+
+            documents = publisher.marketplace_documents(root)
+            status_document = next(
+                document for document in documents if document.purpose == publisher.OFFICIAL_STATUS_PURPOSE
+            )
+            self.assertEqual(status_document.subject, ".xsec-factory/official-status/com.example.alpha.json")
+            self.assertEqual(
+                publisher.sidecar_path_for(status_document),
+                root / ".xsec-factory" / "official-status-proofs" / "com.example.alpha.json",
+            )
+
+            written = publisher.publish_sidecars(root, REVISION, self.broker_response)
+            self.assertIn(publisher.sidecar_path_for(status_document), written)
+            self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+
+    def test_pending_status_verification_omits_only_the_named_canonical_status(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-pending-status-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            status = root / ".xsec-factory" / "official-status" / "com.example.alpha.json"
+            status.parent.mkdir(parents=True)
+            status.write_bytes(b'{"schemaVersion":1,"pluginId":"com.example.alpha"}\n')
+            documents = publisher.marketplace_documents(root)
+            selected = publisher.documents_for_active_signature_verification(
+                root,
+                allow_unsigned_official_status_plugin_id="com.example.alpha",
+            )
+            self.assertEqual(len(selected), len(documents) - 1)
+            self.assertFalse(any(document.purpose == publisher.OFFICIAL_STATUS_PURPOSE for document in selected))
+            self.assertEqual(
+                publisher.without_official_status_documents(documents),
+                selected,
+            )
+            with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "official-status"):
+                publisher.documents_for_active_signature_verification(
+                    root,
+                    allow_unsigned_official_status_plugin_id="com.example.beta",
+                )
+
+    def test_factory_status_proof_without_its_status_document_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-orphan-status-proof-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            proof = root / ".xsec-factory" / "official-status-proofs" / "com.example.alpha.json"
+            proof.parent.mkdir(parents=True)
+            proof.write_text("orphan\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "status proof directory"):
+                publisher.marketplace_documents(root)
 
     def test_official_factory_provenance_rejects_windows_device_plugin_ids(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-id-") as directory:
@@ -653,8 +733,11 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('git restore --source=HEAD --worktree -- "${sidecar_paths[@]}"', workflow)
         self.assertIn("only tracked *deletions* of the exact active", workflow)
         self.assertNotIn("github.event.head_commit.message", workflow)
-        self.assertIn("python scripts/kms_marketplace_publisher.py --root .", workflow)
-        self.assertIn("python scripts/kms_marketplace_publisher.py --root . --validate-only", workflow)
+        self.assertIn("python scripts/kms_marketplace_publisher.py --root . --exclude-official-status", workflow)
+        self.assertIn(
+            "python scripts/kms_marketplace_publisher.py --root . --exclude-official-status --validate-only",
+            workflow,
+        )
         self.assertNotIn("XSEC_MARKETPLACE_SIGNING_KEY_B64", workflow)
         # Keep the reviewed post-merge sender in lockstep with Desktop's repository_dispatch
         # receiver. Desktop accepts only the official source repository/ref,
@@ -679,13 +762,14 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertNotIn("marketplace_public_key_b64", workflow)
         self.assertNotIn("expected_default_plugin_ids", workflow)
         self.assertIn("git add -A .agents/plugins plugins", workflow)
-        self.assertIn('gh workflow run validate.yml --ref "$branch"', workflow)
-        self.assertIn("--event workflow_dispatch", workflow)
+        self.assertNotIn('gh workflow run validate.yml --ref "$branch"', workflow)
+        self.assertNotIn("--event workflow_dispatch", workflow)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
-        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
-        self.assertIn('echo "pending_review=true"', workflow)
-        self.assertIn("This workflow intentionally does not merge this PR", workflow)
-        self.assertIn('pull_number="$(gh pr view "$pull_url" --json number --jq .number)"', workflow)
+        self.assertNotIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
+        self.assertIn('echo "pending_status_authentication=true"', workflow)
+        self.assertIn("awaiting status authentication", workflow)
+        self.assertIn("This workflow never merges the PR", workflow)
+        self.assertNotIn('pull_number="$(gh pr view "$pull_url" --json number --jq .number)"', workflow)
         # The protected workflow selects a title/prefix based on whether the
         # request is built-in or an approved external Factory publication.
         # Keep the legacy built-in values and ensure the dynamic values are
@@ -694,6 +778,56 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('COMMIT_TITLE: ${{ steps.request.outputs.commit_title }}', workflow)
         self.assertIn('branch="xsec-marketplace/${BRANCH_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
         self.assertIn("workflow_dispatch:", validation_workflow)
+
+    def test_reconcile_source_is_the_only_status_signer_and_restarts_review_after_proof(self) -> None:
+        publisher_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        reconcile = (ROOT / ".github" / "workflows" / "reconcile-source.yml").read_text(encoding="utf-8")
+        smoke = (ROOT / ".github" / "workflows" / "reconcile-smoke.yml").read_text(encoding="utf-8")
+        promotion = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")
+        adoption = (ROOT / ".github" / "workflows" / "adopt-first-party.yml").read_text(encoding="utf-8")
+        self.assertIn("contents: write", reconcile)
+        self.assertIn("id-token: write", reconcile)
+        self.assertIn("environment: production", reconcile)
+        self.assertIn("--official-status-plugin-id", reconcile)
+        self.assertIn("--allow-unsigned-official-status-plugin-id", reconcile)
+        self.assertIn('gh workflow run validate.yml --ref "$branch"', reconcile)
+        self.assertIn("@codex review", reconcile)
+        # Reconciliation authenticates each candidate's own Beta tuple first,
+        # then compares it with the live source head to supersede stale work.
+        # It refreshes protected Factory main before deriving the PR delta; the
+        # KMS source revision is an ancestry assertion, not a PR base.
+        self.assertIn('.source.sha == $source.betaSha', reconcile)
+        self.assertIn('[ "$candidate_beta_sha" = "$beta_sha" ]', reconcile)
+        self.assertIn('refs/heads/main:refs/remotes/origin/main', reconcile)
+        self.assertIn('candidate_base="$(git merge-base "$head_sha" origin/main)"', reconcile)
+        self.assertIn('--before "$candidate_base" --after "$head_sha" --classify', reconcile)
+        self.assertNotIn('and .[0].plugin_id | type == "string"', reconcile)
+        self.assertIn('and (.[0].plugin_id | type) == "string"', reconcile)
+        # A generated status is mutable until this production-only workflow
+        # recomputes the exact protected main gate from a sealed source fetch.
+        self.assertIn("check-main-rebuild", reconcile)
+        self.assertIn("xsec-status-main.XXXXXX", reconcile)
+        self.assertIn("Candidate status does not match the recomputed registered main gate.", reconcile)
+        self.assertIn("SOURCE_STABLE_REF", reconcile)
+        # An absent PR is successful only after the exact publisher run writes
+        # a nonce-bound no-op receipt. The optional artifact probe must not use
+        # jq -e, because no artifact is an expected polling state.
+        self.assertIn("reconcile_dispatch_nonce", publisher_workflow)
+        self.assertIn("xsec-reconcile-receipt-", publisher_workflow)
+        self.assertIn("dispatchNonce:$dispatch_nonce", publisher_workflow)
+        self.assertIn("jq -cr", reconcile)
+        self.assertIn('RECONCILE_DISPATCH_NONCE', reconcile)
+        self.assertIn('and .dispatchNonce == $dispatch_nonce', reconcile)
+        self.assertIn('and .factoryRevision == $factory_revision', reconcile)
+        self.assertIn("Publisher receipt Factory revision is not retained by protected main.", reconcile)
+        self.assertNotIn('factory_revision "$(printf \'%s\' "$publisher_run" | jq -er .head_sha)"', reconcile)
+        self.assertIn('if [ "$publisher_status" != "completed" ]; then', reconcile)
+        self.assertIn('if [ "$receipt" = "no-op" ]; then', reconcile)
+        self.assertIn("The publisher run that emitted the receipt did not complete successfully.", reconcile)
+        self.assertIn("stable_requests", smoke)
+        for workflow in (publisher_workflow, promotion, adoption):
+            self.assertNotIn("--official-status-plugin-id", workflow)
+            self.assertIn("--exclude-official-status", workflow)
 
     def test_stable_promotion_workflow_only_moves_an_existing_pointer(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")

@@ -2,6 +2,10 @@ name: Reconcile official marketplace smoke callback
 
 on:
   workflow_call:
+    outputs:
+      stable_requests:
+        description: Number of exact smoke-gated Stable publication requests dispatched.
+        value: ${{ jobs.validate-and-promote.outputs.stable_requests }}
     inputs:
       trigger_kind:
         required: false
@@ -45,6 +49,8 @@ concurrency:
 jobs:
   validate-and-promote:
     runs-on: ubuntu-latest
+    outputs:
+      stable_requests: ${{ steps.promote.outputs.stable_requests }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,6 +91,7 @@ jobs:
           }
       - name: Promote only smoke-verified Beta pointers whose source main is current
         if: ${{ steps.request.outputs.channel == 'beta' }}
+        id: promote
         env:
           GH_TOKEN: ${{ github.token }}
           MARKETPLACE_REVISION: ${{ steps.request.outputs.marketplace_revision }}
@@ -96,6 +103,7 @@ jobs:
           # earlier callback. publish.yml then rechecks the release ID *and*
           # exact Beta source SHA after it acquires the publication slot,
           # before moving only channels.stable.
+          stable_requests=0
           while IFS= read -r registration; do
             plugin_id="$(printf '%s' "$registration" | jq -r .pluginId)"
             repository="$(printf '%s' "$registration" | jq -r .source.repository)"
@@ -103,10 +111,26 @@ jobs:
             [ "$active" = "active" ] || continue
             smoke_beta="$(git show "${MARKETPLACE_REVISION}:plugins/${plugin_id}/.xsec-market/releases.json" 2>/dev/null | jq -r '.channels.beta.releaseId // empty' || true)"
             smoke_status="$(git show "${MARKETPLACE_REVISION}:.xsec-factory/official-status/${plugin_id}.json" 2>/dev/null || true)"
+            smoke_status_state="$(printf '%s' "$smoke_status" | jq -r '.publication.state // empty' 2>/dev/null || true)"
             smoke_status_beta="$(printf '%s' "$smoke_status" | jq -r '.release.betaReleaseId // empty' 2>/dev/null || true)"
             smoke_beta_sha="$(printf '%s' "$smoke_status" | jq -r '.source.betaSha // empty' 2>/dev/null || true)"
+            current_status="$(cat ".xsec-factory/official-status/${plugin_id}.json" 2>/dev/null || true)"
+            current_status_state="$(printf '%s' "$current_status" | jq -r '.publication.state // empty' 2>/dev/null || true)"
+            current_status_beta="$(printf '%s' "$current_status" | jq -r '.release.betaReleaseId // empty' 2>/dev/null || true)"
+            current_beta_sha="$(printf '%s' "$current_status" | jq -r '.source.betaSha // empty' 2>/dev/null || true)"
             current_beta="$(jq -r '.channels.beta.releaseId // empty' "plugins/${plugin_id}/.xsec-market/releases.json" 2>/dev/null || true)"
-            [ -n "$smoke_beta" ] && [ "$smoke_beta" = "$smoke_status_beta" ] && [ "$smoke_beta" = "$current_beta" ] || continue
+            # A later main source event can downgrade the exact same Beta to
+            # waiting_for_beta if main no longer rebuilds it. Never let an
+            # older retained smoke revision bypass that current gate. Both
+            # revisions must therefore name the same waiting-for-smoke tuple
+            # before this workflow is allowed to invoke the Stable publisher.
+            [ "$smoke_status_state" = "waiting_for_smoke" ] \
+              && [ "$current_status_state" = "waiting_for_smoke" ] \
+              && [ -n "$smoke_beta" ] \
+              && [ "$smoke_beta" = "$smoke_status_beta" ] \
+              && [ "$smoke_beta" = "$current_status_beta" ] \
+              && [ "$smoke_beta" = "$current_beta" ] \
+              && [ "$smoke_beta_sha" = "$current_beta_sha" ] || continue
             [[ "$smoke_beta_sha" =~ ^[a-f0-9]{40}$ ]] || continue
             main_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${repository}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
             [ -n "$main_sha" ] || { echo "Cannot resolve registered source main for ${plugin_id}." >&2; exit 1; }
@@ -114,4 +138,6 @@ jobs:
               -f channel=stable -f plugin_id="$plugin_id" -f source_sha="$main_sha" -f release_id="$current_beta" -f expected_beta_sha="$smoke_beta_sha" \
               -f smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/${SMOKE_RUN_ID}" \
               -f smoke_marketplace_revision="$MARKETPLACE_REVISION"
+            stable_requests="$((stable_requests + 1))"
           done < <(jq -c '.plugins[]' .xsec-factory/official-registry.json)
+          echo "stable_requests=$stable_requests" >> "$GITHUB_OUTPUT"

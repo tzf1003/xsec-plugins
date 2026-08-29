@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from build_market import load_release_document
+from kms_marketplace_publisher import MarketplaceKmsPublisherError, marketplace_documents, sidecar_path_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,11 +26,13 @@ PLUGIN_ID_PATTERN = r"[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?"
 RELEASE_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})/\.xsec-market/releases\.json$")
 RELEASE_SIDECAR_PATTERN = re.compile(rf"^plugins/{PLUGIN_ID_PATTERN}/\.xsec-market/releases\.json\.sig\.jws\.json$")
 PLUGIN_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})/(.+)$")
+MARKETPLACE_SOURCE_PATH_PATTERN = re.compile(rf"^\./plugins/({PLUGIN_ID_PATTERN})$")
 PUBLICATION_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-publications/({PLUGIN_ID_PATTERN})\.json$")
 PUBLICATION_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-publication-proofs/({PLUGIN_ID_PATTERN})\.json$")
 ADOPTION_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-adoptions/({PLUGIN_ID_PATTERN})\.json$")
 ADOPTION_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-adoption-proofs/({PLUGIN_ID_PATTERN})\.json$")
 STATUS_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-status/({PLUGIN_ID_PATTERN})\.json$")
+STATUS_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-status-proofs/({PLUGIN_ID_PATTERN})\.json$")
 MARKETPLACE_INDEX = ".agents/plugins/marketplace.json"
 MARKETPLACE_SIDECAR = ".agents/plugins/marketplace.json.sig.jws.json"
 REGISTRY_PATH = ".xsec-factory/official-registry.json"
@@ -276,28 +279,29 @@ def allowed_paths(channel: str, paths: list[str], promoted_ids: set[str]) -> Non
         status_path = STATUS_PATH_PATTERN.fullmatch(path)
         if status_path and status_path.group(1) in promoted_ids:
             continue
+        status_proof = STATUS_PROOF_PATTERN.fullmatch(path)
+        if status_proof and status_proof.group(1) in promoted_ids:
+            continue
         fail(f"merged {channel} publication changed an unauthorized path: {path}")
 
 
-def registry_source_binding(
+def active_registered_source(
     root: Path,
-    before: str,
-    after: str,
+    revision: str,
     *,
     plugin_id: str,
-    channel: str,
-    release_id: str,
 ) -> dict[str, str] | None:
-    """Return the newly-recorded source tuple for a registered plugin.
+    """Return the fixed source identity for one active Registry v2 row.
 
-    Legacy built-ins have no Registry v2 row and deliberately return ``None``.
-    Registered plugins must append one exact provenance event in this PR; an
-    earlier event cannot be replayed after its source branch has moved.
+    The publication and no-pointer smoke-cycle classifiers both need this
+    check.  Keeping it independent of an appended provenance event is
+    important: reopening a smoke cycle deliberately reuses an existing,
+    immutable Beta event instead of manufacturing another one.
     """
 
-    if not git_succeeds(root, ["cat-file", "-e", f"{after}:{REGISTRY_PATH}"]):
+    if not git_succeeds(root, ["cat-file", "-e", f"{revision}:{REGISTRY_PATH}"]):
         return None
-    registry = json_blob(root, after, REGISTRY_PATH, "official Factory registry")
+    registry = json_blob(root, revision, REGISTRY_PATH, "official Factory registry")
     entries = registry.get("plugins")
     if not isinstance(entries, list):
         fail("official Factory registry has no plugin list")
@@ -318,9 +322,36 @@ def registry_source_binding(
     ):
         fail(f"registered publication plugin {plugin_id} has invalid source identity")
     refs = source.get("refs")
-    expected_ref = "refs/heads/beta" if channel == "beta" else "refs/heads/main"
     if not isinstance(refs, dict) or refs.get("beta") != "refs/heads/beta" or refs.get("stable") != "refs/heads/main":
         fail(f"registered publication plugin {plugin_id} has invalid source refs")
+    return {
+        "repository": str(source["repository"]),
+        "path": str(source["path"]),
+        "beta_ref": "refs/heads/beta",
+        "stable_ref": "refs/heads/main",
+    }
+
+
+def registry_source_binding(
+    root: Path,
+    before: str,
+    after: str,
+    *,
+    plugin_id: str,
+    channel: str,
+    release_id: str,
+) -> dict[str, str] | None:
+    """Return the newly-recorded source tuple for a registered plugin.
+
+    Legacy built-ins have no Registry v2 row and deliberately return ``None``.
+    Registered plugins must append one exact provenance event in this PR; an
+    earlier event cannot be replayed after its source branch has moved.
+    """
+
+    source = active_registered_source(root, after, plugin_id=plugin_id)
+    if source is None:
+        return None
+    expected_ref = source["beta_ref"] if channel == "beta" else source["stable_ref"]
     evidence_path = f".xsec-factory/official-publications/{plugin_id}.json"
     if not git_succeeds(root, ["cat-file", "-e", f"{after}:{evidence_path}"]):
         fail(f"registered publication plugin {plugin_id} lacks immutable source evidence")
@@ -354,7 +385,55 @@ def registry_source_binding(
             matches.append(event_source)
     if len(matches) != 1:
         fail(f"registered publication plugin {plugin_id} must append one exact {channel} source event")
-    return {"repository": str(source["repository"]), "ref": expected_ref, "sha": str(matches[0]["sha"])}
+    return {"repository": source["repository"], "ref": expected_ref, "sha": str(matches[0]["sha"])}
+
+
+def beta_main_gate_binding(
+    root: Path,
+    after: str,
+    *,
+    plugin_id: str,
+    release_id: str,
+    beta_source: dict[str, str],
+) -> dict[str, str]:
+    """Read the main SHA that made a registered Beta's smoke decision.
+
+    Release provenance authenticates the immutable Beta source, but is silent
+    about the concurrently compared ``main`` ref.  The Factory status is the
+    only permitted place for that transient, review-bound decision.  Require
+    it for every registered Beta PR so a later main push cannot turn an old
+    green result into an unreviewed Desktop smoke request.
+    """
+
+    identity = active_registered_source(root, after, plugin_id=plugin_id)
+    if identity is None:
+        fail("registered Beta smoke gate has no active source identity")
+    status_path = f".xsec-factory/official-status/{plugin_id}.json"
+    if not git_succeeds(root, ["cat-file", "-e", f"{after}:{status_path}"]):
+        fail(f"registered Beta publication plugin {plugin_id} has no Factory status")
+    status = json_blob(root, after, status_path, f"Factory status for {plugin_id}")
+    source = status.get("source")
+    release = status.get("release")
+    publication = status.get("publication")
+    if not isinstance(source, dict) or not isinstance(release, dict) or not isinstance(publication, dict):
+        fail(f"registered Beta publication plugin {plugin_id} has malformed Factory status")
+    if set(source) != {"repository", "path", "refs", "betaSha", "stableSha", "mainGateSha"}:
+        fail(f"registered Beta publication plugin {plugin_id} Factory status has invalid source fields")
+    if (
+        source.get("repository") != identity["repository"]
+        or source.get("path") != identity["path"]
+        or source.get("refs") != {"beta": identity["beta_ref"], "stable": identity["stable_ref"]}
+        or source.get("betaSha") != beta_source["sha"]
+        or source.get("stableSha") is not None
+        or not isinstance(source.get("mainGateSha"), str)
+        or not SHA_PATTERN.fullmatch(source["mainGateSha"])
+    ):
+        fail(f"registered Beta publication plugin {plugin_id} Factory status is not bound to its Beta/main source tuple")
+    if release.get("betaReleaseId") != release_id or publication.get("state") not in {"waiting_for_beta", "waiting_for_smoke"}:
+        fail(f"registered Beta publication plugin {plugin_id} Factory status is not an in-flight Beta smoke gate")
+    if publication.get("smokeRunUrl") is not None or publication.get("marketplaceRevision") is not None:
+        fail(f"registered Beta publication plugin {plugin_id} Factory status prematurely claims smoke evidence")
+    return {"repository": identity["repository"], "ref": identity["stable_ref"], "sha": source["mainGateSha"]}
 
 
 def verify_merged_publication(root: Path, before: str, after: str, channel: str) -> dict[str, object]:
@@ -413,6 +492,14 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         record: dict[str, object] = {"plugin_id": plugin_id, "release_id": release_id}
         if source is not None:
             record["source"] = source
+            if channel == "beta":
+                record["main_source"] = beta_main_gate_binding(
+                    root,
+                    after,
+                    plugin_id=plugin_id,
+                    release_id=release_id,
+                    beta_source=source,
+                )
         promoted.append(record)
     if channel == "stable" and len(promoted) != 1:
         fail("merged Stable promotion must change exactly one releases.json document")
@@ -470,7 +557,201 @@ def verify_stable_maintenance(root: Path, before: str, after: str, paths: list[s
     }
 
 
-def classify_merged_change(root: Path, before: str, after: str) -> dict[str, object]:
+def verify_beta_smoke_ready(
+    root: Path,
+    before: str,
+    after: str,
+    paths: list[str],
+    *,
+    allow_unsigned_official_status_plugin_id: str | None = None,
+) -> dict[str, object]:
+    """Authenticate one no-pointer main-gate recheck for an existing Beta.
+
+    A source ``main`` event can make an already immutable Beta reproducible
+    without appending a release record.  This candidate is intentionally not
+    generic maintenance: it is the only shape that may reopen Desktop smoke,
+    and binds both exact source branch heads so the finalizer can reject a
+    decision that became stale while the generated PR waited for review.
+    """
+
+    require_candidate_revisions(root, before, after)
+    status_paths = [match.group(1) for path in paths if (match := STATUS_PATH_PATTERN.fullmatch(path))]
+    if len(status_paths) != 1:
+        fail("no-pointer Beta smoke transition must change exactly one Factory status document")
+    plugin_id = status_paths[0]
+    release_path = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    release_sidecar = f"{release_path}.sig.jws.json"
+    evidence_path = f".xsec-factory/official-publications/{plugin_id}.json"
+    proof_path = f".xsec-factory/official-publication-proofs/{plugin_id}.json"
+    status_path = f".xsec-factory/official-status/{plugin_id}.json"
+    status_proof_path = f".xsec-factory/official-status-proofs/{plugin_id}.json"
+    required_paths = {MARKETPLACE_SIDECAR, release_sidecar, proof_path, status_path}
+    if allow_unsigned_official_status_plugin_id is None:
+        required_paths.add(status_proof_path)
+    elif allow_unsigned_official_status_plugin_id != plugin_id:
+        fail("pending status authentication does not match the no-pointer Beta plugin")
+    if not required_paths.issubset(paths):
+        fail("no-pointer Beta smoke transition must refresh Marketplace, release, provenance, and status sidecars")
+    if allow_unsigned_official_status_plugin_id is None and not git_succeeds(root, ["cat-file", "-e", f"{after}:{status_proof_path}"]):
+        fail("no-pointer Beta smoke transition must retain its status KMS proof")
+    marketplace = json_blob(root, after, MARKETPLACE_INDEX, "retained Marketplace index")
+    entries = marketplace.get("plugins")
+    if not isinstance(entries, list):
+        fail("no-pointer Beta smoke transition retained Marketplace index has invalid plugins")
+    active_release_sidecars: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("source"), dict):
+            fail("no-pointer Beta smoke transition retained Marketplace index has an invalid plugin source")
+        source_path = entry["source"].get("path")
+        if not isinstance(source_path, str):
+            fail("no-pointer Beta smoke transition retained Marketplace source path is invalid")
+        # The marketplace's public source contract intentionally uses an
+        # explicit repository-relative ``./plugins/<id>`` path.  Registry and
+        # status documents use the source repository's ``plugins/<id>`` path,
+        # so accepting that representation here would both reject production
+        # snapshots and weaken this candidate's Marketplace-bound allowlist.
+        match = MARKETPLACE_SOURCE_PATH_PATTERN.fullmatch(source_path)
+        if match is None:
+            fail("no-pointer Beta smoke transition retained Marketplace source path is not canonical")
+        active_release_sidecars.add(f"plugins/{match.group(1)}/.xsec-market/releases.json.sig.jws.json")
+    # A normal KMS renewal can refresh proof sidecars for every *other* active
+    # Factory document while this one status changes.  These are signatures,
+    # not source-of-truth documents, so allow the exact sidecar set derived
+    # from the post-change Marketplace layout and still reject any underlying
+    # status/provenance/release/index content rewrite for another plugin.
+    try:
+        root_resolved = root.resolve(strict=True)
+        active_kms_sidecars = {
+            sidecar_path_for(document).resolve(strict=False).relative_to(root_resolved).as_posix()
+            for document in marketplace_documents(root)
+        }
+    except (MarketplaceKmsPublisherError, OSError, ValueError) as error:
+        raise PromotionVerificationError("no-pointer Beta smoke transition has an invalid active KMS document layout") from error
+    if not active_release_sidecars.issubset(active_kms_sidecars):
+        fail("no-pointer Beta smoke transition active release sidecar allowlist is incomplete")
+    for path in paths:
+        if path in required_paths or path in active_kms_sidecars:
+            continue
+        fail(f"no-pointer Beta smoke transition changed an unauthorized path: {path}")
+    for path, label in ((MARKETPLACE_INDEX, "Marketplace index"), (release_path, "Beta release index"), (evidence_path, "Beta provenance")):
+        if not git_succeeds(root, ["cat-file", "-e", f"{before}:{path}"]) or not git_succeeds(
+            root, ["cat-file", "-e", f"{after}:{path}"]
+        ):
+            fail(f"no-pointer Beta smoke transition must retain its {label}")
+        if git_bytes(root, ["show", f"{before}:{path}"]) != git_bytes(root, ["show", f"{after}:{path}"]):
+            fail(f"no-pointer Beta smoke transition may not rewrite its {label}")
+
+    before_release = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{before}:{release_path}"]))
+    after_release = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{after}:{release_path}"]))
+    if before_release != after_release:
+        fail("no-pointer Beta smoke transition rewrote immutable release metadata")
+    beta_release = release_pointer(after_release, "beta")
+    stable_release = release_pointer(after_release, "stable")
+    if beta_release is None:
+        fail("no-pointer Beta smoke transition requires a current Beta release")
+
+    before_status = json_blob(root, before, status_path, "baseline Factory status")
+    after_status = json_blob(root, after, status_path, "candidate Factory status")
+    for status, label in ((before_status, "baseline"), (after_status, "candidate")):
+        if set(status) != {"schemaVersion", "pluginId", "trustTier", "source", "release", "publication"}:
+            fail(f"no-pointer Beta smoke transition has an invalid {label} Factory status shape")
+        if status.get("pluginId") != plugin_id:
+            fail("no-pointer Beta smoke transition status has the wrong plugin ID")
+        if not isinstance(status.get("source"), dict) or not isinstance(status.get("release"), dict) or not isinstance(
+            status.get("publication"), dict
+        ):
+            fail("no-pointer Beta smoke transition status sections must be objects")
+    before_source = before_status["source"]
+    after_source = after_status["source"]
+    expected_source_keys = {"repository", "path", "refs", "betaSha", "stableSha", "mainGateSha"}
+    if set(before_source) != expected_source_keys or set(after_source) != expected_source_keys:
+        fail("no-pointer Beta smoke transition status has an invalid source shape")
+    source_identity = active_registered_source(root, after, plugin_id=plugin_id)
+    if source_identity is None:
+        fail("no-pointer Beta smoke transition must belong to an active registered source")
+    expected_refs = {"beta": source_identity["beta_ref"], "stable": source_identity["stable_ref"]}
+    for source, label in ((before_source, "baseline"), (after_source, "candidate")):
+        if (
+            source.get("repository") != source_identity["repository"]
+            or source.get("path") != source_identity["path"]
+            or source.get("refs") != expected_refs
+            or not isinstance(source.get("betaSha"), str)
+            or not SHA_PATTERN.fullmatch(source["betaSha"])
+            or source.get("stableSha") is not None
+            or not isinstance(source.get("mainGateSha"), str)
+            or not SHA_PATTERN.fullmatch(source["mainGateSha"])
+        ):
+            fail(f"no-pointer Beta smoke transition {label} status is not bound to the registered source")
+    if before_source["betaSha"] != after_source["betaSha"]:
+        fail("no-pointer Beta smoke transition may not change its immutable Beta source SHA")
+    if before_source["mainGateSha"] == after_source["mainGateSha"]:
+        fail("no-pointer Beta smoke transition must record a newly compared registered main SHA")
+
+    expected_release = {"betaReleaseId": beta_release, "stableReleaseId": stable_release}
+    if before_status["release"] != expected_release or after_status["release"] != expected_release:
+        fail("no-pointer Beta smoke transition status does not retain current release pointers")
+    before_publication = before_status["publication"]
+    after_publication = after_status["publication"]
+    expected_publication_keys = {"state", "deliveryId", "factoryRunUrl", "smokeRunUrl", "marketplaceRevision"}
+    if set(before_publication) != expected_publication_keys or set(after_publication) != expected_publication_keys:
+        fail("no-pointer Beta smoke transition status has an invalid publication shape")
+    before_state = before_publication.get("state")
+    after_state = after_publication.get("state")
+    if before_state not in {"waiting_for_beta", "waiting_for_smoke"} or after_state not in {
+        "waiting_for_beta",
+        "waiting_for_smoke",
+    }:
+        fail("no-pointer Beta smoke transition must retain an in-flight Beta gate state")
+    if (
+        before_publication.get("smokeRunUrl") is not None
+        or before_publication.get("marketplaceRevision") is not None
+        or after_publication.get("smokeRunUrl") is not None
+        or after_publication.get("marketplaceRevision") is not None
+    ):
+        fail("no-pointer Beta smoke transition must not claim Desktop smoke evidence")
+
+    evidence = json_blob(root, after, evidence_path, "retained Beta provenance")
+    events = evidence.get("events")
+    if not isinstance(events, list):
+        fail("no-pointer Beta smoke transition retained provenance has invalid events")
+    beta_events = [
+        event
+        for event in events
+        if isinstance(event, dict)
+        and event.get("channel") == "beta"
+        and event.get("releaseId") == beta_release
+        and isinstance(event.get("source"), dict)
+        and event["source"].get("repository") == source_identity["repository"]
+        and event["source"].get("path") == source_identity["path"]
+        and event["source"].get("ref") == source_identity["beta_ref"]
+        and event["source"].get("sha") == after_source["betaSha"]
+    ]
+    if len(beta_events) != 1:
+        fail("no-pointer Beta smoke transition status must match one immutable Beta provenance event")
+    return {
+        "kind": "beta-smoke-ready",
+        "promotions": [
+            {
+                "plugin_id": plugin_id,
+                "release_id": beta_release,
+                "source": {"repository": source_identity["repository"], "ref": source_identity["beta_ref"], "sha": after_source["betaSha"]},
+                "main_source": {
+                    "repository": source_identity["repository"],
+                    "ref": source_identity["stable_ref"],
+                    "sha": after_source["mainGateSha"],
+                },
+            }
+        ],
+    }
+
+
+def classify_merged_change(
+    root: Path,
+    before: str,
+    after: str,
+    *,
+    allow_unsigned_official_status_plugin_id: str | None = None,
+) -> dict[str, object]:
     """Return ``none`` for ordinary commits, without reading commit metadata."""
 
     paths = changed_paths(root, before, after)
@@ -494,6 +775,7 @@ def classify_merged_change(root: Path, before: str, after: str) -> dict[str, obj
             or PUBLICATION_PATH_PATTERN.fullmatch(path)
             or PUBLICATION_PROOF_PATTERN.fullmatch(path)
             or STATUS_PATH_PATTERN.fullmatch(path)
+            or STATUS_PROOF_PATTERN.fullmatch(path)
             for path in paths
         ]
         if all(auxiliary) and MARKETPLACE_SIDECAR in paths and any(
@@ -503,7 +785,22 @@ def classify_merged_change(root: Path, before: str, after: str) -> dict[str, obj
             # Registry v2 source. Registered Factory evidence is stricter: it
             # must authenticate as the exact no-pointer Stable completion.
             if git_succeeds(root, ["cat-file", "-e", f"{after}:{REGISTRY_PATH}"]):
-                return verify_stable_maintenance(root, before, after, paths)
+                try:
+                    return verify_beta_smoke_ready(
+                        root,
+                        before,
+                        after,
+                        paths,
+                        allow_unsigned_official_status_plugin_id=allow_unsigned_official_status_plugin_id,
+                    )
+                except PromotionVerificationError as beta_error:
+                    try:
+                        return verify_stable_maintenance(root, before, after, paths)
+                    except PromotionVerificationError as stable_error:
+                        fail(
+                            "no-pointer Factory change is not a safe Beta smoke or Stable completion: "
+                            f"beta-smoke-ready: {beta_error}; stable-maintenance: {stable_error}"
+                        )
             return {"kind": "maintenance"}
         return {"kind": "none"}
     candidates: list[dict[str, object]] = []
@@ -527,6 +824,10 @@ def main() -> int:
     parser.add_argument("--after", required=True)
     parser.add_argument("--channel", choices=("beta", "stable"))
     parser.add_argument("--classify", action="store_true")
+    parser.add_argument(
+        "--allow-unsigned-official-status-plugin-id",
+        help="only while authenticating one pending reconcile candidate status",
+    )
     parser.add_argument("--verify-first-party-adoption-candidate", action="store_true")
     parser.add_argument("--verify-retained-sidecar-refresh-candidate", action="store_true")
     args = parser.parse_args()
@@ -540,10 +841,17 @@ def main() -> int:
     )
     if modes != 1:
         parser.error("supply exactly one verification mode")
+    if args.allow_unsigned_official_status_plugin_id is not None and not args.classify:
+        parser.error("--allow-unsigned-official-status-plugin-id requires --classify")
     try:
         root = args.root.resolve()
         if args.classify:
-            result = classify_merged_change(root, args.before, args.after)
+            result = classify_merged_change(
+                root,
+                args.before,
+                args.after,
+                allow_unsigned_official_status_plugin_id=args.allow_unsigned_official_status_plugin_id,
+            )
         elif args.channel is not None:
             result = verify_merged_publication(root, args.before, args.after, args.channel)
         elif args.verify_first_party_adoption_candidate:

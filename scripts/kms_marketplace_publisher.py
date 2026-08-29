@@ -35,6 +35,8 @@ OFFICIAL_PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publicat
 OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-publication-proofs"
 OFFICIAL_ADOPTIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoptions"
 OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoption-proofs"
+OFFICIAL_STATUSES_RELATIVE_PATH = Path(".xsec-factory") / "official-status"
+OFFICIAL_STATUS_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-status-proofs"
 # This document is not consumed by Desktop.  It binds the external source
 # provenance kept by the Factory to the same protected OIDC/KMS publication
 # boundary as the Marketplace index and release records.
@@ -46,6 +48,12 @@ OFFICIAL_PUBLICATION_PROVENANCE_PURPOSE = "xsec.plugin-marketplace.provenance"
 # Keeping the subjects and sidecars separate prevents either assertion from
 # being replayed as the other.
 OFFICIAL_ADOPTION_PROVENANCE_PURPOSE = "xsec.plugin-marketplace.first-party-adoption"
+# A Factory status is user-visible but, unlike immutable release history, it
+# includes the transient beta/main tuple that decides whether Desktop smoke
+# may start.  Signing it under its own purpose prevents an unsigned status
+# edit from turning a waiting Beta into a smoke request and prevents a status
+# proof from being replayed as provenance or an adoption proof.
+OFFICIAL_STATUS_PURPOSE = "xsec.plugin-marketplace.official-status"
 BROKER_AUDIENCE = "xsec-kms-document-signing-v1"
 PRODUCTION_BROKER_URL = "https://api.54321000.xyz/v2/internal/signing/documents"
 GITHUB_ACTIONS_OIDC_HOST_SUFFIX = ".actions.githubusercontent.com"
@@ -297,6 +305,64 @@ def official_adoption_provenance_documents(root: Path) -> list[MarketplaceDocume
     return documents
 
 
+def official_status_document(root: Path, plugin_id: str) -> MarketplaceDocument:
+    """Return the fixed KMS document for one observable Factory status.
+
+    Status is deliberately signed as a separate document instead of extending
+    release provenance: it can change while the immutable release and its
+    source evidence remain byte-identical during a registered-main recheck.
+    """
+
+    if (
+        not isinstance(plugin_id, str)
+        or not OFFICIAL_PLUGIN_ID_PATTERN.fullmatch(plugin_id)
+        or ".." in plugin_id
+        or "--" in plugin_id
+        or plugin_id.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES
+    ):
+        fail("official Factory status plugin ID is unsafe")
+    subject = (OFFICIAL_STATUSES_RELATIVE_PATH / f"{plugin_id}.json").as_posix()
+    proof_subject = (OFFICIAL_STATUS_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").as_posix()
+    return MarketplaceDocument(
+        OFFICIAL_STATUS_PURPOSE,
+        subject,
+        safe_document_path(root, subject, must_exist=True),
+        safe_document_path(root, proof_subject, must_exist=False),
+    )
+
+
+def official_status_documents(root: Path) -> list[MarketplaceDocument]:
+    """Enumerate only fixed-path Factory status documents for KMS signing."""
+
+    status_root = root / OFFICIAL_STATUSES_RELATIVE_PATH
+    proof_root = root / OFFICIAL_STATUS_PROOFS_RELATIVE_PATH
+    if not status_root.exists():
+        if proof_root.exists():
+            if is_link(proof_root) or not proof_root.is_dir() or any(proof_root.iterdir()):
+                fail("official Factory status proof directory has no status documents")
+        return []
+    if is_link(status_root) or not status_root.is_dir():
+        fail("official Factory status directory must be a regular directory")
+    if proof_root.exists() and (is_link(proof_root) or not proof_root.is_dir()):
+        fail("official Factory status proof directory must be a regular directory")
+    documents: list[MarketplaceDocument] = []
+    status_names: set[str] = set()
+    for status in sorted(status_root.iterdir(), key=lambda item: item.name):
+        if is_link(status) or not status.is_file() or status.suffix != ".json":
+            fail(f"official Factory status directory has an unsafe entry: {status.name}")
+        status_names.add(status.name)
+        plugin_id = status.name.removesuffix(".json")
+        document = official_status_document(root, plugin_id)
+        if document.path != status.resolve(strict=True):
+            fail(f"official Factory status path does not match its subject: {status.name}")
+        documents.append(document)
+    if proof_root.exists():
+        for proof in proof_root.iterdir():
+            if is_link(proof) or not proof.is_file() or proof.suffix != ".json" or proof.name not in status_names:
+                fail(f"official Factory status proof directory has an orphan or unsafe entry: {proof.name}")
+    return documents
+
+
 def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     index_path = safe_document_path(root, MARKETPLACE_INDEX_SUBJECT, must_exist=True)
     marketplace = json_object(index_path.read_bytes(), MARKETPLACE_INDEX_SUBJECT)
@@ -325,7 +391,44 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
         )
     documents.extend(official_publication_provenance_documents(root))
     documents.extend(official_adoption_provenance_documents(root))
+    documents.extend(official_status_documents(root))
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
+
+
+def without_official_status_documents(documents: list[MarketplaceDocument]) -> list[MarketplaceDocument]:
+    """Select the ordinary publisher document set without mutable status.
+
+    The Cloud broker deliberately gives ``official-status`` to the protected
+    source reconciler alone.  Keep the selection here, rather than letting a
+    workflow filter by filename, so every caller still receives the same
+    fixed-path/orphan-proof validation from :func:`marketplace_documents`.
+    """
+
+    return [document for document in documents if document.purpose != OFFICIAL_STATUS_PURPOSE]
+
+
+def documents_for_active_signature_verification(
+    root: Path,
+    *,
+    allow_unsigned_official_status_plugin_id: str | None = None,
+) -> list[MarketplaceDocument]:
+    """Return active documents, optionally withholding one pending status.
+
+    A generated release candidate has all immutable publication sidecars from
+    ``publish.yml`` but intentionally lacks its newly-written status proof.
+    Reconciliation must verify every other active document before it may sign
+    that one status.  The exception is one canonical plugin ID, not a glob and
+    not a general "ignore status" switch.
+    """
+
+    documents = marketplace_documents(root)
+    if allow_unsigned_official_status_plugin_id is None:
+        return documents
+    pending = official_status_document(root, allow_unsigned_official_status_plugin_id)
+    matching = [document for document in documents if document.subject == pending.subject]
+    if len(matching) != 1 or matching[0] != pending:
+        fail("pending official Factory status is not an active Marketplace document")
+    return [document for document in documents if document != pending]
 
 
 def retained_release_document(root: Path, plugin_id: str) -> MarketplaceDocument:
@@ -817,6 +920,11 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=ROOT, help="marketplace root")
     parser.add_argument("--validate-only", action="store_true", help="validate existing sidecars without acquiring OIDC")
     parser.add_argument(
+        "--exclude-official-status",
+        action="store_true",
+        help="sign or validate every ordinary Marketplace document, never an official status",
+    )
+    parser.add_argument(
         "--verify-retained-release-signature",
         action="store_true",
         help="cryptographically verify one retained releases.json KMS sidecar against the pinned issuer JWKS",
@@ -824,26 +932,52 @@ def main() -> None:
     parser.add_argument(
         "--verify-active-marketplace-signatures",
         action="store_true",
-        help="cryptographically verify every active Marketplace document and return its shared source revision",
+        help="cryptographically verify every active Marketplace document and return the shared immutable-document revision",
+    )
+    parser.add_argument(
+        "--allow-unsigned-official-status-plugin-id",
+        help="with --verify-active-marketplace-signatures, omit exactly one pending official status proof",
     )
     parser.add_argument(
         "--retained-release-plugin-id",
         help="refresh or validate only one current Marketplace immutable releases.json sidecar",
+    )
+    parser.add_argument(
+        "--official-status-plugin-id",
+        help="sign or validate only one canonical official Factory status document",
     )
     args = parser.parse_args()
     if args.verify_retained_release_signature and args.retained_release_plugin_id is None:
         parser.error("--verify-retained-release-signature requires --retained-release-plugin-id")
     if args.verify_retained_release_signature and args.validate_only:
         parser.error("--verify-retained-release-signature cannot be combined with --validate-only")
-    if args.verify_active_marketplace_signatures and (args.validate_only or args.retained_release_plugin_id is not None):
-        parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release or validate-only options")
+    if args.verify_active_marketplace_signatures and (
+        args.validate_only or args.retained_release_plugin_id is not None or args.official_status_plugin_id is not None
+    ):
+        parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release, status-only, or validate-only options")
+    if args.allow_unsigned_official_status_plugin_id is not None and not args.verify_active_marketplace_signatures:
+        parser.error("--allow-unsigned-official-status-plugin-id requires --verify-active-marketplace-signatures")
+    if args.exclude_official_status and (
+        args.retained_release_plugin_id is not None or args.official_status_plugin_id is not None
+    ):
+        parser.error("--exclude-official-status cannot be combined with a single-document selector")
+    if args.retained_release_plugin_id is not None and args.official_status_plugin_id is not None:
+        parser.error("--retained-release-plugin-id and --official-status-plugin-id are mutually exclusive")
     root = args.root.resolve()
     try:
-        documents = (
-            [retained_release_document(root, args.retained_release_plugin_id)]
-            if args.retained_release_plugin_id is not None
-            else marketplace_documents(root)
-        )
+        if args.verify_active_marketplace_signatures:
+            documents = documents_for_active_signature_verification(
+                root,
+                allow_unsigned_official_status_plugin_id=args.allow_unsigned_official_status_plugin_id,
+            )
+        elif args.retained_release_plugin_id is not None:
+            documents = [retained_release_document(root, args.retained_release_plugin_id)]
+        elif args.official_status_plugin_id is not None:
+            documents = [official_status_document(root, args.official_status_plugin_id)]
+        else:
+            documents = marketplace_documents(root)
+            if args.exclude_official_status:
+                documents = without_official_status_documents(documents)
         if args.verify_retained_release_signature:
             document = documents[0]
             sidecar = sidecar_path_for(document)
@@ -853,15 +987,38 @@ def main() -> None:
             print("cryptographically verified 1 retained KMS marketplace sidecar")
             return
         if args.verify_active_marketplace_signatures:
-            revisions: set[str] = set()
+            if not documents:
+                fail("active Marketplace signature verification has no documents")
+            immutable_revisions: set[str] = set()
             for document in documents:
                 sidecar = sidecar_path_for(document)
                 if is_link(sidecar) or not sidecar.is_file():
                     fail(f"KMS sidecar is unavailable: {sidecar}")
-                revisions.add(verify_historical_sidecar_signature(sidecar.read_bytes(), document))
-            if len(revisions) != 1:
-                fail("active Marketplace KMS sidecars do not share one source revision")
-            print(stable_json({"documents": len(documents), "source_revision": revisions.pop()}).decode("utf-8"), end="")
+                revision = verify_historical_sidecar_signature(sidecar.read_bytes(), document)
+                # A Factory status is independently reconciled and may be
+                # renewed for one plugin while the rest of the Marketplace
+                # is unchanged. Its proof must still verify, but cannot force
+                # unrelated immutable index/release/provenance documents to
+                # be re-signed (which Cloud now correctly disallows from the
+                # reconcile-only workflow identity).
+                if document.purpose != OFFICIAL_STATUS_PURPOSE:
+                    immutable_revisions.add(revision)
+            if len(immutable_revisions) != 1:
+                fail("active immutable Marketplace KMS sidecars do not share one source revision")
+            print(
+                stable_json(
+                    {
+                        "documents": len(documents),
+                        "source_revision": immutable_revisions.pop(),
+                        **(
+                            {"unsigned_official_status_plugin_id": args.allow_unsigned_official_status_plugin_id}
+                            if args.allow_unsigned_official_status_plugin_id is not None
+                            else {}
+                        ),
+                    }
+                ).decode("utf-8"),
+                end="",
+            )
             return
         source_revision = source_revision_from_environment(os.environ)
         if args.validate_only:

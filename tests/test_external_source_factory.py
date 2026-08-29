@@ -424,6 +424,79 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertEqual(events[-1]["channel"], "stable")
             self.assertEqual(events[-1]["source"]["sha"], STABLE_SHA)
 
+    def test_first_party_main_rebuild_gate_waits_without_mutating_release_history_or_evidence(self) -> None:
+        """A split main behind Beta is an auditable wait, never a failed Stable release."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-main-rebuild-gate-") as directory:
+            workspace = Path(directory)
+            root = workspace / "factory"
+            plugin_id = "com.xsec.workspace.sub-agent"
+            release_id = self.make_first_party_adoption(root)
+            source_root = workspace / "source-main"
+            shutil.copytree(
+                root / "plugins" / plugin_id,
+                source_root / "plugins" / plugin_id,
+                ignore=shutil.ignore_patterns(".xsec-market"),
+            )
+
+            matching = factory.check_main_rebuild(root, plugin_id, source_root)
+            self.assertEqual(matching["beta_release_id"], release_id)
+            self.assertEqual(matching["state"], "waiting_for_smoke")
+            self.assertEqual(matching["smoke_ready"], "true")
+
+            # A first-party Beta may point at an adopted immutable release.
+            # Its readable wait state still needs the exact signed Beta event.
+            factory.record_beta(root, plugin_id, BETA_SHA, "test-publisher")
+            write_publication_proof(root, plugin_id)
+            release_before = factory.release_path(root, plugin_id).read_bytes()
+            evidence_before = factory.publication_path(root, plugin_id).read_bytes()
+            (source_root / "plugins" / plugin_id / "frontend.js").write_text(
+                "export function activate() { return 'main-behind-beta'; }\n",
+                encoding="utf-8",
+            )
+
+            waiting = factory.check_main_rebuild(root, plugin_id, source_root)
+            self.assertEqual(waiting["state"], "waiting_for_beta")
+            self.assertEqual(waiting["smoke_ready"], "false")
+            # The classifier is deliberately read-only: no Stable evidence or
+            # pointer may appear merely because main has not caught up yet.
+            self.assertEqual(factory.release_path(root, plugin_id).read_bytes(), release_before)
+            self.assertEqual(factory.publication_path(root, plugin_id).read_bytes(), evidence_before)
+
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_beta",
+                delivery_id="main-behind-beta",
+            )
+            factory.validate_registry_and_snapshots(root)
+            baseline = workspace / "trusted-waiting-for-beta"
+            shutil.copytree(root, baseline)
+
+            # A later main commit that exactly rebuilds the same Beta may only
+            # reopen smoke for the existing source/release tuple. Reverting
+            # to waiting_for_beta remains equally bound to that tuple.
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_smoke",
+                delivery_id="main-caught-up",
+            )
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+            factory.record_status(
+                root,
+                plugin_id,
+                beta_sha=BETA_SHA,
+                stable_sha=None,
+                state="waiting_for_beta",
+                delivery_id="main-moved-again",
+            )
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
     def test_stable_rejects_a_smoke_selected_historical_beta_after_a_newer_beta_exists(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-stale-stable-") as directory:
             root = Path(directory)
@@ -1474,6 +1547,19 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 factory.validate_registry_and_snapshots(root)
 
             write_json(waiting_path, waiting)
+            waiting_for_beta = json.loads(json.dumps(waiting))
+            waiting_for_beta["publication"]["state"] = "waiting_for_beta"
+            write_json(waiting_path, waiting_for_beta)
+            factory.validate_registry_and_snapshots(root)
+            forged_waiting_for_beta = json.loads(json.dumps(waiting_for_beta))
+            forged_waiting_for_beta["source"]["stableSha"] = STABLE_SHA
+            forged_waiting_for_beta["publication"]["smokeRunUrl"] = "https://github.com/tzf1003/xSecDesktop/actions/runs/602"
+            forged_waiting_for_beta["publication"]["marketplaceRevision"] = "f" * 40
+            write_json(waiting_path, forged_waiting_for_beta)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "waiting Factory status must not claim Stable or smoke evidence"):
+                factory.validate_registry_and_snapshots(root)
+
+            write_json(waiting_path, waiting)
             self.assertTrue(promote_release.promote_stable(root, PLUGIN_ID, release_id))
             factory.record_stable(root, PLUGIN_ID, STABLE_SHA, release_id, "test-publisher")
             write_publication_proof(root, PLUGIN_ID)
@@ -1881,6 +1967,8 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 source_sha=BETA_SHA,
             )
             self.assertEqual(accepted["channel"], "beta")
+            self.assertEqual(accepted["beta_ref"], "refs/heads/beta")
+            self.assertEqual(accepted["stable_ref"], "refs/heads/main")
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not match a registered beta or stable branch"):
                 factory.prepare_reconcile_source(
                     root,
@@ -1935,9 +2023,36 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("ls-remote", source_workflow)
         self.assertIn("Source delivery is stale", source_workflow)
         self.assertIn("publish.yml", source_workflow)
+        # A registered-main recheck must not strand an already accepted Beta
+        # behind its now-stale generated PR. The Dispatcher may close only a
+        # cryptographically authenticated candidate for the same Registry
+        # source/Beta tuple, then requests a fresh review-required candidate.
+        for rule in (
+            "pull-requests: write",
+            "Controlled supersede of an obsolete same-plugin Beta candidate",
+            "^xsec-marketplace/external-beta-[0-9]+-[0-9]+$",
+            "candidate Registry entry is ambiguous",
+            "candidate lacks exact Beta provenance",
+            "--verify-active-marketplace-signatures",
+            "KMS generation revision is not retained by protected Factory main",
+            "does not descend from its KMS generation revision",
+            "does not authenticate one generated plugin",
+            "candidate_beta_sha",
+            "issues/${number}/comments",
+            '"repos/${GITHUB_REPOSITORY}/pulls/${number}"',
+            "Controlled supersede: trusted dispatcher delivery ${DELIVERY_KEY}",
+            "steps.supersede.outputs.dispatch == 'true'",
+        ):
+            with self.subTest(controlled_supersede_rule=rule):
+                self.assertIn(rule, source_workflow)
+        self.assertNotIn("gh pr merge", source_workflow)
         self.assertIn("prepare-reconcile-smoke", smoke_workflow)
         self.assertIn("merge-base --is-ancestor", smoke_workflow)
         self.assertIn("release_id=\"$current_beta\"", smoke_workflow)
+        self.assertIn('[ "$smoke_status_state" = "waiting_for_smoke" ]', smoke_workflow)
+        self.assertIn('[ "$current_status_state" = "waiting_for_smoke" ]', smoke_workflow)
+        self.assertIn("SOURCE_BETA_REF: ${{ steps.request.outputs.beta_ref }}", source_workflow)
+        self.assertIn("waiting_for_beta", source_workflow)
         publisher_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
         self.assertIn("Record immutable external Stable provenance after verification", publisher_workflow)
         self.assertIn(
@@ -1948,6 +2063,15 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("duplicate source delivery", publisher_workflow)
         self.assertIn("git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory", publisher_workflow)
         self.assertIn("Record Factory Beta state", publisher_workflow)
+        self.assertIn("check-main-rebuild", publisher_workflow)
+        self.assertIn("SOURCE_STABLE_REF: ${{ steps.external-request.outputs.stable_ref }}", publisher_workflow)
+        self.assertIn("refs/remotes/xsec-factory-source/registered-main", publisher_workflow)
+        self.assertIn('main_gate_sha="$(git -C .xsec-factory-source rev-parse refs/remotes/xsec-factory-source/registered-main)"', publisher_workflow)
+        self.assertIn("MAIN_GATE_SHA: ${{ steps.main-gate.outputs.main_gate_sha }}", publisher_workflow)
+        self.assertIn('--main-gate-sha "$MAIN_GATE_SHA"', publisher_workflow)
+        self.assertIn("Stable source does not yet deterministically rebuild Beta", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
+        self.assertIn("waiting_for_beta", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
+        self.assertIn("Factory status is not bound to the reviewed Beta source/release tuple", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
         self.assertIn("complete-smoke-status", publisher_workflow)
         self.assertIn("--stable-sha \"$SOURCE_SHA\"", publisher_workflow)
         self.assertIn("expected_beta_sha", publisher_workflow)

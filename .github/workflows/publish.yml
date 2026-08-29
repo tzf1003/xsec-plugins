@@ -35,6 +35,14 @@ on:
         description: Exact Factory revision that Desktop smoke verified. Accepted only for a smoke-gated external Stable promotion.
         required: false
         type: string
+      reconcile_delivery_key:
+        description: Opaque trusted source-delivery key used only to return a reconciler receipt.
+        required: false
+        type: string
+      reconcile_dispatch_nonce:
+        description: Exact protected reconcile run and attempt that requested the receipt.
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -65,6 +73,8 @@ jobs:
           EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
           SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
           SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
+          RECONCILE_DELIVERY_KEY: ${{ inputs.reconcile_delivery_key }}
+          RECONCILE_DISPATCH_NONCE: ${{ inputs.reconcile_dispatch_nonce }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
@@ -80,6 +90,19 @@ jobs:
             beta|stable) ;;
             *) echo "channel must be beta or stable." >&2; exit 1 ;;
           esac
+          if [ -n "$RECONCILE_DELIVERY_KEY" ] && ! [[ "$RECONCILE_DELIVERY_KEY" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$ ]]; then
+            echo "reconcile_delivery_key is not a bounded delivery identifier." >&2
+            exit 1
+          fi
+          if [ -n "$RECONCILE_DISPATCH_NONCE" ] && ! [[ "$RECONCILE_DISPATCH_NONCE" =~ ^[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
+            echo "reconcile_dispatch_nonce must be a positive run-id.attempt pair." >&2
+            exit 1
+          fi
+          { [ -z "$RECONCILE_DELIVERY_KEY" ] && [ -z "$RECONCILE_DISPATCH_NONCE" ]; } \
+            || { [ -n "$RECONCILE_DELIVERY_KEY" ] && [ -n "$RECONCILE_DISPATCH_NONCE" ]; } || {
+              echo "A reconcile receipt requires both delivery key and dispatch nonce." >&2
+              exit 1
+            }
           if [ -n "$PLUGIN_ID" ]; then
             [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit protected-main dispatch." >&2; exit 1; }
             [ -n "$SOURCE_SHA" ] || { echo "External source publication requires source_sha." >&2; exit 1; }
@@ -151,7 +174,7 @@ jobs:
           }
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
-          if [ "$kind" = "beta" ] || [ "$kind" = "stable" ]; then
+          if [ "$kind" = "beta" ] || [ "$kind" = "stable" ] || [ "$kind" = "beta-smoke-ready" ]; then
             python scripts/kms_marketplace_publisher.py --root . --verify-active-marketplace-signatures >/dev/null
             echo "generated=true" >> "$GITHUB_OUTPUT"
           elif [ "$kind" = "maintenance" ] || [ "$kind" = "stable-maintenance" ]; then
@@ -292,6 +315,8 @@ jobs:
         env:
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
           SOURCE_REF: ${{ steps.external-request.outputs.source_ref }}
+          SOURCE_STABLE_REF: ${{ steps.external-request.outputs.stable_ref }}
+          SOURCE_CHANNEL: ${{ steps.request.outputs.channel }}
           SOURCE_REPOSITORY: ${{ steps.external-request.outputs.source_repository }}
           SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
@@ -334,6 +359,10 @@ jobs:
           # A commit that was current when reconcile-source dispatched it must
           # still be the exact ref head now; ancestry alone would permit a
           # delayed old Beta to replace a newer delivery.
+          fetch_refspecs=("$SOURCE_REF:refs/remotes/xsec-factory-source/verified")
+          if [ "$SOURCE_CHANNEL" = "beta" ]; then
+            fetch_refspecs+=("$SOURCE_STABLE_REF:refs/remotes/xsec-factory-source/registered-main")
+          fi
           env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
             -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
             -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
@@ -347,7 +376,7 @@ jobs:
               -c protocol.allow=never \
               -c protocol.https.allow=always \
               -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
-              fetch --no-tags "$source_git_url" "$SOURCE_REF:refs/remotes/xsec-factory-source/verified"
+              fetch --no-tags "$source_git_url" "${fetch_refspecs[@]}"
           unset token_header
           [ "$(git -C .xsec-factory-source rev-parse HEAD)" = "$SOURCE_SHA" ]
           git -C .xsec-factory-source cat-file -e "$SOURCE_SHA^{commit}"
@@ -360,6 +389,17 @@ jobs:
           if git -C .xsec-factory-source config --local --no-includes --get-regexp '^http\..*\.extraheader$' >/dev/null; then
             echo "The isolated external checkout retained an HTTP credential." >&2
             exit 1
+          fi
+          if [ "$SOURCE_CHANNEL" = "beta" ]; then
+            # The comparison checkout is derived from the same authenticated,
+            # fixed-HTTPS fetch after the primary beta ref has been proven.
+            # It never runs plugin code and callers cannot select the main
+            # ref: both branch names came from Registry v2.
+            git -C .xsec-factory-source cat-file -e refs/remotes/xsec-factory-source/registered-main^{commit}
+            env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+              git -C .xsec-factory-source -c core.hooksPath=/dev/null \
+                worktree add --detach ../.xsec-factory-source-main refs/remotes/xsec-factory-source/registered-main
           fi
       - name: Stage a static external Beta source snapshot
         if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' }}
@@ -400,12 +440,32 @@ jobs:
         run: |
           python scripts/external_source_factory.py record-stable \
             --plugin-id "$PLUGIN_ID" --source-sha "$SOURCE_SHA" --release-id "$RELEASE_ID" --publisher "$PUBLISHER"
-      - name: Remove the isolated external source checkout before packaging or signing
-        if: ${{ steps.request.outputs.external == 'true' }}
-        run: rm -rf -- .xsec-factory-source
       - name: Build an immutable beta release without a private signing key
         if: ${{ steps.request.outputs.external != 'true' || steps.request.outputs.channel == 'beta' }}
         run: python scripts/build_market.py --clean
+      - name: Gate external Beta smoke on deterministic registered main rebuild
+        id: main-gate
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+        run: |
+          # A differing main is an expected release-ordering state. The
+          # helper only compares deterministic package identity and writes no
+          # release, provenance, or pointer data. Record the exact protected
+          # source-main head alongside that decision: the generated PR is
+          # reviewed asynchronously, so the finalizer must re-read this same
+          # ref before it is allowed to enter Desktop smoke.
+          main_gate_sha="$(git -C .xsec-factory-source rev-parse refs/remotes/xsec-factory-source/registered-main)"
+          [[ "$main_gate_sha" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Registered source main did not resolve to a canonical commit SHA." >&2
+            exit 1
+          }
+          echo "main_gate_sha=$main_gate_sha" >> "$GITHUB_OUTPUT"
+          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" check-main-rebuild \
+            --plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source-main
+      - name: Remove the isolated external source checkouts before signing
+        if: ${{ steps.request.outputs.external == 'true' }}
+        run: rm -rf -- .xsec-factory-source .xsec-factory-source-main
       - name: Record immutable external Beta provenance after deterministic packaging
         if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' }}
         env:
@@ -418,11 +478,13 @@ jobs:
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          MAIN_GATE_SHA: ${{ steps.main-gate.outputs.main_gate_sha }}
+          STATUS_STATE: ${{ steps.main-gate.outputs.state }}
           DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
           FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
-            --beta-sha "$SOURCE_SHA" --state waiting_for_smoke --delivery-id "$DELIVERY_ID" \
+            --beta-sha "$SOURCE_SHA" --main-gate-sha "$MAIN_GATE_SHA" --state "$STATUS_STATE" --delivery-id "$DELIVERY_ID" \
             --factory-run-url "$FACTORY_RUN_URL"
       - name: Record terminal smoke-verified Factory state for Desktop status consumers
         # This runs even when channels.stable already points at the selected
@@ -538,15 +600,19 @@ jobs:
       - name: Request KMS sidecars through the production Cloud broker
         if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
         env:
-          # The Cloud broker allowlists this protected publish.yml workflow.
-          # It binds the protected Factory main SHA, never an external source SHA.
+          # The Cloud broker allowlists this protected publish.yml workflow
+          # for immutable Marketplace documents only. Mutable official status
+          # is deliberately excluded: reconcile-source authenticates the
+          # exact generated candidate and is the sole status KMS caller.
+          # Every sidecar still binds the protected Factory main SHA, never
+          # an external source SHA.
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
-        run: python scripts/kms_marketplace_publisher.py --root .
+        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status
       - name: Gate the KMS sidecar protocol before publishing
         if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
         env:
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
-        run: python scripts/kms_marketplace_publisher.py --root . --validate-only
+        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status --validate-only
       - name: Publish generated metadata through a protected pull request
         id: publish
         if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
@@ -584,51 +650,53 @@ jobs:
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
           if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ]; then
-            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It proved external main deterministically rebuilds the selected Beta release and changes only channels.stable.releaseId plus Factory provenance. The source gate and explicit Codex review are required; this workflow does not merge the PR."
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It proved external main deterministically rebuilds the selected Beta release and changes only channels.stable.releaseId plus Factory provenance. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory request source-gate and Codex review. This workflow never merges the PR."
           elif [ "$EXTERNAL" = "true" ]; then
-            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It snapshots one reachable external beta commit, appends immutable releases as needed, advances beta only, and records Factory provenance. The source gate and explicit Codex review are required; this workflow does not merge the PR."
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It snapshots one reachable external beta commit, appends immutable releases as needed, advances beta only, and records Factory provenance. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory request source-gate and Codex review. This workflow never merges the PR."
           else
-            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. This appends immutable releases as needed and advances beta only. The source gate and explicit Codex review are required; this workflow does not merge the PR."
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. This appends immutable releases as needed and advances beta only. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory request source-gate and Codex review. This workflow never merges the PR."
           fi
           pull_url="$(gh pr create --base main --head "$branch" --title "$COMMIT_TITLE" --body "$body")"
-          pull_number="$(gh pr view "$pull_url" --json number --jq .number)"
-          gh workflow run validate.yml --ref "$branch"
-          deadline="$((SECONDS + 900))"
-          while :; do
-            source_gate="$(gh run list \
-              --workflow validate.yml \
-              --branch "$branch" \
-              --event workflow_dispatch \
-              --limit 20 \
-              --json databaseId,headSha,status,conclusion \
-              | jq -rc --arg revision "$generated_revision" '.[] | select(.headSha == $revision) | @base64' \
-              | head -n 1)"
-            if [ -n "$source_gate" ]; then
-              source_gate_json="$(printf '%s' "$source_gate" | base64 --decode)"
-              source_gate_status="$(printf '%s' "$source_gate_json" | jq -r .status)"
-              source_gate_conclusion="$(printf '%s' "$source_gate_json" | jq -r .conclusion)"
-              if [ "$source_gate_status" = "completed" ]; then
-                if [ "$source_gate_conclusion" != "success" ]; then
-                  echo "The generated marketplace source gate did not succeed." >&2
-                  exit 1
-                fi
-                break
-              fi
-            fi
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "Timed out waiting for the generated marketplace source gate." >&2
-              exit 1
-            fi
-            sleep 5
-          done
-          review_body="@codex review"$'\n\n'"The protected Factory source gate passed for ${generated_revision}. Review the immutable artifacts, release indexes, KMS sidecars, and Factory provenance before a protected merge. This workflow intentionally does not merge this PR or dispatch Desktop smoke until that merge occurs."
-          gh pr comment "$pull_number" --body "$review_body"
           {
-            echo "## Marketplace publication PR awaiting review"
+            echo "## Marketplace publication PR awaiting status authentication"
             echo
             echo "${pull_url}"
             echo
-            echo "The source gate passed. Codex review and a protected merge are required before this revision may reach Desktop smoke."
+            echo "The source reconciler must first authenticate and sign the exact status proof. It will then run the source gate and request Codex review; no merge or Desktop smoke dispatch occurs here."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "published=false" >> "$GITHUB_OUTPUT"
-          echo "pending_review=true" >> "$GITHUB_OUTPUT"
+          echo "pending_status_authentication=true" >> "$GITHUB_OUTPUT"
+      - name: Record an exact source-reconcile publication receipt
+        id: reconcile-receipt
+        if: ${{ steps.request.outputs.external == 'true' && inputs.reconcile_delivery_key != '' && inputs.reconcile_dispatch_nonce != '' }}
+        env:
+          DELIVERY_KEY: ${{ inputs.reconcile_delivery_key }}
+          DISPATCH_NONCE: ${{ inputs.reconcile_dispatch_nonce }}
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          CHANNEL: ${{ steps.request.outputs.channel }}
+          SHOULD_PUBLISH: ${{ steps.publication-decision.outputs.should_publish }}
+          FACTORY_REVISION: ${{ steps.current-main.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+          receipt_name="xsec-reconcile-receipt-$(printf '%s' "${DELIVERY_KEY}:${DISPATCH_NONCE}" | sha256sum | awk '{print $1}')"
+          mkdir -p .xsec-reconcile-receipt
+          jq -cn \
+            --arg delivery_key "$DELIVERY_KEY" \
+            --arg dispatch_nonce "$DISPATCH_NONCE" \
+            --arg plugin_id "$PLUGIN_ID" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg channel "$CHANNEL" \
+            --arg factory_revision "$FACTORY_REVISION" \
+            --arg outcome "$(if [ "$SHOULD_PUBLISH" = "true" ]; then printf candidate; else printf no-op; fi)" \
+            '{schemaVersion:1,deliveryKey:$delivery_key,dispatchNonce:$dispatch_nonce,pluginId:$plugin_id,sourceSha:$source_sha,channel:$channel,factoryRevision:$factory_revision,outcome:$outcome}' \
+            > .xsec-reconcile-receipt/receipt.json
+          echo "name=$receipt_name" >> "$GITHUB_OUTPUT"
+      - name: Upload the exact source-reconcile publication receipt
+        if: ${{ steps.reconcile-receipt.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.reconcile-receipt.outputs.name }}
+          path: .xsec-reconcile-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 1
