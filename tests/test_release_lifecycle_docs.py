@@ -196,6 +196,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         # to the production-gated final workflow above.
         self.assertNotIn("XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY", untrusted_pr_gate)
         self.assertIn("defer private-source proof to the protected final gate", untrusted_pr_gate)
+        self.assertIn(')" || actual_sha=""', untrusted_pr_gate)
 
     def test_pending_generated_pr_scan_is_paginated_before_every_kms_call(self) -> None:
         workflows = (
