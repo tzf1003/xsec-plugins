@@ -41,15 +41,65 @@ from validate_market import validate_archive, validate_zip_member
 ROOT = Path(__file__).resolve().parents[1]
 GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 ARTIFACT_DIGEST_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+# ``credential-cache`` is intentionally excluded. Its default socket is
+# selected from XDG_CACHE_HOME/HOME, so an inherited caller environment can
+# send an authenticated helper request to an attacker-owned Unix socket. The
+# materializer never needs to retain a credential itself. ``libsecret`` is
+# deliberately excluded too: its D-Bus session is selected through inherited
+# ``DBUS_SESSION_BUS_ADDRESS``, so this tool cannot prove that credential
+# requests remain on a trusted user-session bus. The remaining helpers are
+# resolved from the fixed platform Git installation and do not consume that
+# address.
+PUSH_CREDENTIAL_HELPERS = frozenset({"manager", "manager-core", "osxkeychain"})
 FORBIDDEN_SOURCE_SUFFIXES = (".xsec-plugin", ".sig.jws.json")
 MIGRATION_AUTHOR_NAME = "XSEC Marketplace Migration"
 MIGRATION_AUTHOR_EMAIL = "xsec-marketplace-migration@users.noreply.github.com"
 TRUSTED_FACTORY_ORIGIN = "https://github.com/tzf1003/xsec-plugins.git"
+# This migration deliberately does not search ``PATH`` for Git.  Its optional
+# credential-manager mode must obtain the helper directory from the same Git
+# executable that performs the final push; resolving an unqualified ``git``
+# through an operator-controlled PATH would let a replacement executable
+# nominate its own credential helper.  These are installation locations owned
+# by the OS/package installer, not by the caller.  The tool fails closed when
+# the platform Git is unavailable rather than silently accepting a developer
+# or repository-local Git binary.
+if os.name == "nt":
+    TRUSTED_GIT_EXECUTABLE_CANDIDATES = (
+        Path(r"C:\Program Files\Git\cmd\git.exe"),
+        Path(r"C:\Program Files\Git\bin\git.exe"),
+    )
+else:
+    TRUSTED_GIT_EXECUTABLE_CANDIDATES = (Path("/usr/bin/git"),)
 TRANSPORT_ENVIRONMENT_KEYS = (
     "GIT_CONFIG",
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_PARAMETERS",
+    # A credentialed push can ask an approved credential helper for an
+    # authorization token.  Never retain a caller-selected Git executable
+    # directory (which could replace ``git credential-manager``) or curl
+    # tracing configuration (which can write the resulting Authorization
+    # header to a diagnostic stream).
+    "GIT_EXEC_PATH",
+    "GIT_TRACE_CURL",
+    "GIT_TRACE_REDACT",
+    "GIT_CURL_VERBOSE",
+    # Git Credential Manager tracing can independently retain helper request
+    # fields, regardless of Git/curl's trace-redaction settings.
+    "GCM_TRACE",
+    "GCM_TRACE_SECRETS",
+    # GCM's store/cache selectors can direct the post-authentication ``store``
+    # request to a caller-selected socket or file.  The candidate never needs
+    # to select a credential store: the approved platform helper chooses its
+    # own trusted default.
+    "GCM_CREDENTIAL_STORE",
+    "GCM_CREDENTIAL_CACHE_OPTIONS",
+    # libcurl honors this independently of Git trace settings. Leaving it
+    # inherited would append TLS session secrets to a caller-selected file and
+    # can expose an Authorization header to a traffic capture.
+    "SSLKEYLOGFILE",
     "GIT_SSL_NO_VERIFY",
+    "GIT_SSL_CAINFO",
+    "GIT_SSL_CAPATH",
     "GIT_HTTP_PROXY",
     "HTTP_PROXY",
     "http_proxy",
@@ -73,6 +123,42 @@ TRANSPORT_ENVIRONMENT_KEYS = (
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_TEMPLATE_DIR",
 )
+# Git executes ``!`` credential helpers through a noninteractive shell.  An
+# absolute helper pathname alone therefore cannot prevent shell startup files
+# or imported functions selected by the caller from observing its stdin/stdout.
+# This list/prefix pair deliberately applies to *every* sealed transport: none
+# of these shell customizations are needed by a deterministic Factory read or
+# source push.
+SHELL_STARTUP_ENVIRONMENT_KEYS = frozenset({"ENV", "ZDOTDIR", "SHELLOPTS", "CDPATH"})
+SHELL_STARTUP_ENVIRONMENT_PREFIXES = ("BASH_", "ZSH_", "KSH_")
+# Git Credential Manager is a .NET application.  An otherwise absolute,
+# installation-local helper pathname is not sufficient if the caller can make
+# its runtime load a startup hook or profiler first.  Keep the transport
+# boundary independent of the caller's environment by removing every legacy
+# and CoreCLR profiler family plus the host settings that select external
+# startup/dependency/runtime code.  ``COMPlus_`` is intentionally a complete
+# family: these are runtime knobs, not inputs the materializer requires.
+DOTNET_RUNTIME_ENVIRONMENT_KEYS = frozenset(
+    {
+        "DOTNET_STARTUP_HOOKS",
+        "DOTNET_ADDITIONAL_DEPS",
+        "DOTNET_SHARED_STORE",
+        "DOTNET_ROOT",
+        "DOTNET_ROOT_X86",
+        "DOTNET_ROOT_X64",
+        "DOTNET_HOST_PATH",
+        "DOTNET_BUNDLE_EXTRACT_BASE_DIR",
+        "DOTNET_ENABLEDIAGNOSTICS",
+        "DOTNET_ENABLEDIAGNOSTICS_PROFILER",
+        "DOTNET_ENABLEDIAGNOSTICS_IPC",
+        "DOTNET_DIAGNOSTICPORTS",
+        "DOTNET_DEFAULT_DIAGNOSTIC_PORT_SUSPEND",
+        "COREHOST_TRACE",
+        "COREHOST_TRACEFILE",
+        "COREHOST_TRACE_VERBOSITY",
+    }
+)
+DOTNET_RUNTIME_ENVIRONMENT_PREFIXES = ("CORECLR_", "COR_", "COMPLUS_")
 
 
 def safe_openssh_command() -> str:
@@ -126,6 +212,45 @@ def fail(message: str) -> None:
     raise MaterializationError(message)
 
 
+def trusted_git_executable() -> Path:
+    """Return the fixed, absolute Git executable allowed by this tool.
+
+    ``git --exec-path`` is only meaningful after the executable itself is
+    trusted.  In particular, this helper must never use ``PATH`` or a caller
+    supplied environment variable to discover Git.  Every Git process below
+    goes through this function, including local config inspection and the
+    fast-export/fast-import pair used to preserve public history.
+    """
+
+    for candidate in TRUSTED_GIT_EXECUTABLE_CANDIDATES:
+        if not candidate.is_absolute():
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_file():
+            continue
+        if os.name != "nt" and not os.access(resolved, os.X_OK):
+            continue
+        # On Windows both accepted executable spellings must remain under the
+        # fixed machine-wide Git installation even if a link is introduced.
+        # The POSIX candidate is itself the fixed system path above.
+        if os.name == "nt":
+            try:
+                resolved.relative_to(Path(r"C:\Program Files\Git").resolve(strict=True))
+            except (OSError, ValueError):
+                continue
+        return candidate
+    fail("trusted platform Git executable is unavailable")
+
+
+def git_command(arguments: list[str]) -> list[str]:
+    """Build one Git command without consulting the caller's PATH."""
+
+    return [str(trusted_git_executable()), *arguments]
+
+
 def run_git(
     arguments: list[str],
     *,
@@ -135,7 +260,7 @@ def run_git(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run Git without a shell and retain diagnostics for a fail-closed error."""
 
-    command = ["git", *arguments]
+    command = git_command(arguments)
     completed = subprocess.run(
         command,
         cwd=None if cwd is None else str(cwd),
@@ -218,8 +343,17 @@ def sealed_transport_environment(
     """
 
     environment = os.environ.copy()
-    for key in TRANSPORT_ENVIRONMENT_KEYS:
-        environment.pop(key, None)
+    transport_environment_keys = frozenset(key.upper() for key in TRANSPORT_ENVIRONMENT_KEYS)
+    for key in tuple(environment):
+        normalized_key = key.upper()
+        if (
+            normalized_key in transport_environment_keys
+            or normalized_key in DOTNET_RUNTIME_ENVIRONMENT_KEYS
+            or normalized_key.startswith(DOTNET_RUNTIME_ENVIRONMENT_PREFIXES)
+            or normalized_key in SHELL_STARTUP_ENVIRONMENT_KEYS
+            or normalized_key.startswith(SHELL_STARTUP_ENVIRONMENT_PREFIXES)
+        ):
+            environment.pop(key, None)
     for key in tuple(environment):
         if key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
             environment.pop(key, None)
@@ -229,6 +363,12 @@ def sealed_transport_environment(
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_ALLOW_PROTOCOL": ":".join(protocols),
+            # Delete caller-selected diagnostic endpoints above and disable
+            # the default IPC listener as a second boundary.  GCM does not
+            # require diagnostics to obtain or store the selected credential.
+            "DOTNET_EnableDiagnostics": "0",
+            "DOTNET_EnableDiagnostics_IPC": "0",
+            "COMPlus_EnableDiagnostics": "0",
         }
     )
     if repository_discovery_ceiling is not None:
@@ -242,11 +382,109 @@ def sealed_transport_environment(
     return environment
 
 
-def sealed_transport_arguments(*, protocols: tuple[str, ...]) -> list[str]:
+def trusted_git_exec_path() -> Path:
+    """Return Git's own absolute helper directory without local config.
+
+    The materializer invokes only :func:`trusted_git_executable`.  Once that
+    fixed executable reports its exec path, helper resolution must stay below
+    that installation and never search the caller's ``PATH``.
+    """
+
+    # Do not query from a Factory or candidate worktree: even a no-network
+    # command should not consult repository-local configuration while this
+    # helper location is being selected for a credentialed operation.
+    with tempfile.TemporaryDirectory(prefix="xsec-git-exec-path-") as directory:
+        transport_root = Path(directory)
+        output = run_git(
+            ["--exec-path"],
+            cwd=transport_root,
+            environment=sealed_transport_environment(
+                protocols=(),
+                repository_discovery_ceiling=transport_root,
+            ),
+        ).stdout.decode("utf-8", errors="strict").strip()
+    path = Path(output)
+    if not output or not path.is_absolute():
+        fail("Git did not provide an absolute executable helper path")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise MaterializationError("Git executable helper path is unavailable") from error
+    if not resolved.is_dir():
+        fail("Git executable helper path is not a directory")
+    return resolved
+
+
+def resolve_approved_credential_helper(credential_helper: str) -> str:
+    """Return a shell-quoted absolute helper command from the Git install.
+
+    Git expands ``credential.helper=manager`` by executing ``git
+    credential-manager``.  That otherwise lets the operator's ``PATH`` choose
+    the program that handles an OAuth/PAT credential.  A helper string that
+    starts with ``!`` is an intentional custom command; we generate it only
+    from an existing, absolute executable below Git's own exec path, and never
+    accept an operator supplied command or path.
+    """
+
+    if credential_helper not in PUSH_CREDENTIAL_HELPERS:
+        fail("credential helper is not an approved platform-provided helper")
+    exec_path = trusted_git_exec_path()
+    names = {
+        "manager": ("git-credential-manager.exe", "git-credential-manager"),
+        # Git Credential Manager has used both names across releases.  The
+        # command remains fixed to a binary inside this Git installation.
+        "manager-core": (
+            "git-credential-manager-core.exe",
+            "git-credential-manager-core",
+            "git-credential-manager.exe",
+            "git-credential-manager",
+        ),
+        "osxkeychain": ("git-credential-osxkeychain",),
+    }[credential_helper]
+    directories = [exec_path]
+    # Git for Windows keeps the Credential Manager binary in ``mingw*/bin``
+    # while reporting ``mingw*/libexec/git-core`` as its helper path.  Both
+    # locations are derived from the same trusted Git installation, not PATH.
+    if exec_path.name == "git-core" and exec_path.parent.name == "libexec":
+        directories.append(exec_path.parents[1] / "bin")
+    for directory in directories:
+        for name in names:
+            candidate = directory / name
+            try:
+                # Resolve only to prove that the candidate leads to an
+                # executable from this trusted Git installation. Invoke the
+                # symlink pathname below: Git helpers can be multi-call
+                # symlinks, where the basename selects the helper command.
+                executable = candidate.resolve(strict=True)
+                trusted_directory = directory.resolve(strict=True)
+            except OSError:
+                continue
+            try:
+                executable.relative_to(trusted_directory)
+            except ValueError:
+                continue
+            if not executable.is_file():
+                continue
+            if os.name != "nt" and not os.access(executable, os.X_OK):
+                continue
+            # ``shlex.quote`` is required because Git executes an explicit
+            # ``!`` helper through its shell.  The path is absolute and
+            # entirely derived above, so no caller text can become shell code.
+            return "!" + shlex.quote(candidate.as_posix())
+    fail(f"approved Git credential helper '{credential_helper}' is unavailable in this Git installation")
+
+
+def sealed_transport_arguments(*, protocols: tuple[str, ...], credential_helper: str | None = None) -> list[str]:
     """Return Git options paired with :func:`sealed_transport_environment`."""
 
+    if credential_helper is not None and credential_helper not in PUSH_CREDENTIAL_HELPERS:
+        fail("credential helper is not an approved platform-provided helper")
     arguments = [
         "-c",
+        # Git credential helpers are multi-valued.  An empty entry clears
+        # every repository/global helper before a caller-selected helper is
+        # appended below, so a generated candidate cannot retain a local
+        # shell helper that would receive the approved credential.
         "credential.helper=",
         "-c",
         "http.sslVerify=true",
@@ -255,6 +493,8 @@ def sealed_transport_arguments(*, protocols: tuple[str, ...]) -> list[str]:
         "-c",
         "protocol.allow=never",
     ]
+    if credential_helper is not None:
+        arguments.extend(["-c", f"credential.helper={resolve_approved_credential_helper(credential_helper)}"])
     for protocol in protocols:
         arguments.extend(["-c", f"protocol.{protocol}.allow=always"])
     return arguments
@@ -278,9 +518,19 @@ def candidate_environment(extra: dict[str, str] | None = None) -> dict[str, str]
 
 
 def candidate_git_arguments(arguments: list[str]) -> list[str]:
-    """Force every candidate-repository Git command to ignore all hooks."""
+    """Disable candidate-controlled executable hooks during local checks."""
 
-    return ["-c", f"core.hooksPath={os.devnull}", *arguments]
+    return [
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        # ``git status`` otherwise consults a locally configured fsmonitor
+        # hook while validating the candidate.  A generated source repository
+        # never needs it, and it must not receive an opportunity to alter the
+        # local transport config before the credentialed push.
+        "core.fsmonitor=false",
+        *arguments,
+    ]
 
 
 def candidate_run_git(
@@ -308,18 +558,21 @@ def candidate_git_stdout(
 
 
 def assert_no_local_url_rewrites(repository: Path) -> None:
-    """Fail if the temporary source repository can rewrite a remote URL.
+    """Fail if the temporary source repository can redirect HTTPS traffic.
 
     Global and system files are sealed out for every remote operation.  A
     local ``url.*.insteadOf`` or ``pushInsteadOf`` entry would still take
     precedence for ``git push <literal-url>``, so inspect only the local file
     (without include processing) and reject it before the target preflight or
-    write.  The repository is generated by this tool and normally has no such
+    write.  Local HTTP proxy, CA, and DNS-resolution settings have the same
+    problem: they are read by the candidate-only push, and could route an
+    approved HTTPS target to an attacker that presents a locally trusted CA.
+    The repository is generated by this tool and normally has none of these
     entries; an entry is always an integrity failure, never an operator hint.
     """
 
     completed = subprocess.run(
-        ["git", "config", "--local", "--no-includes", "--null", "--list"],
+        git_command(["config", "--local", "--no-includes", "--null", "--list"]),
         cwd=str(repository),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -333,8 +586,47 @@ def assert_no_local_url_rewrites(repository: Path) -> None:
         if not item:
             continue
         key = item.split(b"\n", 1)[0].decode("ascii", errors="replace").lower()
+        # ``--no-includes`` above intentionally avoids loading an arbitrary
+        # file from an untrusted candidate.  Reject the directive itself so
+        # the later push cannot load a URL or HTTP override through it.
+        if key == "include.path" or (key.startswith("includeif.") and key.endswith(".path")):
+            fail("materialized source repository must not contain Git include configuration")
+        # Worktree-scoped configuration lives in ``config.worktree`` and is
+        # not returned by ``git config --local``.  Reject the opt-in instead
+        # of attempting to validate a second, candidate-controlled config
+        # file; ordinary source candidates do not use linked worktrees.
+        if key == "extensions.worktreeconfig":
+            fail("materialized source repository must not enable Git worktree-specific configuration")
+        if key == "core.fsmonitor":
+            fail("materialized source repository must not contain Git fsmonitor configuration")
+        # The only local credential setting a generated candidate could need
+        # would be a helper, but that helper is always supplied by the sealed
+        # command line below.  In particular, GCM accepts credentialStore and
+        # cacheOptions (including URL-scoped forms) that can send the helper's
+        # post-authentication store request to a caller-controlled endpoint.
+        # Reject the whole credential namespace rather than attempting to
+        # enumerate platform-specific spellings of those selectors.
+        if key.startswith("credential."):
+            fail("materialized source repository must not contain Git credential configuration")
+        # ``git push <repository>`` accepts either a literal URL or a local
+        # remote name.  A remote whose name equals the approved URL can supply
+        # a different ``pushurl`` after this tool has preflighted the literal
+        # target.  Materialized candidates never need a remote at all: both
+        # branches are pushed by their explicit approved target below.  Reject
+        # every local remote section rather than attempting to parse its
+        # arbitrary subsection name or individual URL values.
+        if key.startswith("remote."):
+            fail("materialized source repository must not contain Git remote configuration")
         if key.startswith("url.") and key.endswith((".insteadof", ".pushinsteadof")):
             fail("materialized source repository must not contain Git URL rewrite configuration")
+        # Git supports global and URL-scoped HTTP settings, for example
+        # ``http.proxy`` and ``http.https://github.com.proxy``.  No local
+        # HTTP setting is needed for a generated candidate, and allowing a
+        # seemingly unrelated setting risks missing a platform-specific
+        # routing or trust-root override.  Command-line ``http.sslVerify``
+        # alone cannot make an attacker-selected trust root or proxy safe.
+        if key.startswith("http."):
+            fail("materialized source repository must not contain Git HTTP transport override configuration")
 
 
 def trusted_factory_remote_main(factory_root: Path) -> str:
@@ -692,24 +984,25 @@ def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) 
     # forcing it on each top-level Candidate Git command below.
     candidate_run_git(["config", "--local", "core.hooksPath", os.devnull], cwd=repository)
     export = subprocess.Popen(
-        [
-            "git",
-            "-C",
-            str(factory_root),
-            "--no-replace-objects",
-            "fast-export",
-            "--show-original-ids",
-            "main",
-            "--",
-            f"plugins/{plugin_id}",
-        ],
+        git_command(
+            [
+                "-C",
+                str(factory_root),
+                "--no-replace-objects",
+                "fast-export",
+                "--show-original-ids",
+                "main",
+                "--",
+                f"plugins/{plugin_id}",
+            ]
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=trusted_history_environment(),
     )
     assert export.stdout is not None
     imported = subprocess.run(
-        ["git", *candidate_git_arguments(["-C", str(repository), "fast-import", "--quiet"])],
+        git_command(candidate_git_arguments(["-C", str(repository), "fast-import", "--quiet"])),
         stdin=export.stdout,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -955,7 +1248,7 @@ def materialize_repository(factory_root: Path, plugin_id: str, repository: Path)
     }
 
 
-def push_candidate(repository: Path, plugin_id: str, target: str) -> None:
+def push_candidate(repository: Path, plugin_id: str, target: str, credential_helper: str | None = None) -> None:
     canonical_target = require_exact_target(plugin_id, target)
     protocols = ("https",) if canonical_target.startswith("https://") else ("ssh",)
     environment = sealed_transport_environment(protocols=protocols)
@@ -974,6 +1267,10 @@ def push_candidate(repository: Path, plugin_id: str, target: str) -> None:
         fail("materialization candidate must retain its disabled local Git hook path before push")
     if candidate_git_stdout(["status", "--porcelain", "--untracked-files=all"], cwd=repository):
         fail("materialization candidate must be clean before its one-time push")
+    # Keep this check after ``status`` as well.  Candidate commands force
+    # ``core.fsmonitor=false``, but the last local-config inspection must
+    # still happen after every command that might refresh repository state.
+    assert_no_local_url_rewrites(repository)
     assert_no_factory_content(repository, "refs/heads/main")
     assert_no_factory_content(repository, "refs/heads/beta")
     # Preflight away from the candidate repository so neither a local URL
@@ -997,11 +1294,17 @@ def push_candidate(repository: Path, plugin_id: str, target: str) -> None:
         ).stdout
     if heads.strip():
         fail("target already has main or beta; materialization refuses to overwrite or force-push")
+    # There is deliberately no candidate-repository Git command between this
+    # final inspection and the write.  This makes the HTTP/URL/worktree seal
+    # apply to the exact configuration consumed by the credentialed push.
+    assert_no_local_url_rewrites(repository)
     run_git(
         [
             "-c",
             f"core.hooksPath={os.devnull}",
-            *sealed_transport_arguments(protocols=protocols),
+            "-c",
+            "core.fsmonitor=false",
+            *sealed_transport_arguments(protocols=protocols, credential_helper=credential_helper),
             "push",
             "--atomic",
             "--porcelain",
@@ -1021,6 +1324,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--plugin-id", required=True, help="one of the eleven approved first-party plugin IDs")
     parser.add_argument("--target", help="exact approved GitHub source repository URL; required with --push")
     parser.add_argument("--push", action="store_true", help="push new main/beta branches after an exact-target preflight")
+    parser.add_argument(
+        "--credential-helper",
+        choices=sorted(PUSH_CREDENTIAL_HELPERS),
+        help=(
+            "optional manager/manager-core/osxkeychain helper resolved only from the fixed trusted platform Git installation "
+            "for the sealed push; disabled by default"
+        ),
+    )
     parser.add_argument("--filter-index", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
@@ -1033,13 +1344,15 @@ def main() -> int:
             return filter_index_paths(plugin_id)
         if args.push and args.target is None:
             fail("--push requires --target with the exact approved public GitHub repository URL")
+        if args.credential_helper is not None and not args.push:
+            fail("--credential-helper is valid only with --push")
         if args.target is not None:
             require_exact_target(plugin_id, args.target)
         with tempfile.TemporaryDirectory(prefix=f"xsec-first-party-source-{plugin_id}-") as directory:
             result = materialize_repository(args.root, plugin_id, Path(directory) / "repository")
             if args.push:
                 assert args.target is not None
-                push_candidate(Path(directory) / "repository", plugin_id, args.target)
+                push_candidate(Path(directory) / "repository", plugin_id, args.target, args.credential_helper)
         # Keep stdout machine-readable and deliberately narrow: callers can
         # submit only this pending Registry row to the protected Factory PR.
         sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True) + "\n")
