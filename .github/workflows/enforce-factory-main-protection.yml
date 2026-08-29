@@ -64,7 +64,11 @@ jobs:
           verified="$RUNNER_TEMP/factory-finalizer-ruleset-verified.json"
           post_rulesets="$RUNNER_TEMP/factory-rulesets-after.json"
           post_plan="$RUNNER_TEMP/factory-finalizer-ruleset-after-plan.json"
-          gh api "repos/${GITHUB_REPOSITORY}/rulesets" > "$rulesets"
+          # The Rulesets API is paginated.  Flatten every response page before
+          # planning so an existing managed Ruleset beyond the first page
+          # cannot be mistaken for an absent one and recreated.
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/rulesets?per_page=100" \
+            | jq -e '[.[][]]' > "$rulesets"
           python scripts/factory_finalizer_ruleset_policy.py \
             --rulesets "$rulesets" \
             --finalizer-app-id "$FINALIZER_APP_ID" \
@@ -102,7 +106,8 @@ jobs:
           # Re-list after POST/PUT so a same-name concurrent configuration
           # cannot leave two finalizer Rulesets while classic protection is
           # being changed. The policy deliberately ignores every other name.
-          gh api "repos/${GITHUB_REPOSITORY}/rulesets" > "$post_rulesets"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/rulesets?per_page=100" \
+            | jq -e '[.[][]]' > "$post_rulesets"
           python scripts/factory_finalizer_ruleset_policy.py \
             --rulesets "$post_rulesets" \
             --finalizer-app-id "$FINALIZER_APP_ID" \

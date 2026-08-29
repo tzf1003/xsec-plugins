@@ -14,9 +14,11 @@ has exactly one bypass actor: the numeric GitHub App integration ID supplied as
 `XSEC_MARKETPLACE_FINALIZER_APP_ID`.  Its bypass mode is `pull_request`, so the
 App can complete the already-reviewed exact-head merge but cannot bypass a
 direct update. The final workflow creates a short-lived, repository-scoped App
-token only after all revalidation and uses it only for that exact-head merge
-API request. Missing App credentials or a failed merge leaves the candidate
-pending and requires a fresh protected revalidation.
+token only after its earlier revalidation. It then re-reads every registered
+external source branch SHA immediately before providing that token to the one
+exact-head merge API request; the source proof itself receives no App token.
+Missing App credentials, an advanced source branch, or a failed merge leaves
+the candidate pending and requires a fresh protected revalidation.
 
 `production` is itself a required review boundary: both the policy workflow
 and final merge query its server-side Environment policy and require at least

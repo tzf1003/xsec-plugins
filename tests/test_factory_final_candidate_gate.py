@@ -12,10 +12,13 @@ FINAL_WORKFLOW = ROOT / ".github" / "workflows" / "final-merge-generated-marketp
 class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
     def test_retained_sidecar_refresh_is_a_pending_factory_candidate(self) -> None:
         workflow = ARM_WORKFLOW.read_text(encoding="utf-8")
-        # Both the event branch and every open PR associated with a shared
-        # commit SHA must identify the generated repair. Otherwise an ordinary
+        # Both the event branch and every same-repository Factory PR associated
+        # with a shared commit SHA must identify the generated repair, even if
+        # that Factory PR was closed without merging. Otherwise an ordinary
         # same-SHA PR could overwrite its required pending status with success.
         self.assertGreaterEqual(workflow.count("xsec-marketplace/refresh-retained-sidecar-"), 2)
+        self.assertIn('any(.[][]; .base.ref == "main" and .head.repo.full_name == $repo', workflow)
+        self.assertNotIn('any(.[][]; .state == "open"', workflow)
         self.assertIn("factory_generated=true", workflow)
         self.assertIn("state=pending", workflow)
 
@@ -44,6 +47,31 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         # without enabling its one exact-head merge call.
         self.assertNotIn("permission-pull-requests: write", workflow)
         self.assertIn("-f sha=\"$HEAD_SHA\"", workflow)
+
+    def test_finalizer_token_follows_the_last_external_source_sha_check(self) -> None:
+        workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
+        merge_step = workflow.split(
+            "- name: Merge the exact revalidated head with the isolated Finalizer App", 1
+        )[1]
+        source_check = "while IFS= read -r source; do"
+        token_assignment = 'GH_TOKEN="${{ steps.finalizer.outputs.token }}" gh api --method PUT'
+
+        # The short-lived bypass token must not exist in the source-read loop.
+        # A source beta/main push while the token action runs is therefore
+        # detected by this second proof, immediately before the only PUT that
+        # receives the token.
+        self.assertNotIn("GH_TOKEN: ${{ steps.finalizer.outputs.token }}", workflow)
+        self.assertIn(source_check, merge_step)
+        self.assertIn('factory-publication-sources.json', merge_step)
+        self.assertIn(token_assignment, merge_step)
+        self.assertIn(
+            "advanced immediately before the Finalizer merge; it remains pending.",
+            merge_step,
+        )
+        self.assertLess(merge_step.index(source_check), merge_step.index(token_assignment))
+        self.assertNotIn("GH_TOKEN", merge_step[: merge_step.index(token_assignment)])
+        self.assertEqual(merge_step.count("GH_TOKEN="), 1)
+        self.assertEqual(merge_step.count("gh api"), 1)
 
 
 if __name__ == "__main__":

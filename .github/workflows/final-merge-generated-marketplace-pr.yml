@@ -318,15 +318,33 @@ jobs:
           permission-contents: write
       - name: Merge the exact revalidated head with the isolated Finalizer App
         env:
-          GH_TOKEN: ${{ steps.finalizer.outputs.token }}
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -euo pipefail
-          # This is the only call using the Finalizer App token. GitHub rejects
-          # a changed/closed head via `sha`; any failure leaves the arm-owned
-          # required status pending and requires a fresh protected revalidation.
-          merge_result="$(gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}/merge" \
+          # Token creation is intentionally outside the source-head proof, so
+          # beta/main can advance while the App action runs. Re-read every
+          # source immediately before giving the Finalizer token to the one
+          # exact-head PUT; this loop deliberately uses no GitHub credential.
+          while IFS= read -r source; do
+            repository="$(printf '%s' "$source" | jq -er .repository)"
+            ref="$(printf '%s' "$source" | jq -er .ref)"
+            expected_sha="$(printf '%s' "$source" | jq -er .sha)"
+            actual_sha="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+              -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
+              -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
+              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
+              git -c credential.helper= -c http.followRedirects=false \
+              ls-remote "https://github.com/${repository}.git" "$ref" | awk 'NR == 1 { print $1 }')"
+            [ "$actual_sha" = "$expected_sha" ] || {
+              echo "Registered ${repository} ${ref} advanced immediately before the Finalizer merge; it remains pending." >&2
+              exit 1
+            }
+          done < <(jq -rc '.[]' "$RUNNER_TEMP/factory-publication-sources.json")
+          # This is the only call that receives the Finalizer App token. GitHub
+          # rejects a changed/closed head via `sha`; any failure leaves the
+          # arm-owned required status pending and requires fresh revalidation.
+          merge_result="$(GH_TOKEN="${{ steps.finalizer.outputs.token }}" gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}/merge" \
             -f sha="$HEAD_SHA" -f merge_method=squash -f commit_title='chore: merge reviewed Marketplace publication')" || {
             echo "GitHub did not merge the exact revalidated PR head; the Factory gate remains pending." >&2
             exit 1

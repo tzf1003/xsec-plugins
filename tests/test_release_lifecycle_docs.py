@@ -123,7 +123,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("xsec-marketplace/adopt-first-party-", arm)
         self.assertIn("commits/${PR_HEAD_SHA}/pulls?per_page=100", arm)
         self.assertIn("factory_for_sha", arm)
-        self.assertIn('.state == "open"', arm)
+        self.assertNotIn('.state == "open"', arm)
         self.assertIn("state=pending", arm)
         self.assertIn("state=success", arm)
         self.assertIn("Not a Factory-generated Marketplace publication PR.", arm)
@@ -227,7 +227,22 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
     def test_final_gate_arms_shared_commit_status_only_after_slurping_all_associated_pr_pages(self) -> None:
         workflow = ARM_FINAL_GATE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('gh api --paginate --slurp "repos/${REPOSITORY}/commits/${PR_HEAD_SHA}/pulls?per_page=100"', workflow)
-        self.assertIn("any(.[][]; .state == \"open\"", workflow)
+        self.assertIn("any(.[][]; .base.ref == \"main\" and .head.repo.full_name == $repo", workflow)
+        self.assertNotIn("any(.[][]; .state == \"open\"", workflow)
+
+    def test_main_protection_ruleset_inventory_paginates_and_flattens_every_page(self) -> None:
+        workflow = PROTECTION_WORKFLOW.read_text(encoding="utf-8")
+        inventory_call = 'gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/rulesets?per_page=100"'
+
+        # Both the pre-write create/update plan and the post-write uniqueness
+        # check must see every inventory page. ``--slurp`` preserves page
+        # boundaries, so the jq aggregation is part of the security boundary.
+        self.assertEqual(workflow.count(inventory_call), 2)
+        self.assertEqual(workflow.count("| jq -e '[.[][]]'"), 2)
+        self.assertIn('| jq -e \'[.[][]]\' > "$rulesets"', workflow)
+        self.assertIn('| jq -e \'[.[][]]\' > "$post_rulesets"', workflow)
+        self.assertNotIn('gh api "repos/${GITHUB_REPOSITORY}/rulesets" > "$rulesets"', workflow)
+        self.assertNotIn('gh api "repos/${GITHUB_REPOSITORY}/rulesets" > "$post_rulesets"', workflow)
 
     def test_post_merge_dispatcher_slurps_all_associated_pr_pages_before_selecting_factory_pr(self) -> None:
         workflow = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")

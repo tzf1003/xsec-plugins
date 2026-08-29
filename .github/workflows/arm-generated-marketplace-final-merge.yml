@@ -37,15 +37,16 @@ jobs:
             exit 1
           }
           # Statuses are keyed only by SHA, not PR number. An ordinary/fork PR
-          # can point at the same commit as an open Factory PR, so classify the
-          # commit's associated open PR metadata as well as this event's head
-          # branch. No PR content is checked out or executed.
+          # can point at the same commit as a Factory PR that was later closed
+          # without merging, so classify every associated Factory PR (not just
+          # open ones) as well as this event's head branch. No PR content is
+          # checked out or executed.
           # `gh api --paginate` writes one JSON array per response page.  Slurp
           # all pages before evaluating the predicate: otherwise jq's exit
           # status would reflect only the final page and an ordinary PR sharing
           # this SHA could overwrite a Factory candidate's pending status.
           associated="$(gh api --paginate --slurp "repos/${REPOSITORY}/commits/${PR_HEAD_SHA}/pulls?per_page=100")"
-          factory_for_sha="$(printf '%s' "$associated" | jq -e --arg repo "$REPOSITORY" 'any(.[][]; .state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-") or startswith("xsec-marketplace/adopt-first-party-") or startswith("xsec-marketplace/refresh-retained-sidecar-")))' >/dev/null && echo true || echo false)"
+          factory_for_sha="$(printf '%s' "$associated" | jq -e --arg repo "$REPOSITORY" 'any(.[][]; .base.ref == "main" and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-") or startswith("xsec-marketplace/adopt-first-party-") or startswith("xsec-marketplace/refresh-retained-sidecar-")))' >/dev/null && echo true || echo false)"
           case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in
             "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*) event_factory=true ;;
             *) event_factory=false ;;
