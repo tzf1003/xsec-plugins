@@ -208,7 +208,23 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
                 self.assertIn("Create a narrowly scoped read-only Source App token", workflow)
                 self.assertIn("permission-contents: read", workflow)
                 self.assertIn("GIT_TERMINAL_PROMPT=0", workflow)
+                self.assertIn(
+                    '-c http.https://github.com/.extraheader= \\\n              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header"',
+                    workflow,
+                )
                 self.assertIn('http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header', workflow)
+        self.assertEqual(
+            final_merge.count(
+                '-c http.https://github.com/.extraheader= \\\n              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header"'
+            ),
+            3,
+        )
+        self.assertEqual(
+            dispatcher.count(
+                '-c http.https://github.com/.extraheader= \\\n              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header"'
+            ),
+            1,
+        )
         self.assertIn("SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}", final_merge)
         self.assertIn("SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}", dispatcher)
         self.assertNotIn("steps.finalizer.outputs.token", dispatcher)

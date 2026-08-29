@@ -115,7 +115,17 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY", workflow)
         self.assertIn("permission-contents: read", workflow)
         self.assertIn("SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}", merge_step)
+        self.assertIn(
+            '-c http.https://github.com/.extraheader= \\\n              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header"',
+            merge_step,
+        )
         self.assertIn('http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header', merge_step)
+        self.assertEqual(
+            workflow.count(
+                '-c http.https://github.com/.extraheader= \\\n              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header"'
+            ),
+            3,
+        )
         self.assertIn(source_check, merge_step)
         self.assertIn('factory-publication-sources.json', merge_step)
         self.assertIn(token_assignment, merge_step)

@@ -274,6 +274,7 @@ jobs:
               -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
               GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
               GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c http.followRedirects=false \
+              -c http.https://github.com/.extraheader= \
               -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
               ls-remote "$remote" "$ref" | awk 'NR == 1 { print $1 }')"
             [ "$actual_sha" = "$expected_sha" ] || {
