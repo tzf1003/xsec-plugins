@@ -224,7 +224,9 @@ jobs:
               echo "The merged generated PR still has unresolved Codex review threads." >&2
               exit 1
             }
-            has_next="$(printf '%s' "$page" | jq -er .data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage)"
+            # `jq -e` exits 1 when the final page reports false, so use a
+            # plain raw read before deciding whether pagination is complete.
+            has_next="$(printf '%s' "$page" | jq -r .data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage)"
             [ "$has_next" = "true" ] || break
             cursor="$(printf '%s' "$page" | jq -er .data.repository.pullRequest.reviewThreads.pageInfo.endCursor)"
             [ -n "$cursor" ] || { echo "GitHub returned a paginated review thread page without a cursor." >&2; exit 1; }
