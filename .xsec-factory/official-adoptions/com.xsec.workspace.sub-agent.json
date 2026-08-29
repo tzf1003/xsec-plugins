@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.sub-agent",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-sub-agent",
+    "path": "plugins/com.xsec.workspace.sub-agent",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "4b022e26a9c3c6c5336b714187b46088a1872088",
+    "stableSha": "29149b3d2b2195fb74300772446d3f64e8fa1570"
+  },
+  "legacy": {
+    "factoryRevision": "0d7cfb43647dfc9f5bd6dfb198b01ceacc482d9b",
+    "releaseDocumentSha256": "546287af70cdcd053da34a31d54f95dcb74dbc3b77981205c3746bf9ae98b09c",
+    "releaseDocumentB64": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAicGx1Z2luSWQiOiAiY29tLnhzZWMud29ya3NwYWNlLnN1Yi1hZ2VudCIsCiAgInJlbGVhc2VzIjogWwogICAgewogICAgICAicmVsZWFzZUlkIjogInNoYTI1Ni01NDM0MjA1YTBmY2Q2NTAwNDVmNGQzNjhjYTI5NDZiN2MxODQ4MDhhOGI0YWUzZmVmNWJmYzgwZGVkYzQ0ZWEyIiwKICAgICAgInZlcnNpb24iOiAiMS4yLjAiLAogICAgICAiZW5naW5lcyI6IHsKICAgICAgICAieHNlYyI6ICI+PTAuMS4wIiwKICAgICAgICAicGx1Z2luQXBpIjogIl4xLjIuMCIKICAgICAgfSwKICAgICAgImFydGlmYWN0cyI6IFsKICAgICAgICB7CiAgICAgICAgICAib3MiOiAiYW55IiwKICAgICAgICAgICJhcmNoIjogImFueSIsCiAgICAgICAgICAidXJsIjogImFydGlmYWN0cy9jb20ueHNlYy53b3Jrc3BhY2Uuc3ViLWFnZW50LTEuMi4wLWFueS1hbnkueHNlYy1wbHVnaW4iLAogICAgICAgICAgInNoYTI1NiI6ICI0MjU2MmNjYThjNzllNzM5NTQ4MDBjZTQyNTE5NjMwYzkyMzY5MTY4ZmNiOWVmNTMzYTc0ZDQ5OTEyNTM3MzU3IgogICAgICAgIH0KICAgICAgXQogICAgfSwKICAgIHsKICAgICAgInJlbGVhc2VJZCI6ICJzaGEyNTYtOGIyMzJkZTNlYmU2MGJmZTA5NGY4YjNlMGRjMjAyNTRiMWMyMjc1NTZmY2E4N2ZlMGFjZWNiZWU0YmJkMjFlMSIsCiAgICAgICJ2ZXJzaW9uIjogIjEuMi4xIiwKICAgICAgImVuZ2luZXMiOiB7CiAgICAgICAgInhzZWMiOiAiPj0wLjEuMCIsCiAgICAgICAgInBsdWdpbkFwaSI6ICJeMS4yLjAiCiAgICAgIH0sCiAgICAgICJhcnRpZmFjdHMiOiBbCiAgICAgICAgewogICAgICAgICAgIm9zIjogImFueSIsCiAgICAgICAgICAiYXJjaCI6ICJhbnkiLAogICAgICAgICAgInVybCI6ICJhcnRpZmFjdHMvY29tLnhzZWMud29ya3NwYWNlLnN1Yi1hZ2VudC0xLjIuMS1zaGEyNTYtMTg5YWNhMmQxY2NjOGJkZC1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiMTg5YWNhMmQxY2NjOGJkZGNjOTA5Zjc1ZDllODJkYmE1NmU2NmQzNWJkMDczODZiYmJmZDEyYmZhYTg5NzhhZCIKICAgICAgICB9CiAgICAgIF0KICAgIH0sCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LWI3OGU0YWY5ODVlN2Q1ZTRkMjFiYmU0NzlhMDJmNzhmZmY0ZjM0MDIwZmFkMTFjMjU5NGFkMTYxOGZkNWVmYmEiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMiIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLndvcmtzcGFjZS5zdWItYWdlbnQtMS4yLjItc2hhMjU2LWJmMmQyZDNjN2Q3YzYwNmItYW55LWFueS54c2VjLXBsdWdpbiIsCiAgICAgICAgICAic2hhMjU2IjogImJmMmQyZDNjN2Q3YzYwNmIzNmNmYWE3NDA1N2VhMWE1MzI5MjM1ZjU2ZmNlMzFhZjcwZjcyYmUzNTRjNDlhODkiCiAgICAgICAgfQogICAgICBdCiAgICB9LAogICAgewogICAgICAicmVsZWFzZUlkIjogInNoYTI1Ni0yMDYwZTEwY2MzYmU3MmNiYjM1YzVjYTcwYWEwZTU1OTJiYTA4M2IzMDQyNzJiMDY4Y2VkYTBjZThjYzUyZmQ3IiwKICAgICAgInZlcnNpb24iOiAiMS4yLjMiLAogICAgICAiZW5naW5lcyI6IHsKICAgICAgICAieHNlYyI6ICI+PTAuMS4wIiwKICAgICAgICAicGx1Z2luQXBpIjogIl4xLjMuMCIKICAgICAgfSwKICAgICAgImFydGlmYWN0cyI6IFsKICAgICAgICB7CiAgICAgICAgICAib3MiOiAiYW55IiwKICAgICAgICAgICJhcmNoIjogImFueSIsCiAgICAgICAgICAidXJsIjogImFydGlmYWN0cy9jb20ueHNlYy53b3Jrc3BhY2Uuc3ViLWFnZW50LTEuMi4zLXNoYTI1Ni1hNzJkNjg1ZDQ3YTMyNmRkLWFueS1hbnkueHNlYy1wbHVnaW4iLAogICAgICAgICAgInNoYTI1NiI6ICJhNzJkNjg1ZDQ3YTMyNmRkZjU1MDRjNWVjODlmZGFmYWY5ZDliZTZkOGVlM2MwN2RjZWZjMjA4NjMxMjA3OTM5IgogICAgICAgIH0KICAgICAgXQogICAgfQogIF0sCiAgImNoYW5uZWxzIjogewogICAgImJldGEiOiB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTIwNjBlMTBjYzNiZTcyY2JiMzVjNWNhNzBhYTBlNTU5MmJhMDgzYjMwNDI3MmIwNjhjZWRhMGNlOGNjNTJmZDciCiAgICB9LAogICAgInN0YWJsZSI6IHsKICAgICAgInJlbGVhc2VJZCI6ICJzaGEyNTYtNTQzNDIwNWEwZmNkNjUwMDQ1ZjRkMzY4Y2EyOTQ2YjdjMTg0ODA4YThiNGFlM2ZlZjViZmM4MGRlZGM0NGVhMiIKICAgIH0KICB9Cn0K",
+    "releaseIds": [
+      "sha256-5434205a0fcd650045f4d368ca2946b7c184808a8b4ae3fef5bfc80dedc44ea2",
+      "sha256-8b232de3ebe60bfe094f8b3e0dc20254b1c227556fca87fe0acecbee4bbd21e1",
+      "sha256-b78e4af985e7d5e4d21bbe479a02f78fff4f34020fad11c2594ad1618fd5efba",
+      "sha256-2060e10cc3be72cbb35c5ca70aa0e5592ba083b304272b068ceda0ce8cc52fd7"
+    ],
+    "releaseRecords": [
+      {
+        "releaseId": "sha256-5434205a0fcd650045f4d368ca2946b7c184808a8b4ae3fef5bfc80dedc44ea2",
+        "version": "1.2.0",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.sub-agent-1.2.0-any-any.xsec-plugin",
+            "sha256": "42562cca8c79e73954800ce42519630c92369168fcb9ef533a74d49912537357"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-8b232de3ebe60bfe094f8b3e0dc20254b1c227556fca87fe0acecbee4bbd21e1",
+        "version": "1.2.1",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.sub-agent-1.2.1-sha256-189aca2d1ccc8bdd-any-any.xsec-plugin",
+            "sha256": "189aca2d1ccc8bddcc909f75d9e82dba56e66d35bd07386bbbfd12bfaa8978ad"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-b78e4af985e7d5e4d21bbe479a02f78fff4f34020fad11c2594ad1618fd5efba",
+        "version": "1.2.2",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.sub-agent-1.2.2-sha256-bf2d2d3c7d7c606b-any-any.xsec-plugin",
+            "sha256": "bf2d2d3c7d7c606b36cfaa74057ea1a5329235f56fce31af70f72be354c49a89"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-2060e10cc3be72cbb35c5ca70aa0e5592ba083b304272b068ceda0ce8cc52fd7",
+        "version": "1.2.3",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.3.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.sub-agent-1.2.3-sha256-a72d685d47a326dd-any-any.xsec-plugin",
+            "sha256": "a72d685d47a326ddf5504c5ec89fdafaf9d9be6d8ee3c07dcefc208631207939"
+          }
+        ]
+      }
+    ]
+  },
+  "channels": {
+    "beta": {
+      "releaseId": "sha256-2060e10cc3be72cbb35c5ca70aa0e5592ba083b304272b068ceda0ce8cc52fd7"
+    },
+    "stable": {
+      "releaseId": "sha256-5434205a0fcd650045f4d368ca2946b7c184808a8b4ae3fef5bfc80dedc44ea2"
+    }
+  }
+}
