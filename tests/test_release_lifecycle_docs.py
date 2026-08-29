@@ -121,9 +121,9 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("factory_generated=true", arm)
         self.assertIn("factory_generated=false", arm)
         self.assertIn("xsec-marketplace/adopt-first-party-", arm)
-        self.assertIn("commits/${PR_HEAD_SHA}/pulls?per_page=100", arm)
+        self.assertIn("pulls?state=all&base=main&per_page=100", arm)
         self.assertIn("factory_for_sha", arm)
-        self.assertNotIn('.state == "open"', arm)
+        self.assertNotIn("commits/${PR_HEAD_SHA}/pulls", arm)
         self.assertIn("state=pending", arm)
         self.assertIn("state=success", arm)
         self.assertIn("Not a Factory-generated Marketplace publication PR.", arm)
@@ -224,11 +224,11 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
         self.assertNotIn("\n\nThis is an immutable first-party adoption", workflow)
 
-    def test_final_gate_arms_shared_commit_status_only_after_slurping_all_associated_pr_pages(self) -> None:
+    def test_final_gate_arms_shared_commit_status_only_after_slurping_all_main_pr_pages(self) -> None:
         workflow = ARM_FINAL_GATE_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn('gh api --paginate --slurp "repos/${REPOSITORY}/commits/${PR_HEAD_SHA}/pulls?per_page=100"', workflow)
-        self.assertIn("any(.[][]; .base.ref == \"main\" and .head.repo.full_name == $repo", workflow)
-        self.assertNotIn("any(.[][]; .state == \"open\"", workflow)
+        self.assertIn('gh api --paginate --slurp "repos/${REPOSITORY}/pulls?state=all&base=main&per_page=100"', workflow)
+        self.assertIn("any(.[][]; .head.sha == $sha and .head.repo.full_name == $repo", workflow)
+        self.assertNotIn("commits/${PR_HEAD_SHA}/pulls", workflow)
 
     def test_main_protection_ruleset_inventory_paginates_and_flattens_every_page(self) -> None:
         workflow = PROTECTION_WORKFLOW.read_text(encoding="utf-8")

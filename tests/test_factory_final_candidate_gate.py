@@ -12,13 +12,16 @@ FINAL_WORKFLOW = ROOT / ".github" / "workflows" / "final-merge-generated-marketp
 class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
     def test_retained_sidecar_refresh_is_a_pending_factory_candidate(self) -> None:
         workflow = ARM_WORKFLOW.read_text(encoding="utf-8")
-        # Both the event branch and every same-repository Factory PR associated
-        # with a shared commit SHA must identify the generated repair, even if
-        # that Factory PR was closed without merging. Otherwise an ordinary
+        # Both the event branch and every same-repository Factory PR with a
+        # shared head SHA must identify the generated repair, even if that
+        # Factory PR was closed without merging. The commit-association API
+        # omits such closed PRs before default-branch inclusion, so this must
+        # use the complete main-targeting PR inventory. Otherwise an ordinary
         # same-SHA PR could overwrite its required pending status with success.
         self.assertGreaterEqual(workflow.count("xsec-marketplace/refresh-retained-sidecar-"), 2)
-        self.assertIn('any(.[][]; .base.ref == "main" and .head.repo.full_name == $repo', workflow)
-        self.assertNotIn('any(.[][]; .state == "open"', workflow)
+        self.assertIn('pulls?state=all&base=main&per_page=100', workflow)
+        self.assertIn('any(.[][]; .head.sha == $sha and .head.repo.full_name == $repo', workflow)
+        self.assertNotIn('commits/${PR_HEAD_SHA}/pulls', workflow)
         self.assertIn("factory_generated=true", workflow)
         self.assertIn("state=pending", workflow)
 
