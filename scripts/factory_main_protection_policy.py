@@ -157,15 +157,16 @@ def desired_policy(protection: dict[str, Any]) -> dict[str, Any]:
     for context in REQUIRED_CLASSIC_FACTORY_CHECKS:
         checks[context] = GITHUB_ACTIONS_APP_ID
 
-    # The API returns legacy ``contexts`` even for app-pinned ``checks``.  Do
-    # not submit legacy unpinned names: a check must be tied to the GitHub
-    # Actions app, so a user-created status of the same name cannot satisfy it.
+    # The API returns legacy ``contexts`` even for app-pinned ``checks``. Do
+    # not submit either legacy names *or an empty ``contexts`` array*: GitHub
+    # rejects a request that contains both fields, even when the latter is
+    # empty. Keeping only ``checks`` preserves the GitHub Actions pin, so a
+    # user-created status of the same name cannot satisfy the requirement.
     required_reviews = normalized_review_policy(protection.get("required_pull_request_reviews"))
     restrictions = normalized_actor_lists(protection.get("restrictions"), "restrictions")
     return {
         "required_status_checks": {
             "strict": True,
-            "contexts": [],
             "checks": [
                 {"context": context, "app_id": app_id}
                 for context, app_id in sorted(checks.items())
