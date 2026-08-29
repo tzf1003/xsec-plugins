@@ -35,6 +35,14 @@ on:
         description: Exact Factory revision that Desktop smoke verified. Accepted only for a smoke-gated external Stable promotion.
         required: false
         type: string
+      reconcile_delivery_key:
+        description: Opaque trusted source-delivery key used only to return a reconciler receipt.
+        required: false
+        type: string
+      reconcile_dispatch_nonce:
+        description: Exact protected reconcile run and attempt that requested the receipt.
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -65,6 +73,8 @@ jobs:
           EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
           SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
           SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
+          RECONCILE_DELIVERY_KEY: ${{ inputs.reconcile_delivery_key }}
+          RECONCILE_DISPATCH_NONCE: ${{ inputs.reconcile_dispatch_nonce }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
@@ -80,6 +90,19 @@ jobs:
             beta|stable) ;;
             *) echo "channel must be beta or stable." >&2; exit 1 ;;
           esac
+          if [ -n "$RECONCILE_DELIVERY_KEY" ] && ! [[ "$RECONCILE_DELIVERY_KEY" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$ ]]; then
+            echo "reconcile_delivery_key is not a bounded delivery identifier." >&2
+            exit 1
+          fi
+          if [ -n "$RECONCILE_DISPATCH_NONCE" ] && ! [[ "$RECONCILE_DISPATCH_NONCE" =~ ^[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
+            echo "reconcile_dispatch_nonce must be a positive run-id.attempt pair." >&2
+            exit 1
+          fi
+          { [ -z "$RECONCILE_DELIVERY_KEY" ] && [ -z "$RECONCILE_DISPATCH_NONCE" ]; } \
+            || { [ -n "$RECONCILE_DELIVERY_KEY" ] && [ -n "$RECONCILE_DISPATCH_NONCE" ]; } || {
+              echo "A reconcile receipt requires both delivery key and dispatch nonce." >&2
+              exit 1
+            }
           if [ -n "$PLUGIN_ID" ]; then
             [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit protected-main dispatch." >&2; exit 1; }
             [ -n "$SOURCE_SHA" ] || { echo "External source publication requires source_sha." >&2; exit 1; }
@@ -643,3 +666,37 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "published=false" >> "$GITHUB_OUTPUT"
           echo "pending_status_authentication=true" >> "$GITHUB_OUTPUT"
+      - name: Record an exact source-reconcile publication receipt
+        id: reconcile-receipt
+        if: ${{ steps.request.outputs.external == 'true' && inputs.reconcile_delivery_key != '' && inputs.reconcile_dispatch_nonce != '' }}
+        env:
+          DELIVERY_KEY: ${{ inputs.reconcile_delivery_key }}
+          DISPATCH_NONCE: ${{ inputs.reconcile_dispatch_nonce }}
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          CHANNEL: ${{ steps.request.outputs.channel }}
+          SHOULD_PUBLISH: ${{ steps.publication-decision.outputs.should_publish }}
+          FACTORY_REVISION: ${{ steps.current-main.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+          receipt_name="xsec-reconcile-receipt-$(printf '%s' "${DELIVERY_KEY}:${DISPATCH_NONCE}" | sha256sum | awk '{print $1}')"
+          mkdir -p .xsec-reconcile-receipt
+          jq -cn \
+            --arg delivery_key "$DELIVERY_KEY" \
+            --arg dispatch_nonce "$DISPATCH_NONCE" \
+            --arg plugin_id "$PLUGIN_ID" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg channel "$CHANNEL" \
+            --arg factory_revision "$FACTORY_REVISION" \
+            --arg outcome "$(if [ "$SHOULD_PUBLISH" = "true" ]; then printf candidate; else printf no-op; fi)" \
+            '{schemaVersion:1,deliveryKey:$delivery_key,dispatchNonce:$dispatch_nonce,pluginId:$plugin_id,sourceSha:$source_sha,channel:$channel,factoryRevision:$factory_revision,outcome:$outcome}' \
+            > .xsec-reconcile-receipt/receipt.json
+          echo "name=$receipt_name" >> "$GITHUB_OUTPUT"
+      - name: Upload the exact source-reconcile publication receipt
+        if: ${{ steps.reconcile-receipt.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.reconcile-receipt.outputs.name }}
+          path: .xsec-reconcile-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 1

@@ -134,6 +134,7 @@ jobs:
           SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
           SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
           SOURCE_BETA_REF: ${{ steps.request.outputs.beta_ref }}
+          SOURCE_STABLE_REF: ${{ steps.request.outputs.stable_ref }}
         run: |
           set -euo pipefail
           # A newer beta *or* main source event can invalidate an in-review
@@ -190,7 +191,7 @@ jobs:
             }
             release_path="$candidate_root/plugins/${PLUGIN_ID}/.xsec-market/releases.json"
             evidence_path="$candidate_root/.xsec-factory/official-publications/${PLUGIN_ID}.json"
-            tuple="$(jq -cer --arg plugin_id "$PLUGIN_ID" --arg repository "$SOURCE_REPOSITORY" \
+            tuple="$(jq -cer --arg plugin_id "$PLUGIN_ID" --arg repository "$SOURCE_REPOSITORY" --arg beta_sha "$beta_sha" \
               --slurpfile release "$release_path" --slurpfile evidence "$evidence_path" '
                 $release[0].channels.beta.releaseId as $release_id
                 | if ($release_id | type) != "string" then error("candidate has no Beta release") else . end
@@ -201,6 +202,7 @@ jobs:
                     or $source.repository != $repository
                     or $source.path != ("plugins/" + $plugin_id)
                     or $source.refs != {beta:"refs/heads/beta",stable:"refs/heads/main"}
+                    or $source.betaSha != $beta_sha
                     or $source.stableSha != null
                     or ($source.mainGateSha | type) != "string"
                     or $release_status.betaReleaseId != $release_id
@@ -238,15 +240,23 @@ jobs:
               echo "Generated candidate #${number} does not descend from its KMS generation revision." >&2
               exit 1
             }
-            git diff --quiet "$generation_base" "$head_sha" -- ".xsec-factory/official-status/${PLUGIN_ID}.json" && {
+            # Compare only the PR's actual delta. A candidate may be rebased
+            # onto an intervening protected-main change; the KMS generation
+            # revision remains an ancestry proof, not the candidate diff base.
+            candidate_base="$(git merge-base "$head_sha" HEAD)"
+            [[ "$candidate_base" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "Generated candidate #${number} has no canonical Factory merge base." >&2
+              exit 1
+            }
+            git diff --quiet "$candidate_base" "$head_sha" -- ".xsec-factory/official-status/${PLUGIN_ID}.json" && {
               echo "Generated candidate #${number} did not actually change the target Factory status." >&2
               cleanup_candidate
               continue
             }
-            candidate_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$generation_base" --after "$head_sha" --classify --allow-unsigned-official-status-plugin-id "$PLUGIN_ID")"
+            candidate_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$candidate_base" --after "$head_sha" --classify --allow-unsigned-official-status-plugin-id "$PLUGIN_ID")"
             candidate_plugin="$(printf '%s' "$candidate_change" | jq -er '
               .promotions
-              | if type == "array" and length == 1 and .[0].plugin_id | type == "string" then .[0].plugin_id else error("candidate does not authenticate one generated plugin") end
+              | if type == "array" and length == 1 and (.[0].plugin_id | type) == "string" then .[0].plugin_id else error("candidate does not authenticate one generated plugin") end
             ')"
             if [ "$candidate_plugin" != "$PLUGIN_ID" ]; then
               cleanup_candidate
@@ -289,16 +299,19 @@ jobs:
           fi
           echo "dispatch=true" >> "$GITHUB_OUTPUT"
       - name: Publish current Beta or recheck its main reproducibility gate
+        id: dispatch-publisher
         if: ${{ steps.supersede.outputs.dispatch == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ steps.request.outputs.channel }}
+          DELIVERY_KEY: ${{ steps.request.outputs.delivery_key }}
           PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
           SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
           SOURCE_BETA_REF: ${{ steps.request.outputs.beta_ref }}
         run: |
           set -euo pipefail
+          echo "publisher_dispatch_epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
           if [ "$CHANNEL" = "stable" ]; then
             # main never promotes Stable directly. Re-read the protected
             # Registry beta ref and let publish.yml deterministically compare
@@ -307,11 +320,15 @@ jobs:
             beta_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_BETA_REF" | awk 'NR == 1 { print $1 }')"
             [ -n "$beta_sha" ] || { echo "Cannot resolve registered source beta for ${PLUGIN_ID}." >&2; exit 1; }
             gh workflow run publish.yml --ref main \
-              -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$beta_sha"
+              -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$beta_sha" \
+              -f reconcile_delivery_key="$DELIVERY_KEY" \
+              -f reconcile_dispatch_nonce="${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
             exit 0
           fi
           gh workflow run publish.yml --ref main \
-            -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$SOURCE_SHA"
+            -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$SOURCE_SHA" \
+            -f reconcile_delivery_key="$DELIVERY_KEY" \
+            -f reconcile_dispatch_nonce="${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
       - name: Authenticate, sign, and source-gate the exact generated Beta candidate
         # publish.yml deliberately leaves the changed official status unsigned.
         # This protected dispatcher workflow is the sole Cloud-authorized
@@ -324,6 +341,10 @@ jobs:
           SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
           SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
           SOURCE_BETA_REF: ${{ steps.request.outputs.beta_ref }}
+          SOURCE_STABLE_REF: ${{ steps.request.outputs.stable_ref }}
+          DELIVERY_KEY: ${{ steps.request.outputs.delivery_key }}
+          PUBLISHER_DISPATCH_EPOCH: ${{ steps.dispatch-publisher.outputs.publisher_dispatch_epoch }}
+          RECONCILE_DISPATCH_NONCE: ${{ github.run_id }}.${{ github.run_attempt }}
         run: |
           set -euo pipefail
           [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]] || {
@@ -380,13 +401,17 @@ jobs:
               git cat-file -e "$generation_base^{commit}"
               git merge-base --is-ancestor "$generation_base" origin/main || { echo "Candidate #${number} generation is not retained by protected main." >&2; exit 1; }
               git merge-base --is-ancestor "$generation_base" "$head_sha" || { echo "Candidate #${number} does not descend from its KMS generation revision." >&2; exit 1; }
-              git diff --quiet "$generation_base" "$head_sha" -- ".xsec-factory/official-status/${PLUGIN_ID}.json" && {
+              # As above, leave the sidecar's protected generation revision as
+              # an ancestry proof but classify only the candidate's own delta.
+              candidate_base="$(git merge-base "$head_sha" HEAD)"
+              [[ "$candidate_base" =~ ^[a-f0-9]{40}$ ]] || { echo "Candidate #${number} has no canonical Factory merge base." >&2; exit 1; }
+              git diff --quiet "$candidate_base" "$head_sha" -- ".xsec-factory/official-status/${PLUGIN_ID}.json" && {
                 echo "Candidate #${number} did not actually change the requested Factory status." >&2
                 cleanup_candidate
                 continue
               }
-              candidate_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$generation_base" --after "$head_sha" --classify --allow-unsigned-official-status-plugin-id "$PLUGIN_ID")"
-              candidate_plugin="$(printf '%s' "$candidate_change" | jq -er '.promotions | if type == "array" and length == 1 and .[0].plugin_id | type == "string" then .[0].plugin_id else error("candidate does not authenticate exactly one plugin") end')"
+              candidate_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$candidate_base" --after "$head_sha" --classify --allow-unsigned-official-status-plugin-id "$PLUGIN_ID")"
+              candidate_plugin="$(printf '%s' "$candidate_change" | jq -er '.promotions | if type == "array" and length == 1 and (.[0].plugin_id | type) == "string" then .[0].plugin_id else error("candidate does not authenticate exactly one plugin") end')"
               if [ "$candidate_plugin" != "$PLUGIN_ID" ]; then
                 cleanup_candidate
                 continue
@@ -410,16 +435,72 @@ jobs:
                 continue
               fi
               python scripts/external_source_factory.py --root "$candidate_root" validate
-              matches+=("${number}|${branch}|${head_sha}|${generation_base}")
+              matches+=("${number}|${branch}|${head_sha}|${generation_base}|${candidate_base}")
               cleanup_candidate
             done < <(printf '%s' "$candidates" | jq -rc '.[]')
             [ "${#matches[@]}" -le 1 ] || { echo "Multiple authenticated current candidates exist; refusing to sign ambiguously." >&2; exit 1; }
             if [ "${#matches[@]}" -eq 0 ]; then
+              # A duplicate delivery may intentionally be a no-op: publish.yml
+              # creates no PR in that case. Wait for the dispatched protected
+              # publisher's exact receipt before treating the absence of a PR
+              # as success; never infer a no-op from an empty PR list.
+              if [ -n "$PUBLISHER_DISPATCH_EPOCH" ]; then
+                receipt_name="xsec-reconcile-receipt-$(printf '%s' "${DELIVERY_KEY}:${RECONCILE_DISPATCH_NONCE}" | sha256sum | awk '{print $1}')"
+                artifact="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${receipt_name}&per_page=100" | jq -cr \
+                  --arg name "$receipt_name" --argjson after "$PUBLISHER_DISPATCH_EPOCH" '
+                    [ .[]?.artifacts[]?
+                      | select(.name == $name and .expired == false and (.created_at | fromdateiso8601) >= $after)
+                    ] | sort_by(.created_at) | last // empty
+                  ')"
+                if [ -n "$artifact" ]; then
+                  artifact_id="$(printf '%s' "$artifact" | jq -er .id)"
+                  publisher_run_id="$(printf '%s' "$artifact" | jq -er .workflow_run.id)"
+                  [[ "$artifact_id" =~ ^[0-9]+$ && "$publisher_run_id" =~ ^[0-9]+$ ]] || {
+                    echo "Publisher receipt artifact identity is malformed." >&2
+                    exit 1
+                  }
+                  publisher_run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${publisher_run_id}" | jq -cer '{event,head_branch,head_sha,status,conclusion}')"
+                  [ "$(printf '%s' "$publisher_run" | jq -er .event)" = "workflow_dispatch" ] \
+                    && [ "$(printf '%s' "$publisher_run" | jq -er .head_branch)" = "main" ] \
+                    && [ "$(printf '%s' "$publisher_run" | jq -er .status)" = "completed" ] \
+                    && [ "$(printf '%s' "$publisher_run" | jq -er .conclusion)" = "success" ] || {
+                      echo "The publisher run that emitted the receipt did not complete successfully." >&2
+                      exit 1
+                    }
+                  receipt_root="$(mktemp -d "$RUNNER_TEMP/xsec-publisher-receipt.XXXXXX")"
+                  cleanup_receipt() { rm -rf -- "$receipt_root"; }
+                  gh run download "$publisher_run_id" --name "$receipt_name" --dir "$receipt_root"
+                  receipt_path="$receipt_root/receipt.json"
+                  receipt="$(jq -cer \
+                    --arg delivery_key "$DELIVERY_KEY" --arg dispatch_nonce "$RECONCILE_DISPATCH_NONCE" --arg plugin_id "$PLUGIN_ID" --arg source_sha "$beta_sha" --arg channel "beta" \
+                    --arg factory_revision "$(printf '%s' "$publisher_run" | jq -er .head_sha)" '
+                      if .schemaVersion == 1
+                        and .deliveryKey == $delivery_key
+                        and .dispatchNonce == $dispatch_nonce
+                        and .pluginId == $plugin_id
+                        and .sourceSha == $source_sha
+                        and .channel == $channel
+                        and .factoryRevision == $factory_revision
+                        and (.outcome == "candidate" or .outcome == "no-op")
+                      then .outcome else error("receipt does not bind this source reconciliation") end
+                    ' "$receipt_path")"
+                  cleanup_receipt
+                  if [ "$receipt" = "no-op" ]; then
+                    echo "Publisher confirmed the exact duplicate source delivery is an immutable no-op." >> "$GITHUB_STEP_SUMMARY"
+                    exit 0
+                  fi
+                  # A successful publisher with a candidate receipt must have
+                  # created its PR before the run completed. Stop receipt
+                  # polling and let the ordinary bounded candidate poll expose
+                  # an unexpected missing PR as a failure.
+                  PUBLISHER_DISPATCH_EPOCH=""
+                fi
+              fi
               [ "$SECONDS" -lt "$deadline" ] || { echo "Timed out waiting for the generated current Beta candidate." >&2; exit 1; }
               sleep 5
               continue
             fi
-            IFS='|' read -r number branch head_sha generation_base <<< "${matches[0]}"
+            IFS='|' read -r number branch head_sha generation_base candidate_base <<< "${matches[0]}"
             latest="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}" | jq -cer '{branch:.head.ref,head:.head.sha,state:.state}')"
             [ "$(printf '%s' "$latest" | jq -er .state)" = "open" ] \
               && [ "$(printf '%s' "$latest" | jq -er .branch)" = "$branch" ] \
@@ -427,6 +508,7 @@ jobs:
             candidate_root="$(mktemp -d "$RUNNER_TEMP/xsec-status-sign.XXXXXX")"
             cleanup_signed_candidate() { git worktree remove --force "$candidate_root" >/dev/null 2>&1 || true; rm -rf -- "$candidate_root"; }
             git worktree add --detach "$candidate_root" "$head_sha" >/dev/null
+            status_path="$candidate_root/.xsec-factory/official-status/${PLUGIN_ID}.json"
             status_proof=".xsec-factory/official-status-proofs/${PLUGIN_ID}.json"
             if python scripts/kms_marketplace_publisher.py --root "$candidate_root" --verify-active-marketplace-signatures >/dev/null 2>&1; then
               signed_head="$head_sha"
@@ -436,10 +518,53 @@ jobs:
               # its new signed webhook delivery, never retroactively signed.
               current_beta="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_BETA_REF" | awk 'NR == 1 { print $1 }')"
               [ "$current_beta" = "$beta_sha" ] || { echo "Registered Beta advanced before status signing." >&2; exit 1; }
+              current_main="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_STABLE_REF" | awk 'NR == 1 { print $1 }')"
+              [[ "$current_main" =~ ^[a-f0-9]{40}$ ]] || { echo "Cannot resolve the registered main source head before status signing." >&2; exit 1; }
               if [ "$CHANNEL" = "stable" ]; then
-                current_main="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
                 [ "$current_main" = "$SOURCE_SHA" ] || { echo "Registered main advanced before status signing." >&2; exit 1; }
               fi
+              # The status document is deliberately unsigned on the generated
+              # branch. Recompute its decision from the current allowlisted
+              # main checkout before KMS binds it; a candidate-controlled
+              # waiting_for_smoke/mainGateSha tuple is never authority.
+              source_main_root="$(mktemp -d "$RUNNER_TEMP/xsec-status-main.XXXXXX")"
+              cleanup_main_source() { rm -rf -- "$source_main_root"; }
+              git -c init.templateDir= -c core.hooksPath=/dev/null init --quiet "$source_main_root"
+              env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+                -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
+                -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
+                GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+                GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 \
+                git -C "$source_main_root" \
+                  -c credential.helper= \
+                  -c core.hooksPath=/dev/null \
+                  -c core.autocrlf=false \
+                  -c http.sslVerify=true \
+                  -c http.followRedirects=false \
+                  -c protocol.allow=never \
+                  -c protocol.https.allow=always \
+                  fetch --no-tags "https://github.com/${SOURCE_REPOSITORY}.git" \
+                  "$SOURCE_STABLE_REF:refs/remotes/xsec-reconcile/registered-main"
+              [ "$(git -C "$source_main_root" rev-parse refs/remotes/xsec-reconcile/registered-main)" = "$current_main" ] || {
+                echo "The sealed main checkout did not retain the registered source head." >&2
+                exit 1
+              }
+              env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+                GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+                git -C "$source_main_root" -c core.hooksPath=/dev/null -c core.autocrlf=false \
+                  checkout --detach --quiet refs/remotes/xsec-reconcile/registered-main
+              rebuilt_gate="$(python scripts/external_source_factory.py --root "$candidate_root" check-main-rebuild \
+                --plugin-id "$PLUGIN_ID" --source-root "$source_main_root")"
+              expected_state="$(printf '%s' "$rebuilt_gate" | jq -er .state)"
+              expected_release="$(printf '%s' "$rebuilt_gate" | jq -er .beta_release_id)"
+              candidate_gate="$(jq -cer '{state:.publication.state,main_gate_sha:.source.mainGateSha,beta_release_id:.release.betaReleaseId}' "$status_path")"
+              [ "$(printf '%s' "$candidate_gate" | jq -er .main_gate_sha)" = "$current_main" ] \
+                && [ "$(printf '%s' "$candidate_gate" | jq -er .state)" = "$expected_state" ] \
+                && [ "$(printf '%s' "$candidate_gate" | jq -er .beta_release_id)" = "$expected_release" ] || {
+                  echo "Candidate status does not match the recomputed registered main gate." >&2
+                  exit 1
+                }
+              cleanup_main_source
               XSEC_MARKETPLACE_SOURCE_REVISION="$generation_base" \
                 python scripts/kms_marketplace_publisher.py --root "$candidate_root" --official-status-plugin-id "$PLUGIN_ID"
               git -C "$candidate_root" diff --quiet -- .xsec-factory/official-status || {
@@ -454,7 +579,7 @@ jobs:
               git -C "$candidate_root" commit -m "chore: authenticate official Factory status"
               signed_head="$(git -C "$candidate_root" rev-parse HEAD)"
             fi
-            signed_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$generation_base" --after "$signed_head" --classify)"
+            signed_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$candidate_base" --after "$signed_head" --classify)"
             [ "$(printf '%s' "$signed_change" | jq -er '.promotions | if type == "array" and length == 1 then .[0].plugin_id else error("candidate no longer authenticates one plugin") end')" = "$PLUGIN_ID" ] || {
               echo "Signed candidate does not authenticate the requested plugin." >&2
               exit 1
@@ -598,13 +723,18 @@ jobs:
               git merge-base --is-ancestor "$generation_base" origin/main || { echo "Stable candidate #${number} generation is not retained by protected main." >&2; exit 1; }
               git merge-base --is-ancestor "$generation_base" "$head_sha" || { echo "Stable candidate #${number} does not descend from its KMS generation revision." >&2; exit 1; }
               status_relative=".xsec-factory/official-status/${plugin_id}.json"
-              git diff --quiet "$generation_base" "$head_sha" -- "$status_relative" && {
+              # KMS provenance must descend from its protected generation
+              # revision, but a rebased candidate is classified against its
+              # actual delta instead of unrelated intervening main changes.
+              candidate_base="$(git merge-base "$head_sha" HEAD)"
+              [[ "$candidate_base" =~ ^[a-f0-9]{40}$ ]] || { echo "Stable candidate #${number} has no canonical Factory merge base." >&2; exit 1; }
+              git diff --quiet "$candidate_base" "$head_sha" -- "$status_relative" && {
                 echo "Stable candidate #${number} did not actually change its terminal Factory status." >&2
                 cleanup_candidate
                 continue
               }
-              candidate_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$generation_base" --after "$head_sha" --classify --allow-unsigned-official-status-plugin-id "$plugin_id")"
-              [ "$(printf '%s' "$candidate_change" | jq -er '.promotions | if type == "array" and length == 1 then .[0].plugin_id else error("candidate does not authenticate exactly one plugin") end')" = "$plugin_id" ] || {
+              candidate_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$candidate_base" --after "$head_sha" --classify --allow-unsigned-official-status-plugin-id "$plugin_id")"
+              [ "$(printf '%s' "$candidate_change" | jq -er '.promotions | if type == "array" and length == 1 and (.[0].plugin_id | type) == "string" then .[0].plugin_id else error("candidate does not authenticate exactly one plugin") end')" = "$plugin_id" ] || {
                 echo "Stable candidate #${number} does not authenticate its terminal status plugin." >&2
                 exit 1
               }
@@ -646,8 +776,8 @@ jobs:
                 git -C "$candidate_root" commit -m "chore: authenticate official Factory status"
                 signed_head="$(git -C "$candidate_root" rev-parse HEAD)"
               fi
-              signed_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$generation_base" --after "$signed_head" --classify)"
-              [ "$(printf '%s' "$signed_change" | jq -er '.promotions | if type == "array" and length == 1 then .[0].plugin_id else error("candidate no longer authenticates one plugin") end')" = "$plugin_id" ] || {
+              signed_change="$(python scripts/verify_merged_stable_promotion.py --root "$candidate_root" --before "$candidate_base" --after "$signed_head" --classify)"
+              [ "$(printf '%s' "$signed_change" | jq -er '.promotions | if type == "array" and length == 1 and (.[0].plugin_id | type) == "string" then .[0].plugin_id else error("candidate no longer authenticates one plugin") end')" = "$plugin_id" ] || {
                 echo "Signed Stable candidate does not authenticate its plugin." >&2
                 exit 1
               }

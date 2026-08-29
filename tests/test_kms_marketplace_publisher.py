@@ -792,6 +792,33 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("--allow-unsigned-official-status-plugin-id", reconcile)
         self.assertIn('gh workflow run validate.yml --ref "$branch"', reconcile)
         self.assertIn("@codex review", reconcile)
+        # Reconciliation must authenticate the live Beta tuple and classify
+        # only a generated candidate's own diff. The KMS source revision is
+        # retained as an ancestry assertion rather than misused as a PR base.
+        self.assertIn('--arg beta_sha "$beta_sha"', reconcile)
+        self.assertIn("$source.betaSha != $beta_sha", reconcile)
+        self.assertIn('candidate_base="$(git merge-base "$head_sha" HEAD)"', reconcile)
+        self.assertIn('--before "$candidate_base" --after "$head_sha" --classify', reconcile)
+        self.assertNotIn('and .[0].plugin_id | type == "string"', reconcile)
+        self.assertIn('and (.[0].plugin_id | type) == "string"', reconcile)
+        # A generated status is mutable until this production-only workflow
+        # recomputes the exact protected main gate from a sealed source fetch.
+        self.assertIn("check-main-rebuild", reconcile)
+        self.assertIn("xsec-status-main.XXXXXX", reconcile)
+        self.assertIn("Candidate status does not match the recomputed registered main gate.", reconcile)
+        self.assertIn("SOURCE_STABLE_REF", reconcile)
+        # An absent PR is successful only after the exact publisher run writes
+        # a nonce-bound no-op receipt. The optional artifact probe must not use
+        # jq -e, because no artifact is an expected polling state.
+        self.assertIn("reconcile_dispatch_nonce", publisher_workflow)
+        self.assertIn("xsec-reconcile-receipt-", publisher_workflow)
+        self.assertIn("dispatchNonce:$dispatch_nonce", publisher_workflow)
+        self.assertIn("jq -cr", reconcile)
+        self.assertIn('RECONCILE_DISPATCH_NONCE', reconcile)
+        self.assertIn('and .dispatchNonce == $dispatch_nonce', reconcile)
+        self.assertIn('and .factoryRevision == $factory_revision', reconcile)
+        self.assertIn('if [ "$receipt" = "no-op" ]; then', reconcile)
+        self.assertIn("The publisher run that emitted the receipt did not complete successfully.", reconcile)
         self.assertIn("stable_requests", smoke)
         for workflow in (publisher_workflow, promotion, adoption):
             self.assertNotIn("--official-status-plugin-id", workflow)
