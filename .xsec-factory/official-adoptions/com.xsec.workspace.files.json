@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.files",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-files",
+    "path": "plugins/com.xsec.workspace.files",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "af5a1154c3b5155236955430f8bb22460d6a6238",
+    "stableSha": "f7385e41af6682677a9ae51557fcf077999e27ac"
+  },
+  "legacy": {
+    "factoryRevision": "1c40f5b9ad593aafea69edace1a21c089e49e893",
+    "releaseDocumentSha256": "7995684eccaedc8b47934225425749caaef7802482eb3bc4120cbe91711030d6",
+    "releaseDocumentB64": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAicGx1Z2luSWQiOiAiY29tLnhzZWMud29ya3NwYWNlLmZpbGVzIiwKICAicmVsZWFzZXMiOiBbCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTU1NGI4YTc2Mzc1MmI3MmFlMmZkNTJhMGRlZmMyYjIxZDJhN2U3YmY1ZjU1YTMyMmQ0MjE0MzViNjQyOWU3OGEiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMCIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLndvcmtzcGFjZS5maWxlcy0xLjIuMC1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiMjdkZDAxYmY1Y2M4ZTYyNmE1YWE2OTY2ZjM1ZDk5NjJmNzdiMzRiOGYwYTk1NWQyM2QwMzA0MGY2YjMwMjViMiIKICAgICAgICB9CiAgICAgIF0KICAgIH0sCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LWIwNTczNjJjNzEyZTRjYjUzMDdhNGMyNGYzNmVmNmUxYTUxY2NhZjdkZGQ1ZWRlMTQ4ODUyOTI1OTk4Yzk3YTAiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMSIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLndvcmtzcGFjZS5maWxlcy0xLjIuMS1zaGEyNTYtZTk3NTgxMTFlZGU0NzNmYi1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiZTk3NTgxMTFlZGU0NzNmYjY0OWFjNjA3ZDczZDUxNmU5ZDVkYTUzOGRjNDdiYjVmZTIyM2ZmOGRjN2E5ODMzMCIKICAgICAgICB9CiAgICAgIF0KICAgIH0sCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTY4YzI2ZmE0OWMwNGM2ZTIzNzFkZGY4YWFmN2IwYjA3NmJjNDAyNGQ2NGI4MzRlMzg5OWVjOTBiMTdjZTE2MjgiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMiIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLndvcmtzcGFjZS5maWxlcy0xLjIuMi1zaGEyNTYtMTVlNThkOGYzNDAxN2NkMC1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiMTVlNThkOGYzNDAxN2NkMDFhOGU2NzBjYzA3OTI3NDIwNmU2YWUxM2IxZTM5YzM3NGVkOGQ1YTJhNTJjMjJhMiIKICAgICAgICB9CiAgICAgIF0KICAgIH0KICBdLAogICJjaGFubmVscyI6IHsKICAgICJiZXRhIjogewogICAgICAicmVsZWFzZUlkIjogInNoYTI1Ni02OGMyNmZhNDljMDRjNmUyMzcxZGRmOGFhZjdiMGIwNzZiYzQwMjRkNjRiODM0ZTM4OTllYzkwYjE3Y2UxNjI4IgogICAgfSwKICAgICJzdGFibGUiOiB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTU1NGI4YTc2Mzc1MmI3MmFlMmZkNTJhMGRlZmMyYjIxZDJhN2U3YmY1ZjU1YTMyMmQ0MjE0MzViNjQyOWU3OGEiCiAgICB9CiAgfQp9Cg==",
+    "releaseIds": [
+      "sha256-554b8a763752b72ae2fd52a0defc2b21d2a7e7bf5f55a322d421435b6429e78a",
+      "sha256-b057362c712e4cb5307a4c24f36ef6e1a51ccaf7ddd5ede148852925998c97a0",
+      "sha256-68c26fa49c04c6e2371ddf8aaf7b0b076bc4024d64b834e3899ec90b17ce1628"
+    ],
+    "releaseRecords": [
+      {
+        "releaseId": "sha256-554b8a763752b72ae2fd52a0defc2b21d2a7e7bf5f55a322d421435b6429e78a",
+        "version": "1.2.0",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.files-1.2.0-any-any.xsec-plugin",
+            "sha256": "27dd01bf5cc8e626a5aa6966f35d9962f77b34b8f0a955d23d03040f6b3025b2"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-b057362c712e4cb5307a4c24f36ef6e1a51ccaf7ddd5ede148852925998c97a0",
+        "version": "1.2.1",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.files-1.2.1-sha256-e9758111ede473fb-any-any.xsec-plugin",
+            "sha256": "e9758111ede473fb649ac607d73d516e9d5da538dc47bb5fe223ff8dc7a98330"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-68c26fa49c04c6e2371ddf8aaf7b0b076bc4024d64b834e3899ec90b17ce1628",
+        "version": "1.2.2",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.files-1.2.2-sha256-15e58d8f34017cd0-any-any.xsec-plugin",
+            "sha256": "15e58d8f34017cd01a8e670cc079274206e6ae13b1e39c374ed8d5a2a52c22a2"
+          }
+        ]
+      }
+    ]
+  },
+  "channels": {
+    "beta": {
+      "releaseId": "sha256-68c26fa49c04c6e2371ddf8aaf7b0b076bc4024d64b834e3899ec90b17ce1628"
+    },
+    "stable": {
+      "releaseId": "sha256-554b8a763752b72ae2fd52a0defc2b21d2a7e7bf5f55a322d421435b6429e78a"
+    }
+  }
+}
