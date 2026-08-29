@@ -119,13 +119,15 @@ python scripts\materialize_first_party_source.py `
   --push
 ```
 
-若需要使用本机凭据，`--credential-helper` 只允许运行中 Git installation 所提供的
-`manager`、`manager-core` 或 `osxkeychain`。materializer 会先验证 helper 的
-resolved target 仍在该可信 Git installation 中，但以其固定的绝对 helper 路径调用，从而保留 Git
+若需要使用本机凭据，`--credential-helper` 只允许固定的平台 Git installation 所提供的
+`manager`、`manager-core` 或 `osxkeychain`。materializer 的**所有** Git 子进程均使用该受信的绝对
+Git executable，不通过调用者 `PATH` 解析；它会验证 helper 的 resolved target 仍在同一可信 installation
+中，但以其固定的绝对 helper 路径调用，从而保留 Git
 multi-call symlink 的 basename dispatch。它刻意不允许 `cache`：该 helper 的默认 socket 会由
 `XDG_CACHE_HOME` / `HOME` 选择，不能让调用者环境决定认证请求的接收端；也不允许 `libsecret`，因为
 其 D-Bus session 由 `DBUS_SESSION_BUS_ADDRESS` 选择。无论是否使用 helper，sealed HTTPS transport
-都清除 Git/curl/GCM trace、GCM store/cache 选择器、.NET/CoreCLR startup-hook 与 profiler 注入变量、
+都清除 Git/curl/GCM trace、GCM store/cache 选择器、non-interactive shell startup、.NET/CoreCLR startup-hook、
+profiler 与 diagnostic-port 注入变量，并显式关闭 .NET diagnostic IPC、
 代理、CA override 及 `SSLKEYLOGFILE`，不会把认证头或 TLS session key 写入调用者指定的位置。候选
 仓库的所有本地 `credential.*` 配置（包括 URL-scoped `credentialStore` / `cacheOptions`）也会在远程
 预检前被拒绝。

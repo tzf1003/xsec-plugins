@@ -48,12 +48,28 @@ ARTIFACT_DIGEST_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 # deliberately excluded too: its D-Bus session is selected through inherited
 # ``DBUS_SESSION_BUS_ADDRESS``, so this tool cannot prove that credential
 # requests remain on a trusted user-session bus. The remaining helpers are
-# resolved from the active Git installation and do not consume that address.
+# resolved from the fixed platform Git installation and do not consume that
+# address.
 PUSH_CREDENTIAL_HELPERS = frozenset({"manager", "manager-core", "osxkeychain"})
 FORBIDDEN_SOURCE_SUFFIXES = (".xsec-plugin", ".sig.jws.json")
 MIGRATION_AUTHOR_NAME = "XSEC Marketplace Migration"
 MIGRATION_AUTHOR_EMAIL = "xsec-marketplace-migration@users.noreply.github.com"
 TRUSTED_FACTORY_ORIGIN = "https://github.com/tzf1003/xsec-plugins.git"
+# This migration deliberately does not search ``PATH`` for Git.  Its optional
+# credential-manager mode must obtain the helper directory from the same Git
+# executable that performs the final push; resolving an unqualified ``git``
+# through an operator-controlled PATH would let a replacement executable
+# nominate its own credential helper.  These are installation locations owned
+# by the OS/package installer, not by the caller.  The tool fails closed when
+# the platform Git is unavailable rather than silently accepting a developer
+# or repository-local Git binary.
+if os.name == "nt":
+    TRUSTED_GIT_EXECUTABLE_CANDIDATES = (
+        Path(r"C:\Program Files\Git\cmd\git.exe"),
+        Path(r"C:\Program Files\Git\bin\git.exe"),
+    )
+else:
+    TRUSTED_GIT_EXECUTABLE_CANDIDATES = (Path("/usr/bin/git"),)
 TRANSPORT_ENVIRONMENT_KEYS = (
     "GIT_CONFIG",
     "GIT_CONFIG_COUNT",
@@ -107,6 +123,14 @@ TRANSPORT_ENVIRONMENT_KEYS = (
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_TEMPLATE_DIR",
 )
+# Git executes ``!`` credential helpers through a noninteractive shell.  An
+# absolute helper pathname alone therefore cannot prevent shell startup files
+# or imported functions selected by the caller from observing its stdin/stdout.
+# This list/prefix pair deliberately applies to *every* sealed transport: none
+# of these shell customizations are needed by a deterministic Factory read or
+# source push.
+SHELL_STARTUP_ENVIRONMENT_KEYS = frozenset({"ENV", "ZDOTDIR", "SHELLOPTS", "CDPATH"})
+SHELL_STARTUP_ENVIRONMENT_PREFIXES = ("BASH_", "ZSH_", "KSH_")
 # Git Credential Manager is a .NET application.  An otherwise absolute,
 # installation-local helper pathname is not sufficient if the caller can make
 # its runtime load a startup hook or profiler first.  Keep the transport
@@ -127,6 +151,8 @@ DOTNET_RUNTIME_ENVIRONMENT_KEYS = frozenset(
         "DOTNET_ENABLEDIAGNOSTICS",
         "DOTNET_ENABLEDIAGNOSTICS_PROFILER",
         "DOTNET_ENABLEDIAGNOSTICS_IPC",
+        "DOTNET_DIAGNOSTICPORTS",
+        "DOTNET_DEFAULT_DIAGNOSTIC_PORT_SUSPEND",
         "COREHOST_TRACE",
         "COREHOST_TRACEFILE",
         "COREHOST_TRACE_VERBOSITY",
@@ -186,6 +212,45 @@ def fail(message: str) -> None:
     raise MaterializationError(message)
 
 
+def trusted_git_executable() -> Path:
+    """Return the fixed, absolute Git executable allowed by this tool.
+
+    ``git --exec-path`` is only meaningful after the executable itself is
+    trusted.  In particular, this helper must never use ``PATH`` or a caller
+    supplied environment variable to discover Git.  Every Git process below
+    goes through this function, including local config inspection and the
+    fast-export/fast-import pair used to preserve public history.
+    """
+
+    for candidate in TRUSTED_GIT_EXECUTABLE_CANDIDATES:
+        if not candidate.is_absolute():
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_file():
+            continue
+        if os.name != "nt" and not os.access(resolved, os.X_OK):
+            continue
+        # On Windows both accepted executable spellings must remain under the
+        # fixed machine-wide Git installation even if a link is introduced.
+        # The POSIX candidate is itself the fixed system path above.
+        if os.name == "nt":
+            try:
+                resolved.relative_to(Path(r"C:\Program Files\Git").resolve(strict=True))
+            except (OSError, ValueError):
+                continue
+        return candidate
+    fail("trusted platform Git executable is unavailable")
+
+
+def git_command(arguments: list[str]) -> list[str]:
+    """Build one Git command without consulting the caller's PATH."""
+
+    return [str(trusted_git_executable()), *arguments]
+
+
 def run_git(
     arguments: list[str],
     *,
@@ -195,7 +260,7 @@ def run_git(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run Git without a shell and retain diagnostics for a fail-closed error."""
 
-    command = ["git", *arguments]
+    command = git_command(arguments)
     completed = subprocess.run(
         command,
         cwd=None if cwd is None else str(cwd),
@@ -285,6 +350,8 @@ def sealed_transport_environment(
             normalized_key in transport_environment_keys
             or normalized_key in DOTNET_RUNTIME_ENVIRONMENT_KEYS
             or normalized_key.startswith(DOTNET_RUNTIME_ENVIRONMENT_PREFIXES)
+            or normalized_key in SHELL_STARTUP_ENVIRONMENT_KEYS
+            or normalized_key.startswith(SHELL_STARTUP_ENVIRONMENT_PREFIXES)
         ):
             environment.pop(key, None)
     for key in tuple(environment):
@@ -296,6 +363,12 @@ def sealed_transport_environment(
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_ALLOW_PROTOCOL": ":".join(protocols),
+            # Delete caller-selected diagnostic endpoints above and disable
+            # the default IPC listener as a second boundary.  GCM does not
+            # require diagnostics to obtain or store the selected credential.
+            "DOTNET_EnableDiagnostics": "0",
+            "DOTNET_EnableDiagnostics_IPC": "0",
+            "COMPlus_EnableDiagnostics": "0",
         }
     )
     if repository_discovery_ceiling is not None:
@@ -312,9 +385,9 @@ def sealed_transport_environment(
 def trusted_git_exec_path() -> Path:
     """Return Git's own absolute helper directory without local config.
 
-    The materializer already depends on the Git executable that starts it.
-    Once that trusted executable reports its exec path, helper resolution must
-    stay below that installation and never search the caller's ``PATH``.
+    The materializer invokes only :func:`trusted_git_executable`.  Once that
+    fixed executable reports its exec path, helper resolution must stay below
+    that installation and never search the caller's ``PATH``.
     """
 
     # Do not query from a Factory or candidate worktree: even a no-network
@@ -499,7 +572,7 @@ def assert_no_local_url_rewrites(repository: Path) -> None:
     """
 
     completed = subprocess.run(
-        ["git", "config", "--local", "--no-includes", "--null", "--list"],
+        git_command(["config", "--local", "--no-includes", "--null", "--list"]),
         cwd=str(repository),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -911,24 +984,25 @@ def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) 
     # forcing it on each top-level Candidate Git command below.
     candidate_run_git(["config", "--local", "core.hooksPath", os.devnull], cwd=repository)
     export = subprocess.Popen(
-        [
-            "git",
-            "-C",
-            str(factory_root),
-            "--no-replace-objects",
-            "fast-export",
-            "--show-original-ids",
-            "main",
-            "--",
-            f"plugins/{plugin_id}",
-        ],
+        git_command(
+            [
+                "-C",
+                str(factory_root),
+                "--no-replace-objects",
+                "fast-export",
+                "--show-original-ids",
+                "main",
+                "--",
+                f"plugins/{plugin_id}",
+            ]
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=trusted_history_environment(),
     )
     assert export.stdout is not None
     imported = subprocess.run(
-        ["git", *candidate_git_arguments(["-C", str(repository), "fast-import", "--quiet"])],
+        git_command(candidate_git_arguments(["-C", str(repository), "fast-import", "--quiet"])),
         stdin=export.stdout,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1254,7 +1328,7 @@ def parse_arguments() -> argparse.Namespace:
         "--credential-helper",
         choices=sorted(PUSH_CREDENTIAL_HELPERS),
         help=(
-            "optional manager/manager-core/osxkeychain helper resolved only from the trusted running Git installation "
+            "optional manager/manager-core/osxkeychain helper resolved only from the fixed trusted platform Git installation "
             "for the sealed push; disabled by default"
         ),
     )

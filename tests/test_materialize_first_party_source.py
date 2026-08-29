@@ -437,6 +437,23 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                         )
                 invoke.assert_not_called()
 
+    def test_materializer_git_processes_use_a_fixed_executable_not_callers_path(self) -> None:
+        # The migration process is started by Python, not Git, so a bare
+        # ``git`` subprocess would resolve through the caller's PATH.  Assert
+        # both the selected immutable platform path and the command builder
+        # used by the common subprocess wrapper.
+        expected = materializer.trusted_git_executable()
+        with patch.dict(os.environ, {"PATH": "C:/attacker-bin"}):
+            self.assertEqual(materializer.trusted_git_executable(), expected)
+        completed = subprocess.CompletedProcess(["git"], 0, stdout=b"git version", stderr=b"")
+        marker = Path("C:/trusted/git.exe")
+        with patch.object(materializer, "trusted_git_executable", return_value=marker):
+            with patch.object(materializer.subprocess, "run", return_value=completed) as invoke:
+                self.assertIs(materializer.run_git(["--version"]), completed)
+        self.assertEqual(invoke.call_args.args[0], [str(marker), "--version"])
+        source = (SCRIPTS / "materialize_first_party_source.py").read_text(encoding="utf-8")
+        self.assertNotIn('["git",', source)
+
     def test_manager_helper_uses_an_absolute_binary_from_the_trusted_git_install(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-credential-manager-") as directory:
             install = Path(directory) / "git-install"
@@ -537,10 +554,15 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     "GCM_TRACE_SECRETS": "1",
                     "GCM_CREDENTIAL_STORE": "cache",
                     "GCM_CREDENTIAL_CACHE_OPTIONS": "--socket=C:/attacker-gcm.sock",
+                    "BASH_ENV": "C:/attacker/bash-startup.sh",
+                    "ENV": "C:/attacker/posix-shell-startup.sh",
+                    "ZDOTDIR": "C:/attacker/zsh-startup",
+                    "BASH_FUNC_capture%%": "() { cat > C:/attacker/credential.txt; }",
                     "DOTNET_STARTUP_HOOKS": "C:/attacker/startup-hook.dll",
                     "DOTNET_ADDITIONAL_DEPS": "C:/attacker/deps",
                     "DOTNET_ROOT": "C:/attacker/dotnet",
                     "DOTNET_EnableDiagnostics": "0",
+                    "DOTNET_DiagnosticPorts": "C:/attacker/diagnostic-port,connect",
                     "CORECLR_ENABLE_PROFILING": "1",
                     "CORECLR_PROFILER": "{attacker-profiler}",
                     "CORECLR_PROFILER_PATH_64": "C:/attacker/profiler.dll",
@@ -585,10 +607,17 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 self.assertNotIn("GCM_TRACE_SECRETS", environment)
                 self.assertNotIn("GCM_CREDENTIAL_STORE", environment)
                 self.assertNotIn("GCM_CREDENTIAL_CACHE_OPTIONS", environment)
+                self.assertNotIn("BASH_ENV", environment)
+                self.assertNotIn("ENV", environment)
+                self.assertNotIn("ZDOTDIR", environment)
+                self.assertNotIn("BASH_FUNC_capture%%", environment)
                 self.assertNotIn("DOTNET_STARTUP_HOOKS", environment)
                 self.assertNotIn("DOTNET_ADDITIONAL_DEPS", environment)
                 self.assertNotIn("DOTNET_ROOT", environment)
-                self.assertNotIn("DOTNET_EnableDiagnostics", environment)
+                self.assertNotIn("DOTNET_DiagnosticPorts", environment)
+                self.assertEqual(environment["DOTNET_EnableDiagnostics"], "0")
+                self.assertEqual(environment["DOTNET_EnableDiagnostics_IPC"], "0")
+                self.assertEqual(environment["COMPlus_EnableDiagnostics"], "0")
                 self.assertNotIn("CORECLR_ENABLE_PROFILING", environment)
                 self.assertNotIn("CORECLR_PROFILER", environment)
                 self.assertNotIn("CORECLR_PROFILER_PATH_64", environment)
