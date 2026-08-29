@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.asset-discovery",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-asset-discovery",
+    "path": "plugins/com.xsec.asset-discovery",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "5f42985762cc2e06d547fa0dfcc6d0fe085268ff",
+    "stableSha": "5e4d7e7129b1f64ae57bd070d700880dfe1129cc"
+  },
+  "legacy": {
+    "factoryRevision": "36d9806c89f82616fe3dab3dec6b3f36d9704bec",
+    "releaseDocumentSha256": "c921d3829196d9cffc42d96e1ae8a7855753ed5d0b12f161ac76635141409c1c",
+    "releaseDocumentB64": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAicGx1Z2luSWQiOiAiY29tLnhzZWMuYXNzZXQtZGlzY292ZXJ5IiwKICAicmVsZWFzZXMiOiBbCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTRiNzBjYzIxZTIwYzRmZWQyNTY2YTQ0MjEzZGVjZDYwMzEwYWE3OTY2MDM4OTY4YzFiMWI0YTgxOGNjYTZhYTgiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMCIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLmFzc2V0LWRpc2NvdmVyeS0xLjIuMC1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiNGUyYzVhN2I0YjEzYmM1MDA0MDk0NzY0NGY1YjJlNzkwYjkzODBmZDhhYzJlNGMzNjg5YWI4ODAwN2IyMzdmNCIKICAgICAgICB9CiAgICAgIF0KICAgIH0sCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LThlY2Q3Mjk3YzBjNjY5ZGIwZTgyZGMzZmRkYTA0YTBmYjBhMmExNWRiMTc2MjIxZTgyZWM1MjQ0NTAxOGQ3M2IiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMSIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLmFzc2V0LWRpc2NvdmVyeS0xLjIuMS1zaGEyNTYtNjZiMTM1MDJlMTk1YTgyYS1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiNjZiMTM1MDJlMTk1YTgyYTFjYWIzM2JiMTBkYjEwYWUwODI0NGE0ZWE3YWExN2NmMjQzNGNjMTAzYzFiMGIyMCIKICAgICAgICB9CiAgICAgIF0KICAgIH0sCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTg1MDEwMmFkMGUwMTRiOThjOTYwN2Y3YzMwYjhhYWYyY2QxNzIzYTRhYTlhMjcwMGZmZmI3M2JhYTNjMzEwZWIiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMiIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLmFzc2V0LWRpc2NvdmVyeS0xLjIuMi1zaGEyNTYtYjlkNjIxNDJhNTkxOThiYy1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiYjlkNjIxNDJhNTkxOThiYzc4MGU0OTljM2M1ZjhmNThiZDIwMWEzNmNkOWIxMWVlMjBmZWVkMWQ5ZWQyOWQ1MyIKICAgICAgICB9CiAgICAgIF0KICAgIH0sCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTk3OGI3M2I0ZjI2NGQ0YTRlNmU0NzBmNmYxNGU5NTE4Y2Q2ZjQ4YjMwOTkzZGRhODMzZTQ3OGI3ZTQ0NWQ2N2QiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMyIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLmFzc2V0LWRpc2NvdmVyeS0xLjIuMy1zaGEyNTYtYTEwYzNkODI3OTBiMzBmMy1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiYTEwYzNkODI3OTBiMzBmM2MyYzllY2Q3NzQwZDY4ZTNhNmM0YjkzODgxOWRiYzE3NjBjMjY1NjRkN2E0ZTdjYiIKICAgICAgICB9CiAgICAgIF0KICAgIH0KICBdLAogICJjaGFubmVscyI6IHsKICAgICJiZXRhIjogewogICAgICAicmVsZWFzZUlkIjogInNoYTI1Ni05NzhiNzNiNGYyNjRkNGE0ZTZlNDcwZjZmMTRlOTUxOGNkNmY0OGIzMDk5M2RkYTgzM2U0NzhiN2U0NDVkNjdkIgogICAgfSwKICAgICJzdGFibGUiOiB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTRiNzBjYzIxZTIwYzRmZWQyNTY2YTQ0MjEzZGVjZDYwMzEwYWE3OTY2MDM4OTY4YzFiMWI0YTgxOGNjYTZhYTgiCiAgICB9CiAgfQp9Cg==",
+    "releaseIds": [
+      "sha256-4b70cc21e20c4fed2566a44213decd60310aa7966038968c1b1b4a818cca6aa8",
+      "sha256-8ecd7297c0c669db0e82dc3fdda04a0fb0a2a15db176221e82ec52445018d73b",
+      "sha256-850102ad0e014b98c9607f7c30b8aaf2cd1723a4aa9a2700fffb73baa3c310eb",
+      "sha256-978b73b4f264d4a4e6e470f6f14e9518cd6f48b30993dda833e478b7e445d67d"
+    ],
+    "releaseRecords": [
+      {
+        "releaseId": "sha256-4b70cc21e20c4fed2566a44213decd60310aa7966038968c1b1b4a818cca6aa8",
+        "version": "1.2.0",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.asset-discovery-1.2.0-any-any.xsec-plugin",
+            "sha256": "4e2c5a7b4b13bc50040947644f5b2e790b9380fd8ac2e4c3689ab88007b237f4"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-8ecd7297c0c669db0e82dc3fdda04a0fb0a2a15db176221e82ec52445018d73b",
+        "version": "1.2.1",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.asset-discovery-1.2.1-sha256-66b13502e195a82a-any-any.xsec-plugin",
+            "sha256": "66b13502e195a82a1cab33bb10db10ae08244a4ea7aa17cf2434cc103c1b0b20"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-850102ad0e014b98c9607f7c30b8aaf2cd1723a4aa9a2700fffb73baa3c310eb",
+        "version": "1.2.2",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.asset-discovery-1.2.2-sha256-b9d62142a59198bc-any-any.xsec-plugin",
+            "sha256": "b9d62142a59198bc780e499c3c5f8f58bd201a36cd9b11ee20feed1d9ed29d53"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-978b73b4f264d4a4e6e470f6f14e9518cd6f48b30993dda833e478b7e445d67d",
+        "version": "1.2.3",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.asset-discovery-1.2.3-sha256-a10c3d82790b30f3-any-any.xsec-plugin",
+            "sha256": "a10c3d82790b30f3c2c9ecd7740d68e3a6c4b938819dbc1760c26564d7a4e7cb"
+          }
+        ]
+      }
+    ]
+  },
+  "channels": {
+    "beta": {
+      "releaseId": "sha256-978b73b4f264d4a4e6e470f6f14e9518cd6f48b30993dda833e478b7e445d67d"
+    },
+    "stable": {
+      "releaseId": "sha256-4b70cc21e20c4fed2566a44213decd60310aa7966038968c1b1b4a818cca6aa8"
+    }
+  }
+}
