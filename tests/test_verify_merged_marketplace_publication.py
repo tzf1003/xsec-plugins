@@ -257,6 +257,15 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.write_inflight_beta_status(
                 root, beta, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=stable["releaseId"]
             )
+            # A publication-side KMS renewal may refresh another active
+            # status proof in the same generated candidate. That proof has no
+            # authority to rewrite its status document, but must not strand a
+            # legitimate main-gate recheck either.
+            other_status = root / ".xsec-factory/official-status/com.example.other.json"
+            write_json(other_status, {"schemaVersion": 1, "pluginId": "com.example.other"})
+            other_proof = root / ".xsec-factory/official-status-proofs/com.example.other.json"
+            other_proof.parent.mkdir(parents=True, exist_ok=True)
+            other_proof.write_text("baseline other status signature\n", encoding="utf-8")
             before = self.commit(root, "beta awaits a reproducible main")
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
             (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
@@ -264,6 +273,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.write_inflight_beta_status(
                 root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"]
             )
+            other_proof.write_text("refreshed other status signature\n", encoding="utf-8")
             after = self.commit(root, "main now reproduces existing beta")
 
             self.assertEqual(

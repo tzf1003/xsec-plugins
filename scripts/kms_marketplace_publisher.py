@@ -395,6 +395,42 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
 
 
+def without_official_status_documents(documents: list[MarketplaceDocument]) -> list[MarketplaceDocument]:
+    """Select the ordinary publisher document set without mutable status.
+
+    The Cloud broker deliberately gives ``official-status`` to the protected
+    source reconciler alone.  Keep the selection here, rather than letting a
+    workflow filter by filename, so every caller still receives the same
+    fixed-path/orphan-proof validation from :func:`marketplace_documents`.
+    """
+
+    return [document for document in documents if document.purpose != OFFICIAL_STATUS_PURPOSE]
+
+
+def documents_for_active_signature_verification(
+    root: Path,
+    *,
+    allow_unsigned_official_status_plugin_id: str | None = None,
+) -> list[MarketplaceDocument]:
+    """Return active documents, optionally withholding one pending status.
+
+    A generated release candidate has all immutable publication sidecars from
+    ``publish.yml`` but intentionally lacks its newly-written status proof.
+    Reconciliation must verify every other active document before it may sign
+    that one status.  The exception is one canonical plugin ID, not a glob and
+    not a general "ignore status" switch.
+    """
+
+    documents = marketplace_documents(root)
+    if allow_unsigned_official_status_plugin_id is None:
+        return documents
+    pending = official_status_document(root, allow_unsigned_official_status_plugin_id)
+    matching = [document for document in documents if document.subject == pending.subject]
+    if len(matching) != 1 or matching[0] != pending:
+        fail("pending official Factory status is not an active Marketplace document")
+    return [document for document in documents if document != pending]
+
+
 def retained_release_document(root: Path, plugin_id: str) -> MarketplaceDocument:
     """Resolve exactly one retained immutable release document for refresh.
 
@@ -884,6 +920,11 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=ROOT, help="marketplace root")
     parser.add_argument("--validate-only", action="store_true", help="validate existing sidecars without acquiring OIDC")
     parser.add_argument(
+        "--exclude-official-status",
+        action="store_true",
+        help="sign or validate every ordinary Marketplace document, never an official status",
+    )
+    parser.add_argument(
         "--verify-retained-release-signature",
         action="store_true",
         help="cryptographically verify one retained releases.json KMS sidecar against the pinned issuer JWKS",
@@ -891,26 +932,52 @@ def main() -> None:
     parser.add_argument(
         "--verify-active-marketplace-signatures",
         action="store_true",
-        help="cryptographically verify every active Marketplace document and return its shared source revision",
+        help="cryptographically verify every active Marketplace document and return the shared immutable-document revision",
+    )
+    parser.add_argument(
+        "--allow-unsigned-official-status-plugin-id",
+        help="with --verify-active-marketplace-signatures, omit exactly one pending official status proof",
     )
     parser.add_argument(
         "--retained-release-plugin-id",
         help="refresh or validate only one current Marketplace immutable releases.json sidecar",
+    )
+    parser.add_argument(
+        "--official-status-plugin-id",
+        help="sign or validate only one canonical official Factory status document",
     )
     args = parser.parse_args()
     if args.verify_retained_release_signature and args.retained_release_plugin_id is None:
         parser.error("--verify-retained-release-signature requires --retained-release-plugin-id")
     if args.verify_retained_release_signature and args.validate_only:
         parser.error("--verify-retained-release-signature cannot be combined with --validate-only")
-    if args.verify_active_marketplace_signatures and (args.validate_only or args.retained_release_plugin_id is not None):
-        parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release or validate-only options")
+    if args.verify_active_marketplace_signatures and (
+        args.validate_only or args.retained_release_plugin_id is not None or args.official_status_plugin_id is not None
+    ):
+        parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release, status-only, or validate-only options")
+    if args.allow_unsigned_official_status_plugin_id is not None and not args.verify_active_marketplace_signatures:
+        parser.error("--allow-unsigned-official-status-plugin-id requires --verify-active-marketplace-signatures")
+    if args.exclude_official_status and (
+        args.retained_release_plugin_id is not None or args.official_status_plugin_id is not None
+    ):
+        parser.error("--exclude-official-status cannot be combined with a single-document selector")
+    if args.retained_release_plugin_id is not None and args.official_status_plugin_id is not None:
+        parser.error("--retained-release-plugin-id and --official-status-plugin-id are mutually exclusive")
     root = args.root.resolve()
     try:
-        documents = (
-            [retained_release_document(root, args.retained_release_plugin_id)]
-            if args.retained_release_plugin_id is not None
-            else marketplace_documents(root)
-        )
+        if args.verify_active_marketplace_signatures:
+            documents = documents_for_active_signature_verification(
+                root,
+                allow_unsigned_official_status_plugin_id=args.allow_unsigned_official_status_plugin_id,
+            )
+        elif args.retained_release_plugin_id is not None:
+            documents = [retained_release_document(root, args.retained_release_plugin_id)]
+        elif args.official_status_plugin_id is not None:
+            documents = [official_status_document(root, args.official_status_plugin_id)]
+        else:
+            documents = marketplace_documents(root)
+            if args.exclude_official_status:
+                documents = without_official_status_documents(documents)
         if args.verify_retained_release_signature:
             document = documents[0]
             sidecar = sidecar_path_for(document)
@@ -920,15 +987,38 @@ def main() -> None:
             print("cryptographically verified 1 retained KMS marketplace sidecar")
             return
         if args.verify_active_marketplace_signatures:
-            revisions: set[str] = set()
+            if not documents:
+                fail("active Marketplace signature verification has no documents")
+            immutable_revisions: set[str] = set()
             for document in documents:
                 sidecar = sidecar_path_for(document)
                 if is_link(sidecar) or not sidecar.is_file():
                     fail(f"KMS sidecar is unavailable: {sidecar}")
-                revisions.add(verify_historical_sidecar_signature(sidecar.read_bytes(), document))
-            if len(revisions) != 1:
-                fail("active Marketplace KMS sidecars do not share one source revision")
-            print(stable_json({"documents": len(documents), "source_revision": revisions.pop()}).decode("utf-8"), end="")
+                revision = verify_historical_sidecar_signature(sidecar.read_bytes(), document)
+                # A Factory status is independently reconciled and may be
+                # renewed for one plugin while the rest of the Marketplace
+                # is unchanged. Its proof must still verify, but cannot force
+                # unrelated immutable index/release/provenance documents to
+                # be re-signed (which Cloud now correctly disallows from the
+                # reconcile-only workflow identity).
+                if document.purpose != OFFICIAL_STATUS_PURPOSE:
+                    immutable_revisions.add(revision)
+            if len(immutable_revisions) != 1:
+                fail("active immutable Marketplace KMS sidecars do not share one source revision")
+            print(
+                stable_json(
+                    {
+                        "documents": len(documents),
+                        "source_revision": immutable_revisions.pop(),
+                        **(
+                            {"unsigned_official_status_plugin_id": args.allow_unsigned_official_status_plugin_id}
+                            if args.allow_unsigned_official_status_plugin_id is not None
+                            else {}
+                        ),
+                    }
+                ).decode("utf-8"),
+                end="",
+            )
             return
         source_revision = source_revision_from_environment(os.environ)
         if args.validate_only:

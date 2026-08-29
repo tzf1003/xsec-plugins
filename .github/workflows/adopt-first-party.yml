@@ -119,12 +119,12 @@ jobs:
       - name: Request KMS sidecars through the production Cloud broker
         env:
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.factory.outputs.revision }}
-        run: python scripts/kms_marketplace_publisher.py --root .
+        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status
       - name: Require the signed adoption before any write
         env:
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.factory.outputs.revision }}
         run: |
-          python scripts/kms_marketplace_publisher.py --root . --validate-only
+          python scripts/kms_marketplace_publisher.py --root . --exclude-official-status --validate-only
           python scripts/external_source_factory.py validate
       - name: Open a signed activation PR for independent review
         env:

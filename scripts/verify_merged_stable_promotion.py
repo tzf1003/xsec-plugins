@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from build_market import load_release_document
+from kms_marketplace_publisher import MarketplaceKmsPublisherError, marketplace_documents, sidecar_path_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -556,7 +557,14 @@ def verify_stable_maintenance(root: Path, before: str, after: str, paths: list[s
     }
 
 
-def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str]) -> dict[str, object]:
+def verify_beta_smoke_ready(
+    root: Path,
+    before: str,
+    after: str,
+    paths: list[str],
+    *,
+    allow_unsigned_official_status_plugin_id: str | None = None,
+) -> dict[str, object]:
     """Authenticate one no-pointer main-gate recheck for an existing Beta.
 
     A source ``main`` event can make an already immutable Beta reproducible
@@ -577,10 +585,14 @@ def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str
     proof_path = f".xsec-factory/official-publication-proofs/{plugin_id}.json"
     status_path = f".xsec-factory/official-status/{plugin_id}.json"
     status_proof_path = f".xsec-factory/official-status-proofs/{plugin_id}.json"
-    required_paths = {MARKETPLACE_SIDECAR, release_sidecar, proof_path, status_path, status_proof_path}
+    required_paths = {MARKETPLACE_SIDECAR, release_sidecar, proof_path, status_path}
+    if allow_unsigned_official_status_plugin_id is None:
+        required_paths.add(status_proof_path)
+    elif allow_unsigned_official_status_plugin_id != plugin_id:
+        fail("pending status authentication does not match the no-pointer Beta plugin")
     if not required_paths.issubset(paths):
         fail("no-pointer Beta smoke transition must refresh Marketplace, release, provenance, and status sidecars")
-    if not git_succeeds(root, ["cat-file", "-e", f"{after}:{status_proof_path}"]):
+    if allow_unsigned_official_status_plugin_id is None and not git_succeeds(root, ["cat-file", "-e", f"{after}:{status_proof_path}"]):
         fail("no-pointer Beta smoke transition must retain its status KMS proof")
     marketplace = json_blob(root, after, MARKETPLACE_INDEX, "retained Marketplace index")
     entries = marketplace.get("plugins")
@@ -602,8 +614,23 @@ def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str
         if match is None:
             fail("no-pointer Beta smoke transition retained Marketplace source path is not canonical")
         active_release_sidecars.add(f"plugins/{match.group(1)}/.xsec-market/releases.json.sig.jws.json")
+    # A normal KMS renewal can refresh proof sidecars for every *other* active
+    # Factory document while this one status changes.  These are signatures,
+    # not source-of-truth documents, so allow the exact sidecar set derived
+    # from the post-change Marketplace layout and still reject any underlying
+    # status/provenance/release/index content rewrite for another plugin.
+    try:
+        root_resolved = root.resolve(strict=True)
+        active_kms_sidecars = {
+            sidecar_path_for(document).resolve(strict=False).relative_to(root_resolved).as_posix()
+            for document in marketplace_documents(root)
+        }
+    except (MarketplaceKmsPublisherError, OSError, ValueError) as error:
+        raise PromotionVerificationError("no-pointer Beta smoke transition has an invalid active KMS document layout") from error
+    if not active_release_sidecars.issubset(active_kms_sidecars):
+        fail("no-pointer Beta smoke transition active release sidecar allowlist is incomplete")
     for path in paths:
-        if path in required_paths or path in active_release_sidecars:
+        if path in required_paths or path in active_kms_sidecars:
             continue
         fail(f"no-pointer Beta smoke transition changed an unauthorized path: {path}")
     for path, label in ((MARKETPLACE_INDEX, "Marketplace index"), (release_path, "Beta release index"), (evidence_path, "Beta provenance")):
@@ -718,7 +745,13 @@ def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str
     }
 
 
-def classify_merged_change(root: Path, before: str, after: str) -> dict[str, object]:
+def classify_merged_change(
+    root: Path,
+    before: str,
+    after: str,
+    *,
+    allow_unsigned_official_status_plugin_id: str | None = None,
+) -> dict[str, object]:
     """Return ``none`` for ordinary commits, without reading commit metadata."""
 
     paths = changed_paths(root, before, after)
@@ -753,7 +786,13 @@ def classify_merged_change(root: Path, before: str, after: str) -> dict[str, obj
             # must authenticate as the exact no-pointer Stable completion.
             if git_succeeds(root, ["cat-file", "-e", f"{after}:{REGISTRY_PATH}"]):
                 try:
-                    return verify_beta_smoke_ready(root, before, after, paths)
+                    return verify_beta_smoke_ready(
+                        root,
+                        before,
+                        after,
+                        paths,
+                        allow_unsigned_official_status_plugin_id=allow_unsigned_official_status_plugin_id,
+                    )
                 except PromotionVerificationError as beta_error:
                     try:
                         return verify_stable_maintenance(root, before, after, paths)
@@ -785,6 +824,10 @@ def main() -> int:
     parser.add_argument("--after", required=True)
     parser.add_argument("--channel", choices=("beta", "stable"))
     parser.add_argument("--classify", action="store_true")
+    parser.add_argument(
+        "--allow-unsigned-official-status-plugin-id",
+        help="only while authenticating one pending reconcile candidate status",
+    )
     parser.add_argument("--verify-first-party-adoption-candidate", action="store_true")
     parser.add_argument("--verify-retained-sidecar-refresh-candidate", action="store_true")
     args = parser.parse_args()
@@ -798,10 +841,17 @@ def main() -> int:
     )
     if modes != 1:
         parser.error("supply exactly one verification mode")
+    if args.allow_unsigned_official_status_plugin_id is not None and not args.classify:
+        parser.error("--allow-unsigned-official-status-plugin-id requires --classify")
     try:
         root = args.root.resolve()
         if args.classify:
-            result = classify_merged_change(root, args.before, args.after)
+            result = classify_merged_change(
+                root,
+                args.before,
+                args.after,
+                allow_unsigned_official_status_plugin_id=args.allow_unsigned_official_status_plugin_id,
+            )
         elif args.channel is not None:
             result = verify_merged_publication(root, args.before, args.after, args.channel)
         elif args.verify_first_party_adoption_candidate:

@@ -116,12 +116,12 @@ jobs:
         if: ${{ steps.promote.outputs.changed == 'true' }}
         env:
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
-        run: python scripts/kms_marketplace_publisher.py --root .
+        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status
       - name: Gate the KMS sidecar protocol before publishing
         if: ${{ steps.promote.outputs.changed == 'true' }}
         env:
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
-        run: python scripts/kms_marketplace_publisher.py --root . --validate-only
+        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status --validate-only
       - name: Publish the stable pointer through a protected pull request
         id: publish
         if: ${{ steps.promote.outputs.changed == 'true' }}
