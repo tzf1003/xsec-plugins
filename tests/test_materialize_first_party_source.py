@@ -294,6 +294,44 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     )
             invoke.assert_not_called()
 
+    def test_push_rejects_local_http_proxy_ca_and_resolution_overrides_before_remote_preflight(self) -> None:
+        overrides = {
+            "http.proxy": "http://attacker.invalid:8080",
+            "http.https://github.com.proxy": "http://attacker.invalid:8080",
+            "http.sslCAInfo": "C:/attacker-ca.pem",
+            "http.sslCAPath": "C:/attacker-ca-directory",
+            "http.curloptResolve": "github.com:443:127.0.0.1",
+        }
+        for key, value in overrides.items():
+            with self.subTest(key=key), tempfile.TemporaryDirectory(prefix="xsec-materializer-http-override-") as directory:
+                repository = Path(directory) / "candidate"
+                git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+                git(repository, "config", key, value)
+                with patch.object(materializer, "run_git") as invoke:
+                    with self.assertRaisesRegex(materializer.MaterializationError, "HTTP transport override"):
+                        materializer.push_candidate(
+                            repository,
+                            PLUGIN_ID,
+                            "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                            "manager",
+                        )
+                invoke.assert_not_called()
+
+    def test_push_rejects_a_local_include_before_remote_preflight(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-include-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            git(repository, "config", "include.path", "C:/attacker.gitconfig")
+            with patch.object(materializer, "run_git") as invoke:
+                with self.assertRaisesRegex(materializer.MaterializationError, "Git include configuration"):
+                    materializer.push_candidate(
+                        repository,
+                        PLUGIN_ID,
+                        "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                        "manager",
+                    )
+            invoke.assert_not_called()
+
     def test_push_rejects_a_candidate_without_the_materializer_hook_seal(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-missing-hook-seal-") as directory:
             repository = Path(directory) / "candidate"
@@ -317,7 +355,16 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 stdout = f"{os.devnull}\n".encode("utf-8") if arguments[-1:] == ["core.hooksPath"] else b""
                 return subprocess.CompletedProcess(["git", *arguments], 0, stdout=stdout, stderr=b"")
 
-            with patch.dict(os.environ, {"GIT_CONFIG": "injected", "HTTPS_PROXY": "https://attacker.invalid"}):
+            with patch.dict(
+                os.environ,
+                {
+                    "GIT_CONFIG": "injected",
+                    "HTTPS_PROXY": "https://attacker.invalid",
+                    "GIT_TRACE_CURL": "1",
+                    "GIT_TRACE_REDACT": "0",
+                    "GIT_EXEC_PATH": "C:/attacker-git-exec-path",
+                },
+            ):
                 with patch.object(materializer, "run_git", side_effect=fake_git):
                     materializer.push_candidate(
                         repository,
@@ -342,6 +389,9 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
                 self.assertNotIn("GIT_CONFIG", environment)
                 self.assertNotIn("HTTPS_PROXY", environment)
+                self.assertNotIn("GIT_TRACE_CURL", environment)
+                self.assertNotIn("GIT_TRACE_REDACT", environment)
+                self.assertNotIn("GIT_EXEC_PATH", environment)
 
     def test_ssh_target_uses_a_safe_openssh_command_without_user_host_rewrites(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-sealed-ssh-") as directory:
