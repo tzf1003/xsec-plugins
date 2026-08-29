@@ -60,6 +60,8 @@ TRANSPORT_ENVIRONMENT_KEYS = (
     "GIT_TRACE_REDACT",
     "GIT_CURL_VERBOSE",
     "GIT_SSL_NO_VERIFY",
+    "GIT_SSL_CAINFO",
+    "GIT_SSL_CAPATH",
     "GIT_HTTP_PROXY",
     "HTTP_PROXY",
     "http_proxy",
@@ -252,6 +254,91 @@ def sealed_transport_environment(
     return environment
 
 
+def trusted_git_exec_path() -> Path:
+    """Return Git's own absolute helper directory without local config.
+
+    The materializer already depends on the Git executable that starts it.
+    Once that trusted executable reports its exec path, helper resolution must
+    stay below that installation and never search the caller's ``PATH``.
+    """
+
+    # Do not query from a Factory or candidate worktree: even a no-network
+    # command should not consult repository-local configuration while this
+    # helper location is being selected for a credentialed operation.
+    with tempfile.TemporaryDirectory(prefix="xsec-git-exec-path-") as directory:
+        transport_root = Path(directory)
+        output = run_git(
+            ["--exec-path"],
+            cwd=transport_root,
+            environment=sealed_transport_environment(
+                protocols=(),
+                repository_discovery_ceiling=transport_root,
+            ),
+        ).stdout.decode("utf-8", errors="strict").strip()
+    path = Path(output)
+    if not output or not path.is_absolute():
+        fail("Git did not provide an absolute executable helper path")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise MaterializationError("Git executable helper path is unavailable") from error
+    if not resolved.is_dir():
+        fail("Git executable helper path is not a directory")
+    return resolved
+
+
+def resolve_approved_credential_helper(credential_helper: str) -> str:
+    """Return a shell-quoted absolute helper command from the Git install.
+
+    Git expands ``credential.helper=manager`` by executing ``git
+    credential-manager``.  That otherwise lets the operator's ``PATH`` choose
+    the program that handles an OAuth/PAT credential.  A helper string that
+    starts with ``!`` is an intentional custom command; we generate it only
+    from an existing, absolute executable below Git's own exec path, and never
+    accept an operator supplied command or path.
+    """
+
+    if credential_helper not in PUSH_CREDENTIAL_HELPERS:
+        fail("credential helper is not an approved platform-provided helper")
+    exec_path = trusted_git_exec_path()
+    names = {
+        "manager": ("git-credential-manager.exe", "git-credential-manager"),
+        # Git Credential Manager has used both names across releases.  The
+        # command remains fixed to a binary inside this Git installation.
+        "manager-core": (
+            "git-credential-manager-core.exe",
+            "git-credential-manager-core",
+            "git-credential-manager.exe",
+            "git-credential-manager",
+        ),
+        "osxkeychain": ("git-credential-osxkeychain",),
+        "libsecret": ("git-credential-libsecret",),
+        "cache": ("git-credential-cache",),
+    }[credential_helper]
+    directories = [exec_path]
+    # Git for Windows keeps the Credential Manager binary in ``mingw*/bin``
+    # while reporting ``mingw*/libexec/git-core`` as its helper path.  Both
+    # locations are derived from the same trusted Git installation, not PATH.
+    if exec_path.name == "git-core" and exec_path.parent.name == "libexec":
+        directories.append(exec_path.parents[1] / "bin")
+    for directory in directories:
+        for name in names:
+            candidate = directory / name
+            try:
+                executable = candidate.resolve(strict=True)
+            except OSError:
+                continue
+            if not executable.is_file():
+                continue
+            if os.name != "nt" and not os.access(executable, os.X_OK):
+                continue
+            # ``shlex.quote`` is required because Git executes an explicit
+            # ``!`` helper through its shell.  The path is absolute and
+            # entirely derived above, so no caller text can become shell code.
+            return "!" + shlex.quote(executable.as_posix())
+    fail(f"approved Git credential helper '{credential_helper}' is unavailable in this Git installation")
+
+
 def sealed_transport_arguments(*, protocols: tuple[str, ...], credential_helper: str | None = None) -> list[str]:
     """Return Git options paired with :func:`sealed_transport_environment`."""
 
@@ -272,7 +359,7 @@ def sealed_transport_arguments(*, protocols: tuple[str, ...], credential_helper:
         "protocol.allow=never",
     ]
     if credential_helper is not None:
-        arguments.extend(["-c", f"credential.helper={credential_helper}"])
+        arguments.extend(["-c", f"credential.helper={resolve_approved_credential_helper(credential_helper)}"])
     for protocol in protocols:
         arguments.extend(["-c", f"protocol.{protocol}.allow=always"])
     return arguments
@@ -296,9 +383,19 @@ def candidate_environment(extra: dict[str, str] | None = None) -> dict[str, str]
 
 
 def candidate_git_arguments(arguments: list[str]) -> list[str]:
-    """Force every candidate-repository Git command to ignore all hooks."""
+    """Disable candidate-controlled executable hooks during local checks."""
 
-    return ["-c", f"core.hooksPath={os.devnull}", *arguments]
+    return [
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        # ``git status`` otherwise consults a locally configured fsmonitor
+        # hook while validating the candidate.  A generated source repository
+        # never needs it, and it must not receive an opportunity to alter the
+        # local transport config before the credentialed push.
+        "core.fsmonitor=false",
+        *arguments,
+    ]
 
 
 def candidate_run_git(
@@ -359,6 +456,14 @@ def assert_no_local_url_rewrites(repository: Path) -> None:
         # the later push cannot load a URL or HTTP override through it.
         if key == "include.path" or (key.startswith("includeif.") and key.endswith(".path")):
             fail("materialized source repository must not contain Git include configuration")
+        # Worktree-scoped configuration lives in ``config.worktree`` and is
+        # not returned by ``git config --local``.  Reject the opt-in instead
+        # of attempting to validate a second, candidate-controlled config
+        # file; ordinary source candidates do not use linked worktrees.
+        if key == "extensions.worktreeconfig":
+            fail("materialized source repository must not enable Git worktree-specific configuration")
+        if key == "core.fsmonitor":
+            fail("materialized source repository must not contain Git fsmonitor configuration")
         if key.startswith("url.") and key.endswith((".insteadof", ".pushinsteadof")):
             fail("materialized source repository must not contain Git URL rewrite configuration")
         # Git supports global and URL-scoped HTTP settings, for example
@@ -1008,6 +1113,10 @@ def push_candidate(repository: Path, plugin_id: str, target: str, credential_hel
         fail("materialization candidate must retain its disabled local Git hook path before push")
     if candidate_git_stdout(["status", "--porcelain", "--untracked-files=all"], cwd=repository):
         fail("materialization candidate must be clean before its one-time push")
+    # Keep this check after ``status`` as well.  Candidate commands force
+    # ``core.fsmonitor=false``, but the last local-config inspection must
+    # still happen after every command that might refresh repository state.
+    assert_no_local_url_rewrites(repository)
     assert_no_factory_content(repository, "refs/heads/main")
     assert_no_factory_content(repository, "refs/heads/beta")
     # Preflight away from the candidate repository so neither a local URL
@@ -1031,10 +1140,16 @@ def push_candidate(repository: Path, plugin_id: str, target: str, credential_hel
         ).stdout
     if heads.strip():
         fail("target already has main or beta; materialization refuses to overwrite or force-push")
+    # There is deliberately no candidate-repository Git command between this
+    # final inspection and the write.  This makes the HTTP/URL/worktree seal
+    # apply to the exact configuration consumed by the credentialed push.
+    assert_no_local_url_rewrites(repository)
     run_git(
         [
             "-c",
             f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
             *sealed_transport_arguments(protocols=protocols, credential_helper=credential_helper),
             "push",
             "--atomic",

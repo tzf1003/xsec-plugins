@@ -332,6 +332,104 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     )
             invoke.assert_not_called()
 
+    def test_push_rejects_worktree_scoped_configuration_before_remote_preflight(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-worktree-config-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            git(repository, "config", "extensions.worktreeConfig", "true")
+            # The extension causes an ordinary later push to read
+            # ``.git/config.worktree``.  The materializer rejects the opt-in
+            # before that extra candidate-controlled file can be consulted.
+            (repository / ".git" / "config.worktree").write_text(
+                "[http]\n\tproxy = http://attacker.invalid:8080\n",
+                encoding="utf-8",
+            )
+            with patch.object(materializer, "run_git") as invoke:
+                with self.assertRaisesRegex(materializer.MaterializationError, "worktree-specific configuration"):
+                    materializer.push_candidate(
+                        repository,
+                        PLUGIN_ID,
+                        "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                        "manager",
+                    )
+            invoke.assert_not_called()
+
+    def test_push_rejects_a_local_fsmonitor_before_remote_preflight(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-fsmonitor-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            git(repository, "config", "core.fsmonitor", "C:/attacker-fsmonitor.exe")
+            with patch.object(materializer, "run_git") as invoke:
+                with self.assertRaisesRegex(materializer.MaterializationError, "fsmonitor configuration"):
+                    materializer.push_candidate(
+                        repository,
+                        PLUGIN_ID,
+                        "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                        "manager",
+                    )
+            invoke.assert_not_called()
+
+    def test_manager_helper_uses_an_absolute_binary_from_the_trusted_git_install(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-credential-manager-") as directory:
+            install = Path(directory) / "git-install"
+            exec_path = install / "mingw64" / "libexec" / "git-core"
+            manager = install / "mingw64" / "bin" / "git-credential-manager.exe"
+            exec_path.mkdir(parents=True)
+            manager.parent.mkdir(parents=True)
+            manager.write_bytes(b"platform helper")
+            completed = subprocess.CompletedProcess(
+                ["git", "--exec-path"],
+                0,
+                stdout=(str(exec_path) + "\n").encode("utf-8"),
+                stderr=b"",
+            )
+            with patch.dict(os.environ, {"PATH": "C:/attacker-bin"}):
+                with patch.object(materializer, "run_git", return_value=completed) as invoke:
+                    arguments = materializer.sealed_transport_arguments(protocols=("https",), credential_helper="manager")
+            helper_values = [value for option, value in zip(arguments, arguments[1:]) if option == "-c" and value.startswith("credential.helper=!")]
+            self.assertEqual(helper_values, [f"credential.helper=!{materializer.shlex.quote(manager.resolve().as_posix())}"])
+            self.assertNotIn("credential.helper=manager", arguments)
+            self.assertEqual(invoke.call_args.args[0], ["--exec-path"])
+            environment = invoke.call_args.kwargs["environment"]
+            self.assertNotIn("GIT_EXEC_PATH", environment)
+
+    def test_candidate_git_checks_disable_fsmonitor(self) -> None:
+        arguments = materializer.candidate_git_arguments(["status", "--porcelain"])
+        self.assertIn("core.fsmonitor=false", arguments)
+
+    def test_push_revalidates_transport_configuration_after_status_and_before_write(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-revalidate-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            events: list[str] = []
+
+            def fake_candidate_stdout(arguments: list[str], **kwargs: object) -> str:
+                if arguments[:2] == ["status", "--porcelain"]:
+                    events.append("status")
+                return ""
+
+            def fake_transport_assertion(candidate: Path) -> None:
+                self.assertEqual(candidate, repository)
+                events.append("assert-transport")
+
+            def fake_git(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+                if "push" in arguments:
+                    events.append("push")
+                return subprocess.CompletedProcess(["git", *arguments], 0, stdout=b"", stderr=b"")
+
+            with patch.object(materializer, "assert_no_local_url_rewrites", side_effect=fake_transport_assertion):
+                with patch.object(materializer, "git_stdout", return_value=os.devnull):
+                    with patch.object(materializer, "candidate_git_stdout", side_effect=fake_candidate_stdout):
+                        with patch.object(materializer, "resolve_approved_credential_helper", return_value="!/trusted/manager"):
+                            with patch.object(materializer, "run_git", side_effect=fake_git):
+                                materializer.push_candidate(
+                                    repository,
+                                    PLUGIN_ID,
+                                    "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                                    "manager",
+                                )
+            self.assertEqual(events, ["assert-transport", "status", "assert-transport", "assert-transport", "push"])
+
     def test_push_rejects_a_candidate_without_the_materializer_hook_seal(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-missing-hook-seal-") as directory:
             repository = Path(directory) / "candidate"
@@ -363,15 +461,18 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     "GIT_TRACE_CURL": "1",
                     "GIT_TRACE_REDACT": "0",
                     "GIT_EXEC_PATH": "C:/attacker-git-exec-path",
+                    "GIT_SSL_CAINFO": "C:/attacker-ca.pem",
+                    "GIT_SSL_CAPATH": "C:/attacker-ca-directory",
                 },
             ):
-                with patch.object(materializer, "run_git", side_effect=fake_git):
-                    materializer.push_candidate(
-                        repository,
-                        PLUGIN_ID,
-                        "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
-                        "manager",
-                    )
+                with patch.object(materializer, "resolve_approved_credential_helper", return_value="!/trusted/git-credential-manager"):
+                    with patch.object(materializer, "run_git", side_effect=fake_git):
+                        materializer.push_candidate(
+                            repository,
+                            PLUGIN_ID,
+                            "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                            "manager",
+                        )
             remote_calls = [(arguments, kwargs) for arguments, kwargs in calls if "ls-remote" in arguments or "push" in arguments]
             self.assertEqual(len(remote_calls), 2)
             preflight_arguments, preflight_kwargs = remote_calls[0]
@@ -381,7 +482,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             self.assertIn("push", push_arguments)
             self.assertEqual(push_kwargs["cwd"], repository)
             self.assertIn("credential.helper=", preflight_arguments)
-            self.assertLess(push_arguments.index("credential.helper="), push_arguments.index("credential.helper=manager"))
+            self.assertLess(push_arguments.index("credential.helper="), push_arguments.index("credential.helper=!/trusted/git-credential-manager"))
             for _, kwargs in calls:
                 environment = kwargs["environment"]
                 assert isinstance(environment, dict)
@@ -392,6 +493,8 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 self.assertNotIn("GIT_TRACE_CURL", environment)
                 self.assertNotIn("GIT_TRACE_REDACT", environment)
                 self.assertNotIn("GIT_EXEC_PATH", environment)
+                self.assertNotIn("GIT_SSL_CAINFO", environment)
+                self.assertNotIn("GIT_SSL_CAPATH", environment)
 
     def test_ssh_target_uses_a_safe_openssh_command_without_user_host_rewrites(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-sealed-ssh-") as directory:
