@@ -113,10 +113,12 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         final_merge = FINAL_MERGE_WORKFLOW.read_text(encoding="utf-8")
         protection = PROTECTION_WORKFLOW.read_text(encoding="utf-8")
         readme = README.read_text(encoding="utf-8")
+        factory_document = (ROOT / "docs" / "first-party-plugin-factory.md").read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", arm)
         self.assertNotIn("actions/checkout", arm)
         self.assertIn("factory_generated=true", arm)
         self.assertIn("factory_generated=false", arm)
+        self.assertIn("xsec-marketplace/adopt-first-party-", arm)
         self.assertIn("commits/${PR_HEAD_SHA}/pulls?per_page=100", arm)
         self.assertIn("factory_for_sha", arm)
         self.assertIn('.state == "open"', arm)
@@ -133,7 +135,12 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("factory-final-merge-gate", final_merge)
         self.assertIn("stable-maintenance", final_merge)
         self.assertIn("external-stable-*", final_merge)
+        self.assertIn("adopt-first-party-*", final_merge)
+        self.assertIn("validate --baseline-root .", final_merge)
+        self.assertIn("factory-publication-sources.json", final_merge)
         self.assertIn("-f sha=\"$HEAD_SHA\"", final_merge)
+        self.assertIn("trap restore_pending_on_exit EXIT", final_merge)
+        self.assertIn("merge_completed=false", final_merge)
         self.assertIn("reviewThreads(first:100,after:$cursor)", final_merge)
         self.assertIn("pageInfo{hasNextPage endCursor}", final_merge)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
@@ -141,6 +148,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("factory_main_protection_policy.py", protection)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", readme)
         self.assertIn("factory-final-merge-gate", readme)
+        self.assertIn("跨 REST pages 的精确 head Codex review", factory_document)
         self.assertNotIn("requiring that check and GitHub merge queue", readme)
 
     def test_pending_generated_pr_scan_is_paginated_before_every_kms_call(self) -> None:
@@ -201,6 +209,14 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         workflow = ARM_FINAL_GATE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('gh api --paginate --slurp "repos/${REPOSITORY}/commits/${PR_HEAD_SHA}/pulls?per_page=100"', workflow)
         self.assertIn("any(.[][]; .state == \"open\"", workflow)
+
+    def test_final_gate_and_post_merge_dispatcher_paginate_exact_head_codex_reviews(self) -> None:
+        for workflow_path in (FINAL_MERGE_WORKFLOW, POST_MERGE_DISPATCHER):
+            workflow = workflow_path.read_text(encoding="utf-8")
+            with self.subTest(workflow=workflow_path.name):
+                self.assertIn('gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${', workflow)
+                self.assertIn('reviews?per_page=100")', workflow)
+                self.assertIn('any(.[][]; (.user.login == "chatgpt-codex-connector[bot]"', workflow)
 
 
 if __name__ == "__main__":

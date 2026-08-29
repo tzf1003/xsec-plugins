@@ -1059,6 +1059,21 @@ export function renderPlaceholder() {}
         self.assertIn('REF_PROTECTED: ${{ github.ref_protected }}', workflow)
         self.assertIn('[ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]', workflow)
         self.assertIn('[ "$REF_PROTECTED" != "true" ]', workflow)
+        classify_job = workflow.split("  classify-generated-main-change:\n", 1)[1].split("  sign-and-publish:\n", 1)[0]
+        # GitHub skips a job whose dependency was skipped, regardless of the
+        # downstream condition.  A protected-main manual dispatch must give
+        # the classifier a successful, explicit non-generated result so the
+        # external Beta/Stable request can reach the signing gate.  Pushes
+        # remain the only event that classifies a main merge range.
+        self.assertIn("github.event_name == 'workflow_dispatch'", classify_job)
+        self.assertIn("if: ${{ github.event_name == 'push' }}", classify_job)
+        self.assertIn('EVENT_NAME: ${{ github.event_name }}', classify_job)
+        self.assertIn('[ "$EVENT_NAME" = "workflow_dispatch" ]', classify_job)
+        self.assertIn('echo "generated=false" >> "$GITHUB_OUTPUT"', classify_job)
+        self.assertLess(
+            classify_job.index('[ "$EVENT_NAME" = "workflow_dispatch" ]'),
+            classify_job.index('[[ "$BEFORE" =~ ^[a-f0-9]{40}$'),
+        )
         signing_job = workflow.split("  sign-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
         self.assertIn("needs: [enforce-publish-ref, classify-generated-main-change]", signing_job)
         self.assertIn("needs.enforce-publish-ref.result == 'success'", signing_job)

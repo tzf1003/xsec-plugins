@@ -153,13 +153,16 @@ Stable、sidecar repair 和 adoption 工作流都先拒绝任何尚未合并的
 
 `arm-generated-marketplace-final-merge.yml` 使用 `pull_request_target`，只读取可信的默认分支
 workflow 和 GitHub 注入的 PR metadata，**从不 checkout 或执行 PR head**。它为同仓、受允许
-`xsec-marketplace/*` Factory 分支写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
+`xsec-marketplace/*` Factory 分支（包括 `adopt-first-party-*`）写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
 success/not-applicable，故所需的 Factory context 不会卡住普通产品、文档或 fork PR。完成
 source gate、Codex review 且所有 Codex thread resolve 后，受保护 `production` 环境中的
 maintainer 必须手工运行 `final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live
 PR 的 head/base，使用精确 head SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref、
-source gate 与分页后的全部 reviewThreads，然后才设置 success 并立即 exact-head squash merge。
-任一检查或 merge 失败均保持/恢复 pending；不会因为可编辑 title、过期 green check 或事后
+source gate 与跨 REST pages 的精确 head Codex review、分页后的全部 reviewThreads，然后才设置
+success 并立即 exact-head squash merge。first-party adoption 也走同一个门禁：它只能激活一个
+`pending-adoption` Registry 行，并在合并前后两次重新读取该 proof 绑定的外部 `beta` 与 `main`
+分支头。success 只在 exact-head merge 调用的最小窗口存在；取消、runner 异常或 merge 拒绝时的
+EXIT/SIGTERM trap 都会将该 SHA 恢复为 pending。任一检查或 merge 失败均保持/恢复 pending；不会因为可编辑 title、过期 green check 或事后
 post-merge 拒绝而让 stale PR 合入。
 唯一允许的 no-pointer 例外是当前 Stable 已选中当前 Beta 的 registered external Stable completion：
 它必须只包含严格形状的已签名 provenance/status 更新，重新校验外部 `main` ref 后才可合并，且不会

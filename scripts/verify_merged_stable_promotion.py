@@ -103,6 +103,24 @@ def release_document_from_blob(plugin_id: str, payload: bytes) -> dict[str, obje
             raise PromotionVerificationError(f"merged release history is invalid for {plugin_id}: {error}") from error
 
 
+def empty_release_document(plugin_id: str) -> dict[str, object]:
+    """Return the exact v2 in-memory shape for a plugin with no prior release.
+
+    ``build_market.load_release_document`` deliberately treats a missing
+    release index as an empty history so the Factory can publish a newly added
+    plugin for the first time.  Protected-main verification must use the same
+    baseline semantics, while still requiring the post-change index to exist
+    and pass the strict parser.
+    """
+
+    return {
+        "schemaVersion": 2,
+        "pluginId": plugin_id,
+        "releases": [],
+        "channels": {"beta": {"releaseId": None}, "stable": None},
+    }
+
+
 def release_pointer(document: dict[str, object], channel: str) -> str | None:
     channels = document.get("channels")
     pointer = channels.get(channel) if isinstance(channels, dict) else None
@@ -246,7 +264,10 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         sidecar = f"plugins/{plugin_id}/.xsec-market/releases.json.sig.jws.json"
         if sidecar not in paths:
             fail("merged publication must refresh every changed release KMS sidecar")
-        before_document = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{before}:{release_path}"]))
+        if git_succeeds(root, ["cat-file", "-e", f"{before}:{release_path}"]):
+            before_document = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{before}:{release_path}"]))
+        else:
+            before_document = empty_release_document(plugin_id)
         after_document = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{after}:{release_path}"]))
         before_stable = release_pointer(before_document, "stable")
         after_stable = release_pointer(after_document, "stable")

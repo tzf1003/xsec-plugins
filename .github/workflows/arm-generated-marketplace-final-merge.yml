@@ -45,9 +45,9 @@ jobs:
           # status would reflect only the final page and an ordinary PR sharing
           # this SHA could overwrite a Factory candidate's pending status.
           associated="$(gh api --paginate --slurp "repos/${REPOSITORY}/commits/${PR_HEAD_SHA}/pulls?per_page=100")"
-          factory_for_sha="$(printf '%s' "$associated" | jq -e --arg repo "$REPOSITORY" 'any(.[][]; .state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-")))' >/dev/null && echo true || echo false)"
+          factory_for_sha="$(printf '%s' "$associated" | jq -e --arg repo "$REPOSITORY" 'any(.[][]; .state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-") or startswith("xsec-marketplace/adopt-first-party-")))' >/dev/null && echo true || echo false)"
           case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in
-            "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*) event_factory=true ;;
+            "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*) event_factory=true ;;
             *) event_factory=false ;;
           esac
           if [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ]; then

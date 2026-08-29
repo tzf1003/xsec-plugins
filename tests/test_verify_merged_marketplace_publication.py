@@ -37,15 +37,17 @@ def release(version: str, digest_seed: str) -> dict[str, object]:
 
 
 class MergedMarketplacePublicationTests(unittest.TestCase):
-    def make_repository(self, root: Path, *, registered: bool = False) -> tuple[str, dict[str, object], dict[str, object]]:
+    def make_repository(
+        self, root: Path, *, registered: bool = False, with_release_history: bool = True
+    ) -> tuple[str, dict[str, object], dict[str, object]]:
         stable = release("1.0.0", "stable")
         beta = release("1.1.0", "beta")
-        self.write_release(root, [stable], beta=stable["releaseId"], stable=stable["releaseId"])
-        for path in (
-            ".agents/plugins/marketplace.json",
-            ".agents/plugins/marketplace.json.sig.jws.json",
-            f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json",
-        ):
+        if with_release_history:
+            self.write_release(root, [stable], beta=stable["releaseId"], stable=stable["releaseId"])
+        paths = [".agents/plugins/marketplace.json", ".agents/plugins/marketplace.json.sig.jws.json"]
+        if with_release_history:
+            paths.append(f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json")
+        for path in paths:
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("{}\n", encoding="utf-8")
@@ -78,10 +80,15 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
         git(root, "commit", "--quiet", "-m", "base")
         return git(root, "rev-parse", "HEAD"), stable, beta
 
-    def write_release(self, root: Path, records: list[dict[str, object]], *, beta: str, stable: str) -> None:
+    def write_release(self, root: Path, records: list[dict[str, object]], *, beta: str, stable: str | None) -> None:
         write_json(
             root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json",
-            {"schemaVersion": 2, "pluginId": PLUGIN_ID, "releases": records, "channels": {"beta": {"releaseId": beta}, "stable": {"releaseId": stable}}},
+            {
+                "schemaVersion": 2,
+                "pluginId": PLUGIN_ID,
+                "releases": records,
+                "channels": {"beta": {"releaseId": beta}, "stable": None if stable is None else {"releaseId": stable}},
+            },
         )
 
     def commit(self, root: Path, message: str) -> str:
@@ -103,6 +110,42 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
 
             self.assertEqual(result["kind"], "beta")
             self.assertEqual(result["promotions"], [{"plugin_id": PLUGIN_ID, "release_id": beta["releaseId"]}])
+
+    def test_classifies_first_beta_when_the_baseline_has_no_release_index(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-merged-first-beta-") as directory:
+            root = Path(directory)
+            before, _, beta = self.make_repository(root, registered=True, with_release_history=False)
+            self.write_release(root, [beta], beta=beta["releaseId"], stable=None)
+            (root / ".agents/plugins/marketplace.json").write_text("new beta index\n", encoding="utf-8")
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("signed beta index\n", encoding="utf-8")
+            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
+            (root / f"plugins/{PLUGIN_ID}/frontend.js").write_text("export {}\n", encoding="utf-8")
+            event = {
+                "channel": "beta",
+                "releaseId": beta["releaseId"],
+                "source": {"repository": "example/plugin", "path": f"plugins/{PLUGIN_ID}", "ref": "refs/heads/beta", "sha": "a" * 40},
+                "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+                "publisher": "factory",
+            }
+            write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
+            proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            proof.write_text("signed evidence\n", encoding="utf-8")
+            after = self.commit(root, "first generated beta")
+
+            result = verifier.classify_merged_change(root, before, after)
+
+            self.assertEqual(result["kind"], "beta")
+            self.assertEqual(
+                result["promotions"],
+                [
+                    {
+                        "plugin_id": PLUGIN_ID,
+                        "release_id": beta["releaseId"],
+                        "source": {"repository": "example/plugin", "ref": "refs/heads/beta", "sha": "a" * 40},
+                    }
+                ],
+            )
 
     def test_classifies_stable_pointer_without_rebuilding_release_history(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-stable-") as directory:
