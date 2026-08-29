@@ -2,6 +2,168 @@
   "schemaVersion": 2,
   "plugins": [
     {
+      "pluginId": "com.xsec.asset-discovery",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-asset-discovery",
+        "path": "plugins/com.xsec.asset-discovery",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
+      "pluginId": "com.xsec.attack-path",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-attack-path",
+        "path": "plugins/com.xsec.attack-path",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
+      "pluginId": "com.xsec.project-workspace",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-project-workspace",
+        "path": "plugins/com.xsec.project-workspace",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
+      "pluginId": "com.xsec.system-terminal",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-system-terminal",
+        "path": "plugins/com.xsec.system-terminal",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
+      "pluginId": "com.xsec.workspace.approvals",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-approvals",
+        "path": "plugins/com.xsec.workspace.approvals",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
+      "pluginId": "com.xsec.workspace.browser",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-browser",
+        "path": "plugins/com.xsec.workspace.browser",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
+      "pluginId": "com.xsec.workspace.conversation-tree",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-conversation-tree",
+        "path": "plugins/com.xsec.workspace.conversation-tree",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
+      "pluginId": "com.xsec.workspace.files",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-files",
+        "path": "plugins/com.xsec.workspace.files",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
+      "pluginId": "com.xsec.workspace.project-outcomes",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-project-outcomes",
+        "path": "plugins/com.xsec.workspace.project-outcomes",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    },
+    {
       "pluginId": "com.xsec.workspace.sub-agent",
       "trustTier": "first-party",
       "source": {
@@ -18,6 +180,24 @@
       },
       "category": "Security",
       "status": "active"
+    },
+    {
+      "pluginId": "com.xsec.workspace.traffic",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-traffic",
+        "path": "plugins/com.xsec.workspace.traffic",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
     }
   ]
 }
