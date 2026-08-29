@@ -37,8 +37,11 @@ artifact、release history、签名和来源证明。
 
 首次迁移使用仅第一方允许的临时 `status: "pending-adoption"`：它只能保留已存在的
 内置 Marketplace snapshot、release history、artifact 和已签名 release sidecar，不能
-发布新源码。受保护的 `adopt-first-party.yml` 在精确来源分支头仍匹配后创建 KMS proof，
-并在同一生成 PR 中把该状态改为 `active`。`external` 永远不能使用该状态。
+发布新源码。它先由受保护的 `stage-first-party-adoption.yml` 创建**仅含 unsigned
+adoption assertion** 的 PR；审查并合入受保护 `main` 后，
+`adopt-first-party.yml` 才会在精确来源分支头仍匹配时请求 KMS proof，并创建另一个只包含
+sidecar 与 `pending-adoption → active` 的 activation PR。KMS 因而只会对已合入、可由
+Cloud 精确读取的 bytes 签名。`external` 永远不能使用该状态。
 
 ## 无损 adoption
 
@@ -57,15 +60,20 @@ digest、原始 release document bytes、完整有序 release records，以及�
 能用固定 KMS issuer 的 JWKS 验证。迁移不会生成 release、改变 SemVer、替换 artifact
 或移动频道指针。
 
-受保护工作流调用：
+两阶段的受保护工作流调用（两次都要传入同一组、仍是远端当前头的 SHA）：
 
 ```text
+# 1. 创建 unsigned staging PR；它不会签名、激活、发布或移动 channel。
+stage-first-party-adoption.yml
+
+# 2. staging PR 合并后，签出 main 上的 exact assertion，创建 signed activation PR。
 python scripts/external_source_factory.py adopt-first-party \
   --plugin-id com.xsec.workspace.sub-agent \
   --beta-sha <40-hex> --stable-sha <40-hex> --factory-revision <40-hex>
 ```
 
-随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。未来 Beta 发布可追加 history，
+第二阶段随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。两个 PR 都必须经 source
+gate、`@codex review` 和 Finalizer。未来 Beta 发布可追加 history，
 但 adoption 中的历史 prefix 永远不能改写。只要 split source 首次记录 post-adoption Beta/Stable
 provenance（即使新 source SHA 生成的 artifact 与 adoption release 完全相同，未增加 releaseId），
 `.xsec-factory/official-publications/<plugin-id>.json` 与其 KMS proof 就成为

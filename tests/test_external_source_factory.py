@@ -290,6 +290,27 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         _, record = factory.current_beta_record(root, PLUGIN_ID)
         return str(record["releaseId"])
 
+    def test_staged_first_party_adoption_requires_exact_heads_and_cannot_activate_unsigned(self) -> None:
+        """The protected staging phase is useful evidence, never trust by itself."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-staged-first-party-adoption-") as directory:
+            root = Path(directory)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            self.make_first_party_adoption(root)
+
+            registry_path = root / ".xsec-factory" / "official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["status"] = "pending-adoption"
+            write_json(registry_path, registry)
+            (root / factory.ADOPTION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
+
+            staged = factory.verify_staged_adoption(root, plugin_id, BETA_SHA, STABLE_SHA)
+            self.assertEqual(staged["adoption"], "staged")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "source heads do not match"):
+                factory.verify_staged_adoption(root, plugin_id, "d" * 40, STABLE_SHA)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS adoption proof is unavailable"):
+                factory.activate_first_party(root, plugin_id)
+
     def test_registry_rejects_unsafe_external_repository_and_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-registry-") as directory:
             root = Path(directory)

@@ -1570,6 +1570,30 @@ def create_adoption(
     return {"plugin_id": registration.plugin_id, "trust_tier": registration.trust_tier, "adoption": "created"}
 
 
+def verify_staged_adoption(root: Path, plugin_id: str, beta_sha: str, stable_sha: str) -> dict[str, str]:
+    """Require the exact unsigned adoption record that a reviewed staging PR merged.
+
+    The Cloud KMS broker reads the record from protected ``main`` before it
+    signs it.  Keeping this check separate from :func:`create_adoption` means
+    the signing workflow can never introduce the bytes it asks KMS to attest.
+    """
+
+    request = prepare_adoption(root, plugin_id, beta_sha, stable_sha)
+    registration = registration_for(root, request["plugin_id"], active=False)
+    proof_path = adoption_path(root, registration.plugin_id)
+    sidecar_path = root / ADOPTION_PROOFS_RELATIVE_PATH / f"{registration.plugin_id}.json"
+    if is_link(proof_path) or not proof_path.is_file():
+        fail("first-party adoption proof must be staged on protected Factory main before signing")
+    if sidecar_path.exists() or is_link(sidecar_path):
+        fail("first-party adoption proof is already signed; activation must use the existing reviewed proof")
+    validate_adoption(root, registration, require_kms_proof=False)
+    proof = read_json(proof_path, f"first-party adoption proof for {registration.plugin_id}")
+    source = require_object(proof.get("source"), "first-party adoption proof source")
+    if source.get("betaSha") != request["beta_sha"] or source.get("stableSha") != request["stable_sha"]:
+        fail("staged first-party adoption proof source heads do not match the requested reviewed heads")
+    return {**request, "adoption": "staged"}
+
+
 def activate_first_party(root: Path, plugin_id: str) -> dict[str, str]:
     """Move one KMS-staged first-party registration to its active state."""
 
@@ -1579,6 +1603,10 @@ def activate_first_party(root: Path, plugin_id: str) -> dict[str, str]:
     proof = adoption_path(root, registration.plugin_id)
     if is_link(proof) or not proof.is_file():
         fail("first-party adoption proof must be staged before activation")
+    # The unsigned staging record is intentionally harmless while the
+    # Registry remains pending. Never let activation make it trusted until the
+    # protected KMS workflow has signed those exact bytes.
+    validate_adoption(root, registration, require_kms_proof=True)
     registry_path = root / REGISTRY_RELATIVE_PATH
     registry = read_json(registry_path, "official Factory registry")
     plugins = registry.get("plugins")
@@ -3137,8 +3165,19 @@ def validate_registry_and_snapshots(
                 fail(f"pending first-party plugin {registration.plugin_id} must retain its existing marketplace entry")
             if not snapshot.is_dir() or is_link(snapshot):
                 fail(f"pending first-party plugin {registration.plugin_id} snapshot is unavailable")
-            if adoption_path(root, registration.plugin_id).exists() or (root / ADOPTION_PROOFS_RELATIVE_PATH / f"{registration.plugin_id}.json").exists():
-                fail(f"pending first-party plugin {registration.plugin_id} must be activated with its staged adoption proof")
+            adoption = adoption_path(root, registration.plugin_id)
+            adoption_sidecar = root / ADOPTION_PROOFS_RELATIVE_PATH / f"{registration.plugin_id}.json"
+            has_adoption = adoption.exists() or is_link(adoption)
+            has_adoption_sidecar = adoption_sidecar.exists() or is_link(adoption_sidecar)
+            if has_adoption or has_adoption_sidecar:
+                # A protected staging PR merges only this unsigned, semantic
+                # record. Cloud reads those exact bytes from protected main
+                # before KMS signs them. A pending Registry can never retain a
+                # sidecar: the generated activation PR adds it atomically with
+                # the status transition.
+                if not has_adoption or is_link(adoption) or not adoption.is_file() or has_adoption_sidecar:
+                    fail(f"pending first-party plugin {registration.plugin_id} must retain only one unsigned staged adoption proof")
+                validate_adoption(root, registration, require_kms_proof=False)
             manifest = source_manifest(snapshot, registration)
             try:
                 document = load_release_document(release_path(root, registration.plugin_id), registration.plugin_id)
@@ -3311,6 +3350,10 @@ def main() -> None:
     adoption_prepare_parser.add_argument("--plugin-id", required=True)
     adoption_prepare_parser.add_argument("--beta-sha", required=True)
     adoption_prepare_parser.add_argument("--stable-sha", required=True)
+    staged_adoption_parser = commands.add_parser("verify-staged-adoption")
+    staged_adoption_parser.add_argument("--plugin-id", required=True)
+    staged_adoption_parser.add_argument("--beta-sha", required=True)
+    staged_adoption_parser.add_argument("--stable-sha", required=True)
     smoke_reconcile_parser = commands.add_parser("prepare-reconcile-smoke")
     smoke_reconcile_parser.add_argument("--delivery-key", required=True)
     smoke_reconcile_parser.add_argument("--marketplace-revision", required=True)
@@ -3400,6 +3443,8 @@ def main() -> None:
             )
         elif args.command == "prepare-adoption":
             result = prepare_adoption(root, args.plugin_id, args.beta_sha, args.stable_sha)
+        elif args.command == "verify-staged-adoption":
+            result = verify_staged_adoption(root, args.plugin_id, args.beta_sha, args.stable_sha)
         elif args.command == "prepare-reconcile-smoke":
             result = prepare_reconcile_smoke(
                 delivery_key=args.delivery_key,

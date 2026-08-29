@@ -24,6 +24,10 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertNotIn('commits/${PR_HEAD_SHA}/pulls', workflow)
         self.assertIn("factory_generated=true", workflow)
         self.assertIn("state=pending", workflow)
+        # Both stages are privileged, review-gated Factory changes. The arm
+        # workflow must keep an ordinary same-SHA PR from overwriting either
+        # candidate's required pending finalizer status.
+        self.assertGreaterEqual(workflow.count("xsec-marketplace/stage-first-party-adoption-"), 2)
 
     def test_release_shaped_content_is_pending_even_on_an_ordinary_branch(self) -> None:
         workflow = ARM_WORKFLOW.read_text(encoding="utf-8")
@@ -47,6 +51,10 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
 
     def test_final_gate_revalidates_narrow_adoption_and_sidecar_candidates(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("xsec-marketplace/stage-first-party-adoption-*", workflow)
+        self.assertIn("Adoption is a two-step non-release transition", workflow)
+        self.assertIn("staging PR adds one unsigned assertion", workflow)
+        self.assertIn("activation PR later adds only the matching sidecar", workflow)
         self.assertIn("xsec-marketplace/refresh-retained-sidecar-*", workflow)
         self.assertIn("beta-smoke-ready", workflow)
         self.assertIn("Only external Beta branches may reopen a no-pointer Desktop smoke cycle", workflow)

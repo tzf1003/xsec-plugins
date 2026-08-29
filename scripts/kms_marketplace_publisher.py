@@ -946,23 +946,40 @@ def main() -> None:
         "--official-status-plugin-id",
         help="sign or validate only one canonical official Factory status document",
     )
+    parser.add_argument(
+        "--first-party-adoption-plugin-id",
+        help="sign or validate only one staged first-party adoption document",
+    )
     args = parser.parse_args()
     if args.verify_retained_release_signature and args.retained_release_plugin_id is None:
         parser.error("--verify-retained-release-signature requires --retained-release-plugin-id")
     if args.verify_retained_release_signature and args.validate_only:
         parser.error("--verify-retained-release-signature cannot be combined with --validate-only")
     if args.verify_active_marketplace_signatures and (
-        args.validate_only or args.retained_release_plugin_id is not None or args.official_status_plugin_id is not None
+        args.validate_only
+        or args.retained_release_plugin_id is not None
+        or args.official_status_plugin_id is not None
+        or args.first_party_adoption_plugin_id is not None
     ):
         parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release, status-only, or validate-only options")
     if args.allow_unsigned_official_status_plugin_id is not None and not args.verify_active_marketplace_signatures:
         parser.error("--allow-unsigned-official-status-plugin-id requires --verify-active-marketplace-signatures")
     if args.exclude_official_status and (
-        args.retained_release_plugin_id is not None or args.official_status_plugin_id is not None
+        args.retained_release_plugin_id is not None
+        or args.official_status_plugin_id is not None
+        or args.first_party_adoption_plugin_id is not None
     ):
         parser.error("--exclude-official-status cannot be combined with a single-document selector")
-    if args.retained_release_plugin_id is not None and args.official_status_plugin_id is not None:
-        parser.error("--retained-release-plugin-id and --official-status-plugin-id are mutually exclusive")
+    selectors = sum(
+        value is not None
+        for value in (
+            args.retained_release_plugin_id,
+            args.official_status_plugin_id,
+            args.first_party_adoption_plugin_id,
+        )
+    )
+    if selectors > 1:
+        parser.error("the Marketplace single-document selectors are mutually exclusive")
     root = args.root.resolve()
     try:
         if args.verify_active_marketplace_signatures:
@@ -974,6 +991,8 @@ def main() -> None:
             documents = [retained_release_document(root, args.retained_release_plugin_id)]
         elif args.official_status_plugin_id is not None:
             documents = [official_status_document(root, args.official_status_plugin_id)]
+        elif args.first_party_adoption_plugin_id is not None:
+            documents = [official_adoption_provenance_document(root, args.first_party_adoption_plugin_id)]
         else:
             documents = marketplace_documents(root)
             if args.exclude_official_status:

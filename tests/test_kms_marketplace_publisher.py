@@ -825,9 +825,15 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('if [ "$receipt" = "no-op" ]; then', reconcile)
         self.assertIn("The publisher run that emitted the receipt did not complete successfully.", reconcile)
         self.assertIn("stable_requests", smoke)
-        for workflow in (publisher_workflow, promotion, adoption):
+        for workflow in (publisher_workflow, promotion):
             self.assertNotIn("--official-status-plugin-id", workflow)
             self.assertIn("--exclude-official-status", workflow)
+        # Adoption signs precisely the one assertion that was already reviewed
+        # on protected main.  It must neither call the mutable status selector
+        # nor accidentally sign every ordinary Marketplace document.
+        self.assertNotIn("--official-status-plugin-id", adoption)
+        self.assertNotIn("--exclude-official-status", adoption)
+        self.assertIn("--first-party-adoption-plugin-id", adoption)
 
     def test_stable_promotion_workflow_only_moves_an_existing_pointer(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")

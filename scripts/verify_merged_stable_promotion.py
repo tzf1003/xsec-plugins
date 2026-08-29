@@ -162,65 +162,94 @@ def exact_changed_paths(root: Path, before: str, after: str, expected: set[str],
 
 
 def verify_first_party_adoption_candidate(root: Path, before: str, after: str) -> dict[str, object]:
-    """Authenticate the *shape* of the one Registry activation candidate.
+    """Authenticate one of the two non-release first-party adoption PRs.
 
-    Full Factory/adoption proof verification remains in
-    ``external_source_factory.py``.  This helper is deliberately a narrower
-    diff allowlist: no workflows, scripts, unrelated Registry entries, or
-    already-existing adoption material can piggyback on a privileged final
-    merge.
+    Cloud KMS cannot attest bytes that only exist in the workflow checkout. A
+    protected staging PR therefore adds the immutable unsigned assertion first;
+    a later KMS-generated activation PR adds only its sidecar and flips the
+    reviewed Registry row. Both diffs are deliberately narrow so neither can
+    carry arbitrary Factory or workflow changes through the finalizer.
     """
 
     require_candidate_revisions(root, before, after)
     paths = changed_paths(root, before, after)
     adoption_paths = [path for path in paths if ADOPTION_PATH_PATTERN.fullmatch(path)]
-    if len(adoption_paths) != 1:
-        fail("first-party adoption candidate must add exactly one adoption document")
-    adoption_path = adoption_paths[0]
-    adoption_match = ADOPTION_PATH_PATTERN.fullmatch(adoption_path)
-    if adoption_match is None:  # Defensive: the filtered list above guarantees this.
-        fail("first-party adoption candidate has an invalid adoption document path")
-    plugin_id = adoption_match.group(1)
-    proof_path = f".xsec-factory/official-adoption-proofs/{plugin_id}.json"
-    exact_changed_paths(root, before, after, {REGISTRY_PATH, adoption_path, proof_path}, "first-party adoption candidate")
-    for path, label in ((adoption_path, "adoption document"), (proof_path, "adoption KMS proof")):
-        if git_succeeds(root, ["cat-file", "-e", f"{before}:{path}"]) or not git_succeeds(
-            root, ["cat-file", "-e", f"{after}:{path}"]
+    proof_paths = [path for path in paths if ADOPTION_PROOF_PATTERN.fullmatch(path)]
+
+    if len(adoption_paths) == 1 and not proof_paths:
+        adoption_path = adoption_paths[0]
+        match = ADOPTION_PATH_PATTERN.fullmatch(adoption_path)
+        if match is None:  # Defensive: the filtered list above guarantees this.
+            fail("first-party adoption staging candidate has an invalid adoption document path")
+        plugin_id = match.group(1)
+        exact_changed_paths(root, before, after, {adoption_path}, "first-party adoption staging candidate")
+        if git_succeeds(root, ["cat-file", "-e", f"{before}:{adoption_path}"]) or not git_succeeds(
+            root, ["cat-file", "-e", f"{after}:{adoption_path}"]
         ):
-            fail(f"first-party adoption candidate must add its one {label}")
-    if not git_succeeds(root, ["cat-file", "-e", f"{before}:{REGISTRY_PATH}"]) or not git_succeeds(
-        root, ["cat-file", "-e", f"{after}:{REGISTRY_PATH}"]
-    ):
-        fail("first-party adoption candidate must modify the existing official Registry")
-    before_registry = json_blob(root, before, REGISTRY_PATH, "baseline official Factory registry")
-    after_registry = json_blob(root, after, REGISTRY_PATH, "candidate official Factory registry")
-    before_plugins = before_registry.get("plugins")
-    after_plugins = after_registry.get("plugins")
-    if not isinstance(before_plugins, list) or not isinstance(after_plugins, list) or len(before_plugins) != len(after_plugins):
-        fail("first-party adoption candidate must preserve the Registry plugin list")
-    if {key: value for key, value in before_registry.items() if key != "plugins"} != {
-        key: value for key, value in after_registry.items() if key != "plugins"
-    }:
-        fail("first-party adoption candidate may not modify Registry metadata")
-    seen = 0
-    for before_entry, after_entry in zip(before_plugins, after_plugins, strict=True):
-        if not isinstance(before_entry, dict) or not isinstance(after_entry, dict):
-            fail("first-party adoption candidate Registry entries must be objects")
-        if before_entry.get("pluginId") != after_entry.get("pluginId"):
-            fail("first-party adoption candidate may not reorder or replace Registry entries")
-        if before_entry.get("pluginId") == plugin_id:
-            seen += 1
-            if before_entry.get("status") != "pending-adoption" or after_entry.get("status") != "active":
-                fail("first-party adoption candidate must change its one Registry entry from pending-adoption to active")
-            if {key: value for key, value in before_entry.items() if key != "status"} != {
-                key: value for key, value in after_entry.items() if key != "status"
-            }:
-                fail("first-party adoption candidate may only change its Registry status")
-        elif before_entry != after_entry:
-            fail("first-party adoption candidate may not modify another Registry entry")
-    if seen != 1:
-        fail("first-party adoption candidate must activate exactly one pending Registry entry")
-    return {"kind": "adoption", "plugin_id": plugin_id, "adoption_path": adoption_path}
+            fail("first-party adoption staging candidate must add exactly one adoption document")
+        proof_path = f".xsec-factory/official-adoption-proofs/{plugin_id}.json"
+        if git_succeeds(root, ["cat-file", "-e", f"{before}:{proof_path}"]) or git_succeeds(
+            root, ["cat-file", "-e", f"{after}:{proof_path}"]
+        ):
+            fail("first-party adoption staging candidate must not contain a KMS sidecar")
+        before_registry = git_bytes(root, ["show", f"{before}:{REGISTRY_PATH}"])
+        after_registry = git_bytes(root, ["show", f"{after}:{REGISTRY_PATH}"])
+        if before_registry != after_registry:
+            fail("first-party adoption staging candidate may not modify the Registry")
+        registry = json_blob(root, after, REGISTRY_PATH, "candidate official Factory registry")
+        entries = registry.get("plugins")
+        matching = [entry for entry in entries if isinstance(entry, dict) and entry.get("pluginId") == plugin_id] if isinstance(entries, list) else []
+        if len(matching) != 1 or matching[0].get("status") != "pending-adoption":
+            fail("first-party adoption staging candidate must retain one pending Registry entry")
+        return {"kind": "adoption-stage", "plugin_id": plugin_id, "adoption_path": adoption_path}
+
+    if not adoption_paths and len(proof_paths) == 1:
+        proof_path = proof_paths[0]
+        match = ADOPTION_PROOF_PATTERN.fullmatch(proof_path)
+        if match is None:  # Defensive: the filtered list above guarantees this.
+            fail("first-party adoption activation candidate has an invalid KMS proof path")
+        plugin_id = match.group(1)
+        adoption_path = f".xsec-factory/official-adoptions/{plugin_id}.json"
+        exact_changed_paths(root, before, after, {REGISTRY_PATH, proof_path}, "first-party adoption activation candidate")
+        if not git_succeeds(root, ["cat-file", "-e", f"{before}:{adoption_path}"]) or not git_succeeds(
+            root, ["cat-file", "-e", f"{after}:{adoption_path}"]
+        ) or git_bytes(root, ["show", f"{before}:{adoption_path}"]) != git_bytes(root, ["show", f"{after}:{adoption_path}"]):
+            fail("first-party adoption activation candidate must retain its reviewed adoption document byte-for-byte")
+        if git_succeeds(root, ["cat-file", "-e", f"{before}:{proof_path}"]) or not git_succeeds(
+            root, ["cat-file", "-e", f"{after}:{proof_path}"]
+        ):
+            fail("first-party adoption activation candidate must add one matching KMS proof")
+        before_registry = json_blob(root, before, REGISTRY_PATH, "baseline official Factory registry")
+        after_registry = json_blob(root, after, REGISTRY_PATH, "candidate official Factory registry")
+        before_plugins = before_registry.get("plugins")
+        after_plugins = after_registry.get("plugins")
+        if not isinstance(before_plugins, list) or not isinstance(after_plugins, list) or len(before_plugins) != len(after_plugins):
+            fail("first-party adoption activation candidate must preserve the Registry plugin list")
+        if {key: value for key, value in before_registry.items() if key != "plugins"} != {
+            key: value for key, value in after_registry.items() if key != "plugins"
+        }:
+            fail("first-party adoption activation candidate may not modify Registry metadata")
+        seen = 0
+        for before_entry, after_entry in zip(before_plugins, after_plugins, strict=True):
+            if not isinstance(before_entry, dict) or not isinstance(after_entry, dict):
+                fail("first-party adoption activation candidate Registry entries must be objects")
+            if before_entry.get("pluginId") != after_entry.get("pluginId"):
+                fail("first-party adoption activation candidate may not reorder or replace Registry entries")
+            if before_entry.get("pluginId") == plugin_id:
+                seen += 1
+                if before_entry.get("status") != "pending-adoption" or after_entry.get("status") != "active":
+                    fail("first-party adoption activation candidate must change its one Registry entry from pending-adoption to active")
+                if {key: value for key, value in before_entry.items() if key != "status"} != {
+                    key: value for key, value in after_entry.items() if key != "status"
+                }:
+                    fail("first-party adoption activation candidate may only change its Registry status")
+            elif before_entry != after_entry:
+                fail("first-party adoption activation candidate may not modify another Registry entry")
+        if seen != 1:
+            fail("first-party adoption activation candidate must activate exactly one pending Registry entry")
+        return {"kind": "adoption-activation", "plugin_id": plugin_id, "adoption_path": adoption_path}
+
+    fail("first-party adoption candidate must be exactly one staging or one activation transition")
 
 
 def verify_retained_sidecar_refresh_candidate(root: Path, before: str, after: str) -> dict[str, object]:
@@ -759,6 +788,14 @@ def classify_merged_change(
         return {"kind": "none"}
     has_release = any(RELEASE_PATH_PATTERN.fullmatch(path) for path in paths)
     if not has_release:
+        # First-party adoption is a two-PR transition: protected main first
+        # records an unsigned immutable assertion, then a production KMS
+        # workflow adds its sidecar and activates the Registry. Neither step
+        # is a Desktop smoke publication, but both must be recognized here so
+        # the post-merge dispatcher exits cleanly instead of treating a
+        # review-gated migration as a malformed release transition.
+        if any(ADOPTION_PATH_PATTERN.fullmatch(path) or ADOPTION_PROOF_PATTERN.fullmatch(path) for path in paths):
+            return verify_first_party_adoption_candidate(root, before, after)
         # A review-gated retained-sidecar repair must not recurse into a new
         # release, and it does not represent a Desktop smoke publication.
         if all(path == MARKETPLACE_SIDECAR or RELEASE_SIDECAR_PATTERN.fullmatch(path) for path in paths):

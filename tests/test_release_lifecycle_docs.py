@@ -10,6 +10,7 @@ LIFECYCLE = ROOT / "docs" / "plugin-development-release-lifecycle.md"
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish.yml"
 REFRESH_SIDECAR_WORKFLOW = ROOT / ".github" / "workflows" / "refresh-retained-sidecars.yml"
 ADOPTION_WORKFLOW = ROOT / ".github" / "workflows" / "adopt-first-party.yml"
+STAGE_ADOPTION_WORKFLOW = ROOT / ".github" / "workflows" / "stage-first-party-adoption.yml"
 POST_MERGE_DISPATCHER = ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml"
 MERGE_GUARD_WORKFLOW = ROOT / ".github" / "workflows" / "verify-generated-marketplace-publication.yml"
 ARM_FINAL_GATE_WORKFLOW = ROOT / ".github" / "workflows" / "arm-generated-marketplace-final-merge.yml"
@@ -140,6 +141,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("factory_generated=true", arm)
         self.assertIn("factory_generated=false", arm)
         self.assertIn("xsec-marketplace/adopt-first-party-", arm)
+        self.assertIn("xsec-marketplace/stage-first-party-adoption-", arm)
         self.assertIn("pulls?state=all&base=main&per_page=100", arm)
         self.assertIn("factory_for_sha", arm)
         self.assertNotIn("commits/${PR_HEAD_SHA}/pulls", arm)
@@ -271,8 +273,15 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
 
     def test_adoption_review_comment_keeps_its_workflow_dispatch_yaml_valid(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
+        stage = STAGE_ADOPTION_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("workflow_dispatch:", stage)
+        self.assertIn("group: xsec-marketplace-publish-main", stage)
+        self.assertIn("Stage only the immutable unsigned adoption proof", stage)
+        self.assertIn("The Registry remains pending-adoption", stage)
+        self.assertIn("@codex review", stage)
         self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
+        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", stage)
         self.assertNotIn("\n\nThis is an immutable first-party adoption", workflow)
 
     def test_final_gate_arms_shared_commit_status_only_after_slurping_all_main_pr_pages(self) -> None:
