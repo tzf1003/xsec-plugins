@@ -179,6 +179,7 @@ jobs:
           review_request_at="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${number}/comments?per_page=100" | jq -er '
             [ .[][]
               | select(.body | type == "string" and test("(^|[[:space:]])@codex[[:space:]]+review([[:space:]]|$)"; "i"))
+              | select(.author_association == "OWNER")
               | select(.created_at | type == "string")
               | .created_at
             ] | if length > 0 then max else error("no current @codex review request") end

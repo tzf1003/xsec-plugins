@@ -323,6 +323,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
                 self.assertIn('any(.[][];', workflow)
                 self.assertIn('.state == "APPROVED" or .state == "COMMENTED"', workflow)
                 self.assertIn('review_request_at=', workflow)
+                self.assertIn('.author_association == "OWNER"', workflow)
 
 
 if __name__ == "__main__":

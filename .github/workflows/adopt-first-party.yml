@@ -73,13 +73,34 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24"
-      - name: Read source heads exclusively from the reviewed staged adoption proof
+      - name: Rebuild the staged assertion from its protected pre-staging baseline
         id: request
         env:
           PLUGIN_ID: ${{ inputs.plugin_id }}
         run: |
+          set -euo pipefail
+          [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ && "$PLUGIN_ID" != *..* && "$PLUGIN_ID" != *--* ]] || {
+            echo "First-party adoption plugin ID is unsafe." >&2
+            exit 1
+          }
+          adoption_path=".xsec-factory/official-adoptions/${PLUGIN_ID}.json"
+          mapfile -t additions < <(git log --diff-filter=A --format=%H --reverse -- "$adoption_path")
+          [ "${#additions[@]}" -eq 1 ] || {
+            printf 'Expected exactly one protected addition of %s, got %s.\n' "$adoption_path" "${#additions[@]}" >&2
+            exit 1
+          }
+          staged_commit="${additions[0]}"
+          baseline_revision="$(git rev-parse "${staged_commit}^")"
+          [ "$(git rev-parse "HEAD:${adoption_path}")" = "$(git rev-parse "${staged_commit}:${adoption_path}")" ] || {
+            echo "The staged assertion has changed since its protected addition." >&2
+            exit 1
+          }
+          baseline_root="${RUNNER_TEMP}/xsec-adoption-baseline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          [ ! -e "$baseline_root" ] || { echo "The pre-staging baseline worktree path already exists." >&2; exit 1; }
+          git worktree add --detach "$baseline_root" "$baseline_revision"
+          trap 'git worktree remove --force "$baseline_root"' EXIT
           python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-staged-adoption \
-            --plugin-id "$PLUGIN_ID"
+            --plugin-id "$PLUGIN_ID" --baseline-root "$baseline_root" --factory-revision "$baseline_revision"
       - name: Require both staged source heads to remain the reviewed branch heads
         env:
           SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
@@ -105,6 +126,7 @@ jobs:
         run: python scripts/kms_marketplace_publisher.py --root . --first-party-adoption-plugin-id "$PLUGIN_ID"
       - name: Require the KMS proof before activating the Registry
         env:
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.factory.outputs.revision }}
           PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
         run: |
           python scripts/kms_marketplace_publisher.py --root . --first-party-adoption-plugin-id "$PLUGIN_ID" --validate-only

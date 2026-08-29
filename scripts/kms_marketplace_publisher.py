@@ -1074,7 +1074,13 @@ def main() -> None:
                 # unrelated immutable index/release/provenance documents to
                 # be re-signed (which Cloud now correctly disallows from the
                 # reconcile-only workflow identity).
-                if document.purpose != OFFICIAL_STATUS_PURPOSE:
+                # An adoption sidecar is also independently issued after its
+                # unsigned assertion has passed protected review. Like an
+                # observable status, it is immutable data but need not share
+                # the current publication batch's Factory revision. Requiring
+                # that would force every release/index/provenance sidecar to
+                # be needlessly re-signed at activation time.
+                if document.purpose not in {OFFICIAL_STATUS_PURPOSE, OFFICIAL_ADOPTION_PROVENANCE_PURPOSE}:
                     immutable_revisions.add(revision)
             if len(immutable_revisions) != 1:
                 fail("active immutable Marketplace KMS sidecars do not share one source revision")

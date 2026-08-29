@@ -304,12 +304,58 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             write_json(registry_path, registry)
             (root / factory.ADOPTION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
 
-            staged = factory.prepare_staged_adoption(root, plugin_id)
+            baseline = Path(f"{directory}-trusted-pre-staging-baseline")
+            self.addCleanup(shutil.rmtree, baseline, ignore_errors=True)
+            shutil.copytree(root, baseline)
+            (baseline / factory.ADOPTIONS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
+
+            staged = factory.prepare_staged_adoption(
+                root,
+                plugin_id,
+                baseline_root=baseline,
+                factory_revision="c" * 40,
+            )
             self.assertEqual(staged["adoption"], "staged")
             self.assertEqual(staged["beta_sha"], BETA_SHA)
             self.assertEqual(staged["stable_sha"], STABLE_SHA)
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS adoption proof is unavailable"):
                 factory.activate_first_party(root, plugin_id)
+
+            proof_path = root / factory.ADOPTIONS_RELATIVE_PATH / f"{plugin_id}.json"
+            forged = json.loads(proof_path.read_text(encoding="utf-8"))
+            forged["legacy"]["factoryRevision"] = "d" * 40
+            factory.stable_write(root, proof_path, forged, "forged first-party adoption proof")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not exactly match"):
+                factory.prepare_staged_adoption(
+                    root,
+                    plugin_id,
+                    baseline_root=baseline,
+                    factory_revision="c" * 40,
+                )
+
+    def test_staged_first_party_adoption_requires_the_exact_pre_staging_revision(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-staged-first-party-adoption-revision-") as directory:
+            root = Path(directory)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            self.make_first_party_adoption(root)
+
+            registry_path = root / ".xsec-factory" / "official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["status"] = "pending-adoption"
+            write_json(registry_path, registry)
+            (root / factory.ADOPTION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
+            baseline = Path(f"{directory}-trusted-pre-staging-baseline")
+            self.addCleanup(shutil.rmtree, baseline, ignore_errors=True)
+            shutil.copytree(root, baseline)
+            (baseline / factory.ADOPTIONS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
+
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not exactly match"):
+                factory.prepare_staged_adoption(
+                    root,
+                    plugin_id,
+                    baseline_root=baseline,
+                    factory_revision="d" * 40,
+                )
 
     def test_registry_rejects_unsafe_external_repository_and_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-registry-") as directory:
@@ -2121,6 +2167,9 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("adopt-first-party", adoption_workflow)
         self.assertIn("activate-first-party", adoption_workflow)
         self.assertIn("XSEC_MARKETPLACE_SOURCE_REVISION", adoption_workflow)
+        self.assertIn("--baseline-root \"$baseline_root\"", adoption_workflow)
+        self.assertIn("--factory-revision \"$baseline_revision\"", adoption_workflow)
+        self.assertIn("git worktree add --detach", adoption_workflow)
         self.assertIn("@codex review", adoption_workflow)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', adoption_workflow)
 

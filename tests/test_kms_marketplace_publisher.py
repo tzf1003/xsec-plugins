@@ -365,6 +365,37 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 self.assertIsNone(publisher.main())
             self.assertEqual(json.loads(output.getvalue()), {"documents": len(documents), "source_revision": REVISION})
 
+    def test_active_signature_verification_allows_a_separately_signed_adoption_proof(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-independent-adoption-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            adoption = root / ".xsec-factory" / "official-adoptions" / f"{plugin_id}.json"
+            adoption.parent.mkdir(parents=True)
+            adoption.write_bytes(b'{"schemaVersion":1,"pluginId":"com.xsec.workspace.sub-agent"}\n')
+            registry = root / ".xsec-factory" / "official-registry.json"
+            registry.write_bytes(json.dumps({"plugins": [{
+                "pluginId": plugin_id,
+                "trustTier": "first-party",
+                "status": "active",
+            }]}).encode("utf-8"))
+
+            documents = publisher.documents_for_active_signature_verification(root)
+            adoption_document = publisher.official_adoption_provenance_document(root, plugin_id)
+            for document in documents:
+                source_revision = "b" * 40 if document == adoption_document else REVISION
+                publisher.sidecar_path_for(document).parent.mkdir(parents=True, exist_ok=True)
+                publisher.sidecar_path_for(document).write_bytes(
+                    self.signed_historical_sidecar(document, source_revision=source_revision)
+                )
+            with patch.object(publisher, "download_pinned_issuer_jwks", return_value=TEST_KMS_JWKS), patch.object(
+                sys,
+                "argv",
+                ["kms_marketplace_publisher.py", "--root", str(root), "--verify-active-marketplace-signatures"],
+            ), patch("sys.stdout", new_callable=StringIO) as output:
+                self.assertIsNone(publisher.main())
+            self.assertEqual(json.loads(output.getvalue()), {"documents": len(documents), "source_revision": REVISION})
+
     def test_publisher_signs_external_factory_provenance_in_a_separate_fixed_proof_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-") as directory:
             root = Path(directory)
