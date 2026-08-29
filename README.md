@@ -161,7 +161,9 @@ only when the current deterministic package is new, and moves **only** the
 leaves `channels.stable` as `null`, so it cannot reach Stable without
 an explicit promotion. It then requests sidecars from the production Cloud KMS broker
 using a short-lived GitHub OIDC token, validates every broker response, and
-publishes the generated metadata through a protected PR. The broker accepts
+opens the generated metadata as a protected PR. It waits for `validate.yml`,
+requests `@codex review`, and intentionally never merges or dispatches Desktop
+smoke itself; the reviewed PR must be merged through protected `main`. The broker accepts
 only the protected `xsec-plugins` production workflow; it calculates the
 document digest itself.
 
@@ -169,7 +171,9 @@ document digest itself.
 manual workflow. Give it a plugin ID and an existing `releaseId` to promote or
 roll back. It changes only `channels.stable.releaseId`, never rebuilds an
 archive and never changes an artifact SHA-256. A fresh KMS sidecar is produced
-for the edited index and the update is again merged through a protected PR.
+for the edited index and the update is again opened as a protected PR. It
+requires the source gate, `@codex review`, and a protected merge before Desktop
+smoke can run.
 It remains the legacy built-in path: a registered external plugin must use the
 external Stable request to `publish.yml`, so its source-main proof cannot be
 bypassed.

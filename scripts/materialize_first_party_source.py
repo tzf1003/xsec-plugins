@@ -182,6 +182,26 @@ def factory_git_stdout(factory_root: Path, arguments: list[str]) -> str:
     return git_stdout(arguments, cwd=factory_root, environment=trusted_history_environment())
 
 
+def factory_git_blob(factory_root: Path, revision: str, path: PurePosixPath) -> bytes:
+    """Read one exact, trusted Factory blob without checkout EOL conversion.
+
+    Marketplace KMS envelopes bind document *bytes*.  On Windows, Git may
+    materialize a text blob as CRLF in the worktree even though the signed
+    protected-main blob is LF.  The first-party materializer has already
+    pinned ``HEAD`` to the trusted remote main before it calls this helper, so
+    authenticate the immutable Git object rather than a checkout presentation
+    of that object.
+    """
+
+    if revision != "HEAD" or path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        fail("trusted Factory release document path is invalid")
+    return run_git(
+        ["cat-file", "blob", f"{revision}:{path.as_posix()}"],
+        cwd=factory_root,
+        environment=trusted_history_environment(),
+    ).stdout
+
+
 def sealed_transport_environment(
     *,
     protocols: tuple[str, ...],
@@ -472,13 +492,21 @@ def verify_retained_release_signature(factory_root: Path, plugin_id: str) -> Non
     sidecar = release_path.with_name("releases.json.sig.jws.json")
     if is_link(release_path) or is_link(sidecar) or not release_path.is_file() or not sidecar.is_file():
         fail("retained release history and its KMS sidecar must be regular files")
-    document = MarketplaceDocument(
-        "xsec.plugin-marketplace.release",
-        f"plugins/{plugin_id}/.xsec-market/releases.json",
-        release_path,
-    )
+    subject = PurePosixPath("plugins") / plugin_id / ".xsec-market" / "releases.json"
+    # Do not verify the potentially EOL-converted Windows worktree file. The
+    # trusted Factory preflight pins HEAD to origin/main, and the signature is
+    # over the Git blob that Desktop receives from the protected repository.
+    signed_bytes = factory_git_blob(factory_root, "HEAD", subject)
     try:
-        verify_historical_sidecar_signature(sidecar.read_bytes(), document)
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-signed-release-") as directory:
+            signed_document = Path(directory) / "releases.json"
+            signed_document.write_bytes(signed_bytes)
+            document = MarketplaceDocument(
+                "xsec.plugin-marketplace.release",
+                subject.as_posix(),
+                signed_document,
+            )
+            verify_historical_sidecar_signature(sidecar.read_bytes(), document)
     except (OSError, MarketplaceKmsPublisherError) as error:
         raise MaterializationError("retained release KMS sidecar is invalid") from error
 

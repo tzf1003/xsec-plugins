@@ -817,18 +817,35 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=ROOT, help="marketplace root")
     parser.add_argument("--validate-only", action="store_true", help="validate existing sidecars without acquiring OIDC")
     parser.add_argument(
+        "--verify-retained-release-signature",
+        action="store_true",
+        help="cryptographically verify one retained releases.json KMS sidecar against the pinned issuer JWKS",
+    )
+    parser.add_argument(
         "--retained-release-plugin-id",
         help="refresh or validate only one current Marketplace immutable releases.json sidecar",
     )
     args = parser.parse_args()
+    if args.verify_retained_release_signature and args.retained_release_plugin_id is None:
+        parser.error("--verify-retained-release-signature requires --retained-release-plugin-id")
+    if args.verify_retained_release_signature and args.validate_only:
+        parser.error("--verify-retained-release-signature cannot be combined with --validate-only")
     root = args.root.resolve()
-    source_revision = source_revision_from_environment(os.environ)
     try:
         documents = (
             [retained_release_document(root, args.retained_release_plugin_id)]
             if args.retained_release_plugin_id is not None
             else marketplace_documents(root)
         )
+        if args.verify_retained_release_signature:
+            document = documents[0]
+            sidecar = sidecar_path_for(document)
+            if is_link(sidecar) or not sidecar.is_file():
+                fail(f"KMS sidecar is unavailable: {sidecar}")
+            verify_historical_sidecar_signature(sidecar.read_bytes(), document)
+            print("cryptographically verified 1 retained KMS marketplace sidecar")
+            return
+        source_revision = source_revision_from_environment(os.environ)
         if args.validate_only:
             validated = validate_documents(documents, source_revision)
             print(f"validated {len(validated)} KMS marketplace sidecars")

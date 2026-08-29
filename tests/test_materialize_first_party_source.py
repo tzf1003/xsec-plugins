@@ -462,6 +462,31 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 with self.assertRaisesRegex(materializer.MaterializationError, "retained release KMS sidecar is invalid"):
                     materializer.materialize_repository(factory, PLUGIN_ID, Path(directory) / "source-repository")
 
+    def test_retained_signature_uses_the_trusted_git_blob_not_windows_eol_checkout_bytes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-eol-") as directory:
+            factory = Path(directory) / "factory"
+            factory.mkdir()
+            self.make_factory(factory)
+            relative = f"plugins/{PLUGIN_ID}/.xsec-market/releases.json"
+            blob = subprocess.run(
+                ["git", "cat-file", "blob", f"HEAD:{relative}"],
+                cwd=str(factory),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            ).stdout
+            release_path = factory / relative
+            release_path.write_bytes(blob.replace(b"\n", b"\r\n"))
+            self.assertNotEqual(release_path.read_bytes(), blob)
+            verified_documents: list[bytes] = []
+            materializer.verify_historical_sidecar_signature.side_effect = (
+                lambda _sidecar, document: verified_documents.append(document.path.read_bytes()) or "a" * 40
+            )
+
+            materializer.verify_retained_release_signature(factory, PLUGIN_ID)
+
+            self.assertEqual(verified_documents, [blob])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ README = ROOT / "README.md"
 LIFECYCLE = ROOT / "docs" / "plugin-development-release-lifecycle.md"
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish.yml"
 REFRESH_SIDECAR_WORKFLOW = ROOT / ".github" / "workflows" / "refresh-retained-sidecars.yml"
+ADOPTION_WORKFLOW = ROOT / ".github" / "workflows" / "adopt-first-party.yml"
 
 
 class ReleaseLifecycleDocumentationTests(unittest.TestCase):
@@ -90,6 +91,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "validate_market.py source --source-root . --built-root .",
             "--retained-release-plugin-id",
             "--validate-only --retained-release-plugin-id",
+            "--verify-retained-release-signature --retained-release-plugin-id",
             "external_source_factory.py validate",
             "git ls-files --others --exclude-standard",
             "@codex review",
@@ -99,9 +101,21 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
                 self.assertIn(required_rule, workflow)
         self.assertNotIn('pulls/${pull_number}/merge', workflow)
         self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
+        # A literal newline in the shell string at column zero terminates the
+        # YAML ``run: |`` block. GitHub then registers the file without a
+        # dispatch trigger and creates empty failed push runs. Keep the review
+        # message as one correctly indented shell assignment instead.
+        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
+        self.assertNotIn("\n\nThis PR was generated", workflow)
         self.assertIn("Retained KMS sidecar repair", readme)
         self.assertIn("refresh-retained-sidecars.yml", readme)
         self.assertIn("intentionally **never merges**", readme)
+
+    def test_adoption_review_comment_keeps_its_workflow_dispatch_yaml_valid(self) -> None:
+        workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
+        self.assertNotIn("\n\nThis is an immutable first-party adoption", workflow)
 
 
 if __name__ == "__main__":

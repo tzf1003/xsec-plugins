@@ -307,6 +307,26 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                     with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, expected):
                         publisher.retained_release_document(root, plugin_id)
 
+    def test_cli_can_cryptographically_verify_one_retained_release_sidecar_without_oidc(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-retained-release-verify-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            document = publisher.retained_release_document(root, "com.example.beta")
+            publisher.sidecar_path_for(document).write_bytes(self.signed_historical_sidecar(document))
+            with patch.object(publisher, "download_pinned_issuer_jwks", return_value=TEST_KMS_JWKS), patch.object(
+                sys,
+                "argv",
+                [
+                    "kms_marketplace_publisher.py",
+                    "--root",
+                    str(root),
+                    "--retained-release-plugin-id",
+                    "com.example.beta",
+                    "--verify-retained-release-signature",
+                ],
+            ):
+                self.assertIsNone(publisher.main())
+
     def test_publisher_signs_external_factory_provenance_in_a_separate_fixed_proof_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-") as directory:
             root = Path(directory)
@@ -633,15 +653,17 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("git add -A .agents/plugins plugins", workflow)
         self.assertIn('gh workflow run validate.yml --ref "$branch"', workflow)
         self.assertIn("--event workflow_dispatch", workflow)
-        self.assertIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
+        self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
+        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
+        self.assertIn('echo "pending_review=true"', workflow)
+        self.assertIn("This workflow intentionally does not merge this PR", workflow)
         self.assertIn('pull_number="$(gh pr view "$pull_url" --json number --jq .number)"', workflow)
         # The protected workflow selects a title/prefix based on whether the
         # request is built-in or an approved external Factory publication.
         # Keep the legacy built-in values and ensure the dynamic values are
-        # the ones handed to GitHub's merge API and generated branch name.
+        # the ones handed to the generated PR and branch name.
         self.assertIn('echo "commit_title=chore: publish marketplace beta release"', workflow)
         self.assertIn('COMMIT_TITLE: ${{ steps.request.outputs.commit_title }}', workflow)
-        self.assertIn('-f commit_title="$COMMIT_TITLE"', workflow)
         self.assertIn('branch="xsec-marketplace/${BRANCH_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
         self.assertIn("workflow_dispatch:", validation_workflow)
 
@@ -668,6 +690,10 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('git rev-parse origin/main', workflow)
         self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
         self.assertIn('--arg source_sha "${{ steps.current-main.outputs.source_revision }}"', workflow)
+        self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
+        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
+        self.assertIn("This workflow intentionally does not merge this PR", workflow)
+        self.assertIn("steps.publish.outputs.published == 'true'", workflow)
         self.assertIn("'publish-main'", publish_workflow)
         self.assertIn("github.run_id", publish_workflow)
         self.assertIn("chore: publish marketplace beta release", publish_workflow)
