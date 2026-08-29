@@ -534,7 +534,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 },
             )
 
-    def test_first_party_adoption_candidate_allows_only_its_registry_activation_and_fixed_proofs(self) -> None:
+    def test_first_party_adoption_staging_candidate_adds_only_the_unsigned_adoption_document(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-candidate-") as directory:
             root = Path(directory)
             registry = {
@@ -549,22 +549,49 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             git(root, "config", "user.name", "Verifier Test")
             git(root, "config", "user.email", "verifier@example.invalid")
             before = self.commit(root, "pending first-party registration")
-            registry["plugins"][0]["status"] = "active"
+            write_json(root / f".xsec-factory/official-adoptions/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
+            after = self.commit(root, "stage one first-party adoption assertion")
+
+            self.assertEqual(
+                verifier.verify_first_party_adoption_candidate(root, before, after),
+                {
+                    "kind": "adoption-stage",
+                    "plugin_id": PLUGIN_ID,
+                    "adoption_path": f".xsec-factory/official-adoptions/{PLUGIN_ID}.json",
+                },
+            )
+
+    def test_first_party_adoption_activation_candidate_adds_only_its_sidecar_and_activates_registry_entry(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-activation-") as directory:
+            root = Path(directory)
+            registry = {
+                "schemaVersion": 2,
+                "plugins": [
+                    {"pluginId": PLUGIN_ID, "status": "pending-adoption", "source": {"repository": "example/plugin"}},
+                    {"pluginId": "com.example.unchanged", "status": "active"},
+                ],
+            }
             write_json(root / ".xsec-factory/official-registry.json", registry)
             write_json(root / f".xsec-factory/official-adoptions/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
+            git(root, "init", "--quiet", "--initial-branch=main")
+            git(root, "config", "user.name", "Verifier Test")
+            git(root, "config", "user.email", "verifier@example.invalid")
+            before = self.commit(root, "staged first-party adoption assertion")
+            registry["plugins"][0]["status"] = "active"
+            write_json(root / ".xsec-factory/official-registry.json", registry)
             write_json(root / f".xsec-factory/official-adoption-proofs/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
             after = self.commit(root, "activate one first-party registration")
 
             self.assertEqual(
                 verifier.verify_first_party_adoption_candidate(root, before, after),
                 {
-                    "kind": "adoption",
+                    "kind": "adoption-activation",
                     "plugin_id": PLUGIN_ID,
                     "adoption_path": f".xsec-factory/official-adoptions/{PLUGIN_ID}.json",
                 },
             )
 
-    def test_first_party_adoption_candidate_rejects_an_unrelated_change(self) -> None:
+    def test_first_party_adoption_staging_candidate_rejects_an_unrelated_change(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-extra-") as directory:
             root = Path(directory)
             registry = {"schemaVersion": 2, "plugins": [{"pluginId": PLUGIN_ID, "status": "pending-adoption"}]}
@@ -573,13 +600,10 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             git(root, "config", "user.name", "Verifier Test")
             git(root, "config", "user.email", "verifier@example.invalid")
             before = self.commit(root, "pending first-party registration")
-            registry["plugins"][0]["status"] = "active"
-            write_json(root / ".xsec-factory/official-registry.json", registry)
             write_json(root / f".xsec-factory/official-adoptions/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
-            write_json(root / f".xsec-factory/official-adoption-proofs/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
             (root / ".github/workflows/unrelated.yml").parent.mkdir(parents=True)
             (root / ".github/workflows/unrelated.yml").write_text("name: unrelated\n", encoding="utf-8")
-            after = self.commit(root, "unsafe first-party activation")
+            after = self.commit(root, "unsafe first-party adoption staging")
 
             with self.assertRaisesRegex(verifier.PromotionVerificationError, "unauthorized path set"):
                 verifier.verify_first_party_adoption_candidate(root, before, after)
