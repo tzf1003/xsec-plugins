@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 LIFECYCLE = ROOT / "docs" / "plugin-development-release-lifecycle.md"
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish.yml"
+REFRESH_SIDECAR_WORKFLOW = ROOT / ".github" / "workflows" / "refresh-retained-sidecars.yml"
 
 
 class ReleaseLifecycleDocumentationTests(unittest.TestCase):
@@ -74,6 +75,33 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("smoke_redispatch=true", workflow)
         self.assertIn("marketplace_revision=$(git rev-parse HEAD)", workflow)
         self.assertIn("steps.publication-decision.outputs.smoke_redispatch == 'true'", workflow)
+
+    def test_retained_sidecar_refresh_is_manual_narrow_and_never_auto_merges(self) -> None:
+        workflow = REFRESH_SIDECAR_WORKFLOW.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        for required_rule in (
+            "workflow_dispatch:",
+            "refs/heads/main",
+            "REF_PROTECTED",
+            "environment: production",
+            "XSEC_MARKETPLACE_PUBLISH_TOKEN",
+            "id-token: write",
+            "xsec-marketplace-publish-main",
+            "validate_market.py source --source-root . --built-root .",
+            "--retained-release-plugin-id",
+            "--validate-only --retained-release-plugin-id",
+            "external_source_factory.py validate",
+            "git ls-files --others --exclude-standard",
+            "@codex review",
+            "The workflow intentionally does **not** merge this PR.",
+        ):
+            with self.subTest(required_rule=required_rule):
+                self.assertIn(required_rule, workflow)
+        self.assertNotIn('pulls/${pull_number}/merge', workflow)
+        self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
+        self.assertIn("Retained KMS sidecar repair", readme)
+        self.assertIn("refresh-retained-sidecars.yml", readme)
+        self.assertIn("intentionally **never merges**", readme)
 
 
 if __name__ == "__main__":

@@ -269,6 +269,44 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 self.assertNotIn("issuer_url", sidecar)
             self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
 
+    def test_retained_release_refresh_signs_only_the_selected_current_release_document(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-retained-release-refresh-") as directory:
+            root = Path(directory)
+            documents = self.make_marketplace(root)
+            selected = publisher.retained_release_document(root, "com.example.beta")
+            self.assertEqual(
+                selected.subject,
+                "plugins/com.example.beta/.xsec-market/releases.json",
+            )
+            self.assertEqual(selected.purpose, "xsec.plugin-marketplace.release")
+
+            requested: list[str] = []
+
+            def sign(document: publisher.MarketplaceDocument) -> bytes:
+                requested.append(document.subject)
+                return self.broker_response(document)
+
+            written = publisher.publish_documents([selected], REVISION, sign)
+            self.assertEqual(requested, [selected.subject])
+            self.assertEqual(written, [publisher.sidecar_path_for(selected)])
+            self.assertEqual(publisher.validate_documents([selected], REVISION), written)
+            self.assertFalse(publisher.sidecar_path_for(documents[0]).exists())
+            alpha = publisher.retained_release_document(root, "com.example.alpha")
+            self.assertFalse(publisher.sidecar_path_for(alpha).exists())
+
+    def test_retained_release_refresh_rejects_non_marketplace_or_unsafe_plugin_ids(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-retained-release-refresh-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            for plugin_id, expected in (
+                ("com.example.missing", "current Marketplace release document"),
+                ("../com.example.alpha", "plugin ID is unsafe"),
+                ("con", "plugin ID is unsafe"),
+            ):
+                with self.subTest(plugin_id=plugin_id):
+                    with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, expected):
+                        publisher.retained_release_document(root, plugin_id)
+
     def test_publisher_signs_external_factory_provenance_in_a_separate_fixed_proof_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-") as directory:
             root = Path(directory)

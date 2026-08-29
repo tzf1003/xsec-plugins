@@ -1,0 +1,151 @@
+name: Refresh retained immutable Marketplace sidecar
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin_id:
+        description: Current Marketplace plugin whose retained releases.json KMS sidecar must be refreshed
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  # A sidecar binds the exact protected-main document bytes. Serialize this
+  # repair with normal publication so neither flow signs a stale release index.
+  group: xsec-marketplace-publish-main
+  cancel-in-progress: false
+
+jobs:
+  enforce-refresh-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a protected main manual dispatch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "Retained sidecar refresh is manual only." >&2; exit 1; }
+          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
+            echo "Retained sidecar refresh requires protected refs/heads/main." >&2
+            exit 1
+          }
+  refresh-and-open-pr:
+    needs: enforce-refresh-ref
+    if: ${{ needs.enforce-refresh-ref.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Require the protected marketplace publication token before checkout or KMS
+        env:
+          XSEC_MARKETPLACE_PUBLISH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+        run: |
+          [ -n "$XSEC_MARKETPLACE_PUBLISH_TOKEN" ] || {
+            echo "The protected marketplace publication token is required before sidecar refresh." >&2
+            exit 1
+          }
+      - name: Check out current protected main after acquiring the publication slot
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/heads/main
+          token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+      - name: Record the current protected source revision and require a clean checkout
+        id: current-main
+        run: |
+          set -euo pipefail
+          source_revision="$(git rev-parse HEAD)"
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not protected main." >&2; exit 1; }
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)" || {
+            echo "The protected checkout is unexpectedly dirty before sidecar refresh." >&2
+            exit 1
+          }
+          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Verify current immutable Marketplace artifacts and source before signing
+        run: python scripts/validate_market.py source --source-root . --built-root .
+      - name: Refresh exactly the requested retained release sidecar through the production Cloud broker
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
+        run: python scripts/kms_marketplace_publisher.py --root . --retained-release-plugin-id "$PLUGIN_ID"
+      - name: Require the refreshed KMS sidecar and strict Factory validation
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+          python scripts/kms_marketplace_publisher.py --root . --validate-only --retained-release-plugin-id "$PLUGIN_ID"
+          python scripts/external_source_factory.py validate
+      - name: Reject every non-sidecar change before opening a pull request
+        id: changed-sidecar
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+        run: |
+          set -euo pipefail
+          expected="plugins/${PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json"
+          mapfile -t changed < <(
+            { git diff --name-only --no-renames HEAD; git ls-files --others --exclude-standard; } | LC_ALL=C sort -u
+          )
+          if [ "${#changed[@]}" -ne 1 ] || [ "${changed[0]}" != "$expected" ]; then
+            printf 'Retained sidecar refresh changed an unexpected path set:\n%s\n' "${changed[*]:-<none>}" >&2
+            exit 1
+          fi
+          echo "path=$expected" >> "$GITHUB_OUTPUT"
+      - name: Open the signed sidecar refresh pull request for independent review
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          SIDECAR_PATH: ${{ steps.changed-sidecar.outputs.path }}
+        run: |
+          set -euo pipefail
+          git add -- "$SIDECAR_PATH"
+          mapfile -t staged < <(git diff --cached --name-only --no-renames)
+          if [ "${#staged[@]}" -ne 1 ] || [ "${staged[0]}" != "$SIDECAR_PATH" ]; then
+            printf 'Refusing to publish a non-sidecar staged path set:\n%s\n' "${staged[*]:-<none>}" >&2
+            exit 1
+          fi
+          git config user.name "xsec-marketplace[bot]"
+          git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
+          git commit -m "chore: refresh retained marketplace sidecar"
+          generated_revision="$(git rev-parse HEAD)"
+          branch="xsec-marketplace/refresh-retained-sidecar-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch"
+          git push --set-upstream origin "$branch"
+          pull_url="$(gh pr create --base main --head "$branch" --title "chore: refresh retained marketplace sidecar" --body "Generated by protected sidecar-refresh workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It refreshes only ${SIDECAR_PATH} for ${PLUGIN_ID}; it does not change marketplace source, artifacts, release history, channel pointers, or Factory registry/evidence.")"
+          pull_number="$(gh pr view "$pull_url" --json number --jq .number)"
+          gh workflow run validate.yml --ref "$branch"
+          deadline="$((SECONDS + 900))"
+          while :; do
+            source_gate="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 20 --json headSha,status,conclusion | jq -rc --arg revision "$generated_revision" '.[] | select(.headSha == $revision) | @base64' | head -n 1)"
+            if [ -n "$source_gate" ]; then
+              source_gate_json="$(printf '%s' "$source_gate" | base64 --decode)"
+              [ "$(printf '%s' "$source_gate_json" | jq -r .status)" = "completed" ] || { sleep 5; continue; }
+              [ "$(printf '%s' "$source_gate_json" | jq -r .conclusion)" = "success" ] || { echo "The retained sidecar source gate failed." >&2; exit 1; }
+              break
+            fi
+            [ "$SECONDS" -lt "$deadline" ] || { echo "Timed out waiting for the retained sidecar source gate." >&2; exit 1; }
+            sleep 5
+          done
+          gh pr comment "$pull_number" --body "@codex review
+
+This PR was generated by the protected retained-sidecar refresh workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It passed the source gate and changes only ${SIDECAR_PATH}; do not merge automatically. Review the immutable release metadata/artifacts and KMS sidecar before a protected merge."
+          {
+            echo "## Retained Marketplace sidecar refresh PR"
+            echo
+            echo "${pull_url}"
+            echo
+            echo "The workflow intentionally does **not** merge this PR. It requires Codex review and a protected-branch merge."
+          } >> "$GITHUB_STEP_SUMMARY"

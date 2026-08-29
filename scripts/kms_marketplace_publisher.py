@@ -328,6 +328,31 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
 
 
+def retained_release_document(root: Path, plugin_id: str) -> MarketplaceDocument:
+    """Resolve exactly one retained immutable release document for refresh.
+
+    Sidecar repair is deliberately narrower than normal publication: it can
+    only re-sign the existing ``releases.json`` for a plugin that the current
+    Marketplace already discovers.  In particular, callers cannot use this
+    helper to sign the mutable marketplace index, arbitrary repository paths,
+    or Factory provenance documents.
+    """
+
+    if (
+        not isinstance(plugin_id, str)
+        or not OFFICIAL_PLUGIN_ID_PATTERN.fullmatch(plugin_id)
+        or ".." in plugin_id
+        or "--" in plugin_id
+        or plugin_id.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES
+    ):
+        fail("retained release refresh plugin ID is unsafe")
+    subject = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    matching = [document for document in marketplace_documents(root) if document.subject == subject]
+    if len(matching) != 1 or matching[0].purpose != "xsec.plugin-marketplace.release":
+        fail("retained release refresh must name a current Marketplace release document")
+    return matching[0]
+
+
 def validate_sidecar(
     sidecar_bytes: bytes,
     document: MarketplaceDocument,
@@ -657,6 +682,25 @@ def sidecar_path_for(document: MarketplaceDocument) -> Path:
     return document.sidecar_path if document.sidecar_path is not None else Path(f"{document.path}.sig.jws.json")
 
 
+def publish_documents(
+    documents: list[MarketplaceDocument],
+    source_revision: str,
+    request_signed_document: Callable[[MarketplaceDocument], bytes],
+    *,
+    now: int | None = None,
+) -> list[Path]:
+    sidecars: dict[Path, bytes] = {}
+    for document in documents:
+        response = request_signed_document(document)
+        sidecar = sidecar_from_broker_response(response, document, source_revision, now=now)
+        destination = sidecar_path_for(document)
+        if destination in sidecars:
+            fail(f"KMS sidecar destination is duplicated: {destination}")
+        sidecars[destination] = sidecar
+    write_sidecars(sidecars)
+    return list(sidecars)
+
+
 def publish_sidecars(
     root: Path,
     source_revision: str,
@@ -664,26 +708,27 @@ def publish_sidecars(
     *,
     now: int | None = None,
 ) -> list[Path]:
-    documents = marketplace_documents(root)
-    sidecars: dict[Path, bytes] = {}
-    for document in documents:
-        response = request_signed_document(document)
-        sidecar = sidecar_from_broker_response(response, document, source_revision, now=now)
-        destination = sidecar_path_for(document)
-        sidecars[destination] = sidecar
-    write_sidecars(sidecars)
-    return list(sidecars)
+    return publish_documents(marketplace_documents(root), source_revision, request_signed_document, now=now)
 
 
-def validate_published_sidecars(root: Path, source_revision: str, *, now: int | None = None) -> list[Path]:
+def validate_documents(
+    documents: list[MarketplaceDocument],
+    source_revision: str,
+    *,
+    now: int | None = None,
+) -> list[Path]:
     validated: list[Path] = []
-    for document in marketplace_documents(root):
+    for document in documents:
         sidecar_path = sidecar_path_for(document)
         if is_link(sidecar_path) or not sidecar_path.is_file():
             fail(f"KMS sidecar is unavailable: {sidecar_path}")
         validate_sidecar(sidecar_path.read_bytes(), document, source_revision, now=now)
         validated.append(sidecar_path)
     return validated
+
+
+def validate_published_sidecars(root: Path, source_revision: str, *, now: int | None = None) -> list[Path]:
+    return validate_documents(marketplace_documents(root), source_revision, now=now)
 
 
 def request_json(request: Request) -> bytes:
@@ -771,16 +816,29 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT, help="marketplace root")
     parser.add_argument("--validate-only", action="store_true", help="validate existing sidecars without acquiring OIDC")
+    parser.add_argument(
+        "--retained-release-plugin-id",
+        help="refresh or validate only one current Marketplace immutable releases.json sidecar",
+    )
     args = parser.parse_args()
     root = args.root.resolve()
     source_revision = source_revision_from_environment(os.environ)
     try:
+        documents = (
+            [retained_release_document(root, args.retained_release_plugin_id)]
+            if args.retained_release_plugin_id is not None
+            else marketplace_documents(root)
+        )
         if args.validate_only:
-            validated = validate_published_sidecars(root, source_revision)
+            validated = validate_documents(documents, source_revision)
             print(f"validated {len(validated)} KMS marketplace sidecars")
             return
         token = github_oidc_token(os.environ)
-        written = publish_sidecars(root, source_revision, lambda document: request_cloud_signature(document, token, source_revision))
+        written = publish_documents(
+            documents,
+            source_revision,
+            lambda document: request_cloud_signature(document, token, source_revision),
+        )
         print(f"published {len(written)} KMS marketplace sidecars")
     except MarketplaceKmsPublisherError as error:
         raise SystemExit(f"KMS marketplace publishing failed: {error}") from error
