@@ -71,6 +71,12 @@ TRANSPORT_ENVIRONMENT_KEYS = (
     # fields, regardless of Git/curl's trace-redaction settings.
     "GCM_TRACE",
     "GCM_TRACE_SECRETS",
+    # GCM's store/cache selectors can direct the post-authentication ``store``
+    # request to a caller-selected socket or file.  The candidate never needs
+    # to select a credential store: the approved platform helper chooses its
+    # own trusted default.
+    "GCM_CREDENTIAL_STORE",
+    "GCM_CREDENTIAL_CACHE_OPTIONS",
     # libcurl honors this independently of Git trace settings. Leaving it
     # inherited would append TLS session secrets to a caller-selected file and
     # can expose an Authorization header to a traffic capture.
@@ -101,6 +107,32 @@ TRANSPORT_ENVIRONMENT_KEYS = (
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_TEMPLATE_DIR",
 )
+# Git Credential Manager is a .NET application.  An otherwise absolute,
+# installation-local helper pathname is not sufficient if the caller can make
+# its runtime load a startup hook or profiler first.  Keep the transport
+# boundary independent of the caller's environment by removing every legacy
+# and CoreCLR profiler family plus the host settings that select external
+# startup/dependency/runtime code.  ``COMPlus_`` is intentionally a complete
+# family: these are runtime knobs, not inputs the materializer requires.
+DOTNET_RUNTIME_ENVIRONMENT_KEYS = frozenset(
+    {
+        "DOTNET_STARTUP_HOOKS",
+        "DOTNET_ADDITIONAL_DEPS",
+        "DOTNET_SHARED_STORE",
+        "DOTNET_ROOT",
+        "DOTNET_ROOT_X86",
+        "DOTNET_ROOT_X64",
+        "DOTNET_HOST_PATH",
+        "DOTNET_BUNDLE_EXTRACT_BASE_DIR",
+        "DOTNET_ENABLEDIAGNOSTICS",
+        "DOTNET_ENABLEDIAGNOSTICS_PROFILER",
+        "DOTNET_ENABLEDIAGNOSTICS_IPC",
+        "COREHOST_TRACE",
+        "COREHOST_TRACEFILE",
+        "COREHOST_TRACE_VERBOSITY",
+    }
+)
+DOTNET_RUNTIME_ENVIRONMENT_PREFIXES = ("CORECLR_", "COR_", "COMPLUS_")
 
 
 def safe_openssh_command() -> str:
@@ -246,8 +278,15 @@ def sealed_transport_environment(
     """
 
     environment = os.environ.copy()
-    for key in TRANSPORT_ENVIRONMENT_KEYS:
-        environment.pop(key, None)
+    transport_environment_keys = frozenset(key.upper() for key in TRANSPORT_ENVIRONMENT_KEYS)
+    for key in tuple(environment):
+        normalized_key = key.upper()
+        if (
+            normalized_key in transport_environment_keys
+            or normalized_key in DOTNET_RUNTIME_ENVIRONMENT_KEYS
+            or normalized_key.startswith(DOTNET_RUNTIME_ENVIRONMENT_PREFIXES)
+        ):
+            environment.pop(key, None)
     for key in tuple(environment):
         if key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
             environment.pop(key, None)
@@ -487,6 +526,15 @@ def assert_no_local_url_rewrites(repository: Path) -> None:
             fail("materialized source repository must not enable Git worktree-specific configuration")
         if key == "core.fsmonitor":
             fail("materialized source repository must not contain Git fsmonitor configuration")
+        # The only local credential setting a generated candidate could need
+        # would be a helper, but that helper is always supplied by the sealed
+        # command line below.  In particular, GCM accepts credentialStore and
+        # cacheOptions (including URL-scoped forms) that can send the helper's
+        # post-authentication store request to a caller-controlled endpoint.
+        # Reject the whole credential namespace rather than attempting to
+        # enumerate platform-specific spellings of those selectors.
+        if key.startswith("credential."):
+            fail("materialized source repository must not contain Git credential configuration")
         # ``git push <repository>`` accepts either a literal URL or a local
         # remote name.  A remote whose name equals the approved URL can supply
         # a different ``pushurl`` after this tool has preflighted the literal

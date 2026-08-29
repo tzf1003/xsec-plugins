@@ -416,6 +416,27 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     )
             invoke.assert_not_called()
 
+    def test_push_rejects_local_credential_manager_store_or_cache_configuration_before_remote_preflight(self) -> None:
+        overrides = {
+            "credential.credentialStore": "cache",
+            "credential.cacheOptions": "--socket=/tmp/attacker-gcm.sock",
+            "credential.https://github.com.credentialStore": "cache",
+        }
+        for key, value in overrides.items():
+            with self.subTest(key=key), tempfile.TemporaryDirectory(prefix="xsec-materializer-gcm-store-") as directory:
+                repository = Path(directory) / "candidate"
+                git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+                git(repository, "config", key, value)
+                with patch.object(materializer, "run_git") as invoke:
+                    with self.assertRaisesRegex(materializer.MaterializationError, "Git credential configuration"):
+                        materializer.push_candidate(
+                            repository,
+                            PLUGIN_ID,
+                            "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                            "manager",
+                        )
+                invoke.assert_not_called()
+
     def test_manager_helper_uses_an_absolute_binary_from_the_trusted_git_install(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-credential-manager-") as directory:
             install = Path(directory) / "git-install"
@@ -514,6 +535,19 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     "GIT_TRACE_REDACT": "0",
                     "GCM_TRACE": "C:/attacker-gcm-trace.log",
                     "GCM_TRACE_SECRETS": "1",
+                    "GCM_CREDENTIAL_STORE": "cache",
+                    "GCM_CREDENTIAL_CACHE_OPTIONS": "--socket=C:/attacker-gcm.sock",
+                    "DOTNET_STARTUP_HOOKS": "C:/attacker/startup-hook.dll",
+                    "DOTNET_ADDITIONAL_DEPS": "C:/attacker/deps",
+                    "DOTNET_ROOT": "C:/attacker/dotnet",
+                    "DOTNET_EnableDiagnostics": "0",
+                    "CORECLR_ENABLE_PROFILING": "1",
+                    "CORECLR_PROFILER": "{attacker-profiler}",
+                    "CORECLR_PROFILER_PATH_64": "C:/attacker/profiler.dll",
+                    "COR_ENABLE_PROFILING": "1",
+                    "COR_PROFILER_PATH": "C:/attacker/legacy-profiler.dll",
+                    "ComPlus_EnableDiagnostics": "0",
+                    "COMPLUS_Profiler": "{attacker-complplus-profiler}",
                     "GIT_EXEC_PATH": "C:/attacker-git-exec-path",
                     "GIT_SSL_CAINFO": "C:/attacker-ca.pem",
                     "GIT_SSL_CAPATH": "C:/attacker-ca-directory",
@@ -549,6 +583,19 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 self.assertNotIn("GIT_TRACE_REDACT", environment)
                 self.assertNotIn("GCM_TRACE", environment)
                 self.assertNotIn("GCM_TRACE_SECRETS", environment)
+                self.assertNotIn("GCM_CREDENTIAL_STORE", environment)
+                self.assertNotIn("GCM_CREDENTIAL_CACHE_OPTIONS", environment)
+                self.assertNotIn("DOTNET_STARTUP_HOOKS", environment)
+                self.assertNotIn("DOTNET_ADDITIONAL_DEPS", environment)
+                self.assertNotIn("DOTNET_ROOT", environment)
+                self.assertNotIn("DOTNET_EnableDiagnostics", environment)
+                self.assertNotIn("CORECLR_ENABLE_PROFILING", environment)
+                self.assertNotIn("CORECLR_PROFILER", environment)
+                self.assertNotIn("CORECLR_PROFILER_PATH_64", environment)
+                self.assertNotIn("COR_ENABLE_PROFILING", environment)
+                self.assertNotIn("COR_PROFILER_PATH", environment)
+                self.assertNotIn("ComPlus_EnableDiagnostics", environment)
+                self.assertNotIn("COMPLUS_Profiler", environment)
                 self.assertNotIn("GIT_EXEC_PATH", environment)
                 self.assertNotIn("GIT_SSL_CAINFO", environment)
                 self.assertNotIn("GIT_SSL_CAPATH", environment)
