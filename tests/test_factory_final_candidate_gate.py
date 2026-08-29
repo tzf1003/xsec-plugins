@@ -181,6 +181,17 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             self.assertIn("--argjson pull_number", protected_workflow)
             self.assertIn("any(.pull_requests[]?; .number == $pull_number)", protected_workflow)
 
+    def test_finalizer_and_dispatcher_accept_the_last_review_thread_page(self) -> None:
+        workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
+        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
+        page_value = ".data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage"
+
+        # The last page legitimately returns false. `jq -e` converts that
+        # expected value to a non-zero process status under `set -e`.
+        for protected_workflow in (workflow, dispatcher):
+            self.assertIn(f"jq -r {page_value}", protected_workflow)
+            self.assertNotIn(f"jq -er {page_value}", protected_workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
