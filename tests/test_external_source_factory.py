@@ -1189,6 +1189,13 @@ class ExternalSourceFactoryTests(unittest.TestCase):
 
             factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
+            # The staging PR itself remains pending and contains no sidecar;
+            # it must validate against an equally pending trusted baseline.
+            write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": [pending]})
+            factory.adoption_path(root, "com.xsec.workspace.sub-agent").unlink()
+            (root / factory.ADOPTION_PROOFS_RELATIVE_PATH / "com.xsec.workspace.sub-agent.json").unlink()
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
+
             disabled = self.first_party_entry(status="disabled")
             write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": [disabled]})
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must remain pending or be activated"):

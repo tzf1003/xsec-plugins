@@ -2843,9 +2843,7 @@ def validate_trusted_baseline_continuity(
                 "identity from the trusted baseline"
             )
         snapshot = snapshot_directory(root, plugin_id)
-        evidence = publication_path(root, plugin_id)
-        ownership = adoption_path(root, plugin_id) if registration.trust_tier == "first-party" else evidence
-        if is_link(snapshot) or not snapshot.is_dir() or is_link(ownership) or not ownership.is_file():
+        if is_link(snapshot) or not snapshot.is_dir():
             fail(
                 f"published official Factory plugin {plugin_id} must retain its immutable snapshot, "
                 "release history, and source-ownership evidence recorded in the trusted baseline"
@@ -2870,6 +2868,13 @@ def validate_trusted_baseline_continuity(
                     "with an immutable adoption proof"
                 )
             continue
+        evidence = publication_path(root, plugin_id)
+        ownership = adoption_path(root, plugin_id) if registration.trust_tier == "first-party" else evidence
+        if is_link(ownership) or not ownership.is_file():
+            fail(
+                f"published official Factory plugin {plugin_id} must retain its immutable snapshot, "
+                "release history, and source-ownership evidence recorded in the trusted baseline"
+            )
         baseline_events = ownership_history(
             baseline,
             baseline_registration,
