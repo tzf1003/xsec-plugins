@@ -255,8 +255,16 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -euo pipefail
-          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${HEAD_SHA}&event=workflow_dispatch&per_page=100")"
-          printf '%s' "$runs" | jq -e 'any(.workflow_runs[]; .status == "completed" and .conclusion == "success")' >/dev/null || {
+          # The source gate is the PR validation for this immutable candidate
+          # head. A manually-dispatched validation is not the reviewed PR gate.
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=100")"
+          printf '%s' "$runs" | jq -e --argjson pull_number "$PULL_NUMBER" '
+            any(.workflow_runs[];
+              .status == "completed"
+              and .conclusion == "success"
+              and any(.pull_requests[]?; .number == $pull_number)
+            )
+          ' >/dev/null || {
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }

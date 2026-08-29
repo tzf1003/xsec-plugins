@@ -171,8 +171,16 @@ jobs:
           pr="$(printf '%s' "$prs" | jq -cer '[.[][] | select(.merged_at != null and .base.ref == "main" and (.head.ref | startswith("xsec-marketplace/")))] | if length == 1 then .[0] else error("expected exactly one merged Factory generated PR") end')"
           number="$(printf '%s' "$pr" | jq -er .number)"
           head_sha="$(printf '%s' "$pr" | jq -er .head.sha)"
-          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${head_sha}&event=workflow_dispatch&per_page=100")"
-          printf '%s' "$runs" | jq -e 'any(.workflow_runs[]; .status == "completed" and .conclusion == "success")' >/dev/null || {
+          # The source gate is the PR validation for this immutable candidate
+          # head. A manually-dispatched validation is not the reviewed PR gate.
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${head_sha}&event=pull_request&per_page=100")"
+          printf '%s' "$runs" | jq -e --argjson pull_number "$number" '
+            any(.workflow_runs[];
+              .status == "completed"
+              and .conclusion == "success"
+              and any(.pull_requests[]?; .number == $pull_number)
+            )
+          ' >/dev/null || {
             echo "The merged generated PR has no successful immutable Factory source gate." >&2
             exit 1
           }
