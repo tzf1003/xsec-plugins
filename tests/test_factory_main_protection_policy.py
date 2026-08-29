@@ -70,7 +70,7 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
 
         self.assertTrue(desired["required_status_checks"]["strict"])
         self.assertTrue(desired["enforce_admins"])
-        self.assertEqual(desired["required_status_checks"]["contexts"], [])
+        self.assertNotIn("contexts", desired["required_status_checks"])
         self.assertNotIn(
             {"context": "source-freshness-gate", "app_id": 15368},
             desired["required_status_checks"]["checks"],
