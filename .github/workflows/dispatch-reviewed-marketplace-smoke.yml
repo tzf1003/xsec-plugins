@@ -111,8 +111,13 @@ jobs:
           AFTER: ${{ github.sha }}
         run: |
           set -euo pipefail
-          prs="$(gh api -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100")"
-          pr="$(printf '%s' "$prs" | jq -cer '[.[] | select(.merged_at != null and .base.ref == "main" and (.head.ref | startswith("xsec-marketplace/")))] | if length == 1 then .[0] else error("expected exactly one merged Factory generated PR") end')"
+          # A protected-main commit can be associated with more than one page
+          # of PRs.  `gh api --paginate` emits one JSON array per page, so
+          # slurp the complete response before selecting the one reviewed
+          # generated Factory PR.  Inspecting only the first page could reject
+          # the real PR or, worse, select the wrong same-commit PR.
+          prs="$(gh api --paginate --slurp -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100")"
+          pr="$(printf '%s' "$prs" | jq -cer '[.[][] | select(.merged_at != null and .base.ref == "main" and (.head.ref | startswith("xsec-marketplace/")))] | if length == 1 then .[0] else error("expected exactly one merged Factory generated PR") end')"
           number="$(printf '%s' "$pr" | jq -er .number)"
           head_sha="$(printf '%s' "$pr" | jq -er .head.sha)"
           runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${head_sha}&event=workflow_dispatch&per_page=100")"

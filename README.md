@@ -224,11 +224,13 @@ main PR, so a Factory-only context cannot block product or documentation work.
 After Codex review is completed and every Codex thread is resolved, a protected
 maintainer runs `final-merge-generated-marketplace-pr.yml` with that PR number.
 It re-reads the live PR head and base, revalidates the exact release diff,
-every KMS sidecar and every registered external ref, then posts success and
-immediately invokes GitHub's exact-head squash-merge API. If the head, base,
-source ref, or merge operation changes/fails, it leaves (or restores) the
-required status to pending; it never releases a stale candidate or pretends a
-failed merge succeeded. This is the merge-time rejection boundary on personal
+every KMS sidecar and every registered external ref. The arm workflow, not the
+final workflow, owns the candidate's required status and keeps it **pending**
+for the complete lifetime of the PR. After revalidation, the final workflow
+creates an isolated Finalizer GitHub App token and uses it only for GitHub's
+exact-head squash-merge API. If the head, base, source ref, Finalizer setup, or
+merge operation changes/fails, the candidate remains pending; it never releases
+a stale candidate or pretends a failed merge succeeded. This is the merge-time rejection boundary on personal
 repositories too; it does not rely on merge queue availability. The protected
 post-merge dispatcher is a fail-closed second boundary and never auto-rolls
 back a pointer. The one deliberate no-pointer exception is a registered
@@ -241,15 +243,25 @@ Run `enforce-factory-main-protection.yml` once from protected `main` after
 installing this code and whenever protection is audited. Its reviewer-gated
 `production` job needs only the repository-scoped administration secret
 `XSEC_MARKETPLACE_ADMIN_TOKEN`; it sets strict, GitHub-Actions-app-pinned
-`source-gate` and `factory-final-merge-gate` checks,
-enforces those checks for administrators, preserves unrelated protection
-settings, and requires resolved conversations. The final merge workflow uses
-the separate scoped `XSEC_MARKETPLACE_PUBLISH_TOKEN` only for reading and
-merging the exact PR; its status writes use the GitHub Actions token so the
-required context remains app-pinned. If either protected environment approval,
-admin token, or final workflow is unavailable, the safe recovery is to leave
-the generated PR pending and repair/re-run the gate—never to loosen protection
-or merge it manually.
+`source-gate` in classic protection, enforces that check for administrators,
+preserves unrelated protection settings, and requires resolved conversations.
+Before it changes classic protection, it creates and verifies the separate
+`xsec-marketplace-final-exact-head` Ruleset: that Ruleset alone requires the
+strict GitHub-Actions `factory-final-merge-gate` and permits only the configured
+Finalizer App to bypass it through a pull request. The final merge workflow uses
+no Publisher credential. It creates a short-lived, repository-scoped
+`XSEC_MARKETPLACE_FINALIZER_APP_ID` /
+`XSEC_MARKETPLACE_FINALIZER_APP_PRIVATE_KEY` token only after revalidation and
+only for the exact-head merge API request. The Finalizer App is distinct from
+the Publisher, has only `contents: write`, and is
+the sole protected-main Ruleset bypass identity for this operation. Missing
+production approval, Finalizer configuration, or a rejected merge leaves the
+generated PR pending; repair and re-run the gate—never loosen protection or
+merge it manually.
+Before either the protection or final-merge workflow can proceed, `production`
+must have at least one required reviewer and must not allow administrator
+bypass; both workflows query this server-side and fail closed if either setting
+is absent.
 The protection workflow normalizes GET-only user/team/app response objects to
 the REST PUT request shape before updating, so existing review dismissals,
 bypass allowances, and branch restrictions are preserved rather than causing a

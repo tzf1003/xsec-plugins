@@ -15,6 +15,7 @@ MERGE_GUARD_WORKFLOW = ROOT / ".github" / "workflows" / "verify-generated-market
 ARM_FINAL_GATE_WORKFLOW = ROOT / ".github" / "workflows" / "arm-generated-marketplace-final-merge.yml"
 FINAL_MERGE_WORKFLOW = ROOT / ".github" / "workflows" / "final-merge-generated-marketplace-pr.yml"
 PROTECTION_WORKFLOW = ROOT / ".github" / "workflows" / "enforce-factory-main-protection.yml"
+FINALIZER_RULESET_DOCUMENT = ROOT / "docs" / "factory-finalizer-ruleset-policy.md"
 
 
 class ReleaseLifecycleDocumentationTests(unittest.TestCase):
@@ -114,6 +115,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         protection = PROTECTION_WORKFLOW.read_text(encoding="utf-8")
         readme = README.read_text(encoding="utf-8")
         factory_document = (ROOT / "docs" / "first-party-plugin-factory.md").read_text(encoding="utf-8")
+        finalizer_ruleset_document = FINALIZER_RULESET_DOCUMENT.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", arm)
         self.assertNotIn("actions/checkout", arm)
         self.assertIn("factory_generated=true", arm)
@@ -128,8 +130,13 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("context=factory-final-merge-gate", arm)
         self.assertIn("workflow_dispatch:", final_merge)
         self.assertIn("environment: production", final_merge)
-        self.assertIn("XSEC_MARKETPLACE_PUBLISH_TOKEN", final_merge)
-        self.assertIn("STATUS_TOKEN: ${{ github.token }}", final_merge)
+        self.assertIn("XSEC_MARKETPLACE_FINALIZER_APP_ID", final_merge)
+        self.assertIn("XSEC_MARKETPLACE_FINALIZER_APP_PRIVATE_KEY", final_merge)
+        self.assertIn("actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349", final_merge)
+        self.assertIn("actions/checkout@11d5960a326750d5838078e36cf38b85af677262", final_merge)
+        self.assertIn("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", final_merge)
+        self.assertNotIn("XSEC_MARKETPLACE_PUBLISH_TOKEN", final_merge)
+        self.assertNotIn("statuses: write", final_merge)
         self.assertIn("Recheck the live PR/source boundary", final_merge)
         self.assertIn("PR head/base changed while final revalidation ran", final_merge)
         self.assertIn("factory-final-merge-gate", final_merge)
@@ -139,16 +146,28 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("validate --baseline-root .", final_merge)
         self.assertIn("factory-publication-sources.json", final_merge)
         self.assertIn("-f sha=\"$HEAD_SHA\"", final_merge)
-        self.assertIn("trap restore_pending_on_exit EXIT", final_merge)
-        self.assertIn("merge_completed=false", final_merge)
+        self.assertNotIn("state=success -f context=factory-final-merge-gate", final_merge)
+        self.assertNotIn("trap ", final_merge)
+        self.assertIn("The arm workflow owns factory-final-merge-gate", final_merge)
+        self.assertIn("the Factory gate remains pending", final_merge)
+        self.assertIn("Merge the exact revalidated head with the isolated Finalizer App", final_merge)
+        self.assertIn("can_admins_bypass == false", final_merge)
+        self.assertIn('"required_reviewers"', final_merge)
         self.assertIn("reviewThreads(first:100,after:$cursor)", final_merge)
         self.assertIn("pageInfo{hasNextPage endCursor}", final_merge)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
+        self.assertIn("can_admins_bypass == false", protection)
+        self.assertIn('"required_reviewers"', protection)
         self.assertIn("branches/main/protection", protection)
         self.assertIn("factory_main_protection_policy.py", protection)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", readme)
         self.assertIn("factory-final-merge-gate", readme)
         self.assertIn("跨 REST pages 的精确 head Codex review", factory_document)
+        self.assertIn("绝不写 success", factory_document)
+        self.assertIn("xsec-marketplace-final-exact-head", factory_document)
+        self.assertIn("remains pending through final revalidation and merge", finalizer_ruleset_document)
+        self.assertIn("never\nwrites a success status", finalizer_ruleset_document)
+        self.assertNotIn("short-lived exact-head approval", finalizer_ruleset_document)
         self.assertNotIn("requiring that check and GitHub merge queue", readme)
 
     def test_pending_generated_pr_scan_is_paginated_before_every_kms_call(self) -> None:
@@ -209,6 +228,16 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         workflow = ARM_FINAL_GATE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('gh api --paginate --slurp "repos/${REPOSITORY}/commits/${PR_HEAD_SHA}/pulls?per_page=100"', workflow)
         self.assertIn("any(.[][]; .state == \"open\"", workflow)
+
+    def test_post_merge_dispatcher_slurps_all_associated_pr_pages_before_selecting_factory_pr(self) -> None:
+        workflow = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
+        self.assertIn(
+            'gh api --paginate --slurp -H \'Accept: application/vnd.github+json\' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100"',
+            workflow,
+        )
+        self.assertIn('[.[][] | select(.merged_at != null and .base.ref == "main"', workflow)
+        self.assertIn('error("expected exactly one merged Factory generated PR")', workflow)
+        self.assertNotIn('gh api -H \'Accept: application/vnd.github+json\' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100"', workflow)
 
     def test_final_gate_and_post_merge_dispatcher_paginate_exact_head_codex_reviews(self) -> None:
         for workflow_path in (FINAL_MERGE_WORKFLOW, POST_MERGE_DISPATCHER):

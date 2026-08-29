@@ -9,9 +9,9 @@ on:
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
-  statuses: write
+  actions: read
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: xsec-marketplace-final-merge-main
@@ -22,11 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Require protected main and the Factory publication credential
+      - name: Require a protected main dispatch
         env:
           REF: ${{ github.ref }}
           REF_PROTECTED: ${{ github.ref_protected }}
-          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
@@ -34,20 +33,38 @@ jobs:
             echo "Final Marketplace merge requires a protected main dispatch." >&2
             exit 1
           }
-          [ -n "$GH_TOKEN" ] || { echo "The Factory publication credential is required." >&2; exit 1; }
           [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "pull_number must be a positive decimal." >&2; exit 1; }
-      - uses: actions/checkout@v4
+      - name: Require a reviewer-gated production Environment without administrator bypass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          environment_policy="$(gh api "repos/${GITHUB_REPOSITORY}/environments/production")"
+          printf '%s' "$environment_policy" | jq -e '
+            .can_admins_bypass == false
+            and any(.protection_rules[]?;
+              .type == "required_reviewers"
+              and (.reviewers | type == "array")
+              and (.reviewers | length > 0)
+            )
+          ' >/dev/null || {
+            echo "production must require at least one reviewer and forbid administrator bypass before a Factory final merge." >&2
+            exit 1
+          }
+      # actions/checkout v4.4.0, pinned after resolving the signed v4.4.0 tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           ref: refs/heads/main
-          token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
-      - uses: actions/setup-python@v5
+          token: ${{ github.token }}
+      # actions/setup-python v6.3.0, pinned after resolving the signed v6.3.0 tag.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13"
       - name: Read the live PR and fetch its exact immutable head without executing PR code
         id: pr
         env:
-          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
@@ -63,7 +80,7 @@ jobs:
             exit 1
           }
           case "$head_ref" in
-            xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/adopt-first-party-*) ;;
+            xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*) ;;
             *) echo "Final gate accepts only protected Factory publication branches." >&2; exit 1 ;;
           esac
           [[ "$base_sha" =~ ^[a-f0-9]{40}$ && "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
@@ -88,16 +105,6 @@ jobs:
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
-      - name: Re-pend the exact head for the full protected revalidation interval
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-        run: |
-          set -euo pipefail
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
-            -f state=pending -f context=factory-final-merge-gate \
-            -f description='Protected final source/Codex revalidation is running.' \
-            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
       - name: Revalidate the exact Factory transition, KMS proofs, and live external heads
         env:
           BEFORE: ${{ steps.pr.outputs.base_sha }}
@@ -111,6 +118,13 @@ jobs:
             # first-party Registry row and therefore has the same trusted
             # review/merge boundary.  These scripts come from checked-out
             # protected main; CANDIDATE is data only and is never executed.
+            # The diff itself has an independent three-path allowlist. Full
+            # Factory validation below proves the newly added KMS adoption
+            # proof, but cannot allow workflows or unrelated Factory state to
+            # piggyback on the privileged Registry activation.
+            adoption_shape="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" --before "$BEFORE" --after "$AFTER" --verify-first-party-adoption-candidate)"
+            expected_adoption_path="$(printf '%s' "$adoption_shape" | jq -er .adoption_path)"
+            expected_plugin_id="$(printf '%s' "$adoption_shape" | jq -er .plugin_id)"
             mapfile -t adoption_paths < <(git -C "$CANDIDATE" diff --name-only --no-renames "$BEFORE" "$AFTER" | grep '^\.xsec-factory/official-adoptions/.*\.json$' || true)
             [ "${#adoption_paths[@]}" -eq 1 ] || {
               echo "An adoption PR must add exactly one first-party adoption document." >&2
@@ -119,6 +133,10 @@ jobs:
             adoption_path="${adoption_paths[0]}"
             plugin_id="${adoption_path#.xsec-factory/official-adoptions/}"
             plugin_id="${plugin_id%.json}"
+            [ "$adoption_path" = "$expected_adoption_path" ] && [ "$plugin_id" = "$expected_plugin_id" ] || {
+              echo "The adoption candidate no longer matches its strict Registry/proof allowlist." >&2
+              exit 1
+            }
             [[ "$plugin_id" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]] || {
               echo "The adoption document has an unsafe plugin ID." >&2
               exit 1
@@ -153,6 +171,16 @@ jobs:
               | if all(.[]; (.repository | type == "string") and (.ref == "refs/heads/beta" or .ref == "refs/heads/main") and (.sha | test("^[a-f0-9]{40}$"))) then . else error("invalid adoption source heads") end
             ' "$CANDIDATE/$adoption_path")"
             result="$(jq -cn --arg plugin_id "$plugin_id" --argjson sources "$sources" '{kind:"adoption",plugin_id:$plugin_id,sources:$sources}')"
+          elif [[ "$HEAD_REF" == xsec-marketplace/refresh-retained-sidecar-* ]]; then
+            # A sidecar repair is a privileged Factory candidate even though
+            # it does not move a channel pointer. It must remain pending until
+            # this exact head has its own source/Codex gates and a detached
+            # JWS verification; a prior green status is never reusable.
+            retained_shape="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" --before "$BEFORE" --after "$AFTER" --verify-retained-sidecar-refresh-candidate)"
+            plugin_id="$(printf '%s' "$retained_shape" | jq -er .plugin_id)"
+            python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-retained-release-signature --retained-release-plugin-id "$plugin_id"
+            result="$(jq -cn --arg plugin_id "$plugin_id" '{kind:"retained-sidecar-refresh",plugin_id:$plugin_id,sources:[]}')"
+            sources='[]'
           else
             result="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" --before "$BEFORE" --after "$AFTER" --classify)"
             kind="$(printf '%s' "$result" | jq -er .kind)"
@@ -193,7 +221,7 @@ jobs:
           done < <(jq -rc '.[]' "$RUNNER_TEMP/factory-publication-sources.json")
       - name: Require a current source gate, Codex review, and every Codex thread resolved
         env:
-          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
@@ -221,35 +249,19 @@ jobs:
             cursor="$(printf '%s' "$page" | jq -er .data.repository.pullRequest.reviewThreads.pageInfo.endCursor)"
             [ -n "$cursor" ] || { echo "GitHub returned a paginated review thread page without a cursor." >&2; exit 1; }
           done
-      - name: Recheck the live PR/source boundary, merge its exact head, and re-pend on failure
+      - name: Recheck the live PR/source boundary before the isolated final merge
         env:
-          STATUS_TOKEN: ${{ github.token }}
-          MERGE_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
-          CANDIDATE: ${{ runner.temp }}/factory-publication
         run: |
           set -euo pipefail
-          merge_completed=false
-          pending() {
-            GH_TOKEN="$STATUS_TOKEN" gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
-              -f state=pending -f context=factory-final-merge-gate \
-              -f description='Final merge did not complete; re-run protected revalidation.' >/dev/null
-          }
-          restore_pending_on_exit() {
-            exit_code="$?"
-            if [ "$merge_completed" != "true" ]; then
-              # The required success status exists only as the tiny hand-off
-              # to GitHub's exact-head merge endpoint. Cancellation, runner
-              # failure, or a rejected merge must never leave it reusable.
-              pending || echo "Unable to restore the Factory final gate to pending." >&2
-            fi
-            return "$exit_code"
-          }
-          trap restore_pending_on_exit EXIT
-          trap 'exit 1' HUP INT TERM
-          live_pr="$(GH_TOKEN="$MERGE_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}")"
+          # The arm workflow owns factory-final-merge-gate and keeps the exact
+          # candidate head pending throughout this revalidation. This workflow
+          # must never write that status: the dedicated Finalizer App bypasses
+          # the pending required check only for the exact merge API request.
+          live_pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}")"
           [ "$(printf '%s' "$live_pr" | jq -er .state)" = "open" ] \
             && [ "$(printf '%s' "$live_pr" | jq -er .base.ref)" = "main" ] \
             && [ "$(printf '%s' "$live_pr" | jq -er .base.sha)" = "$BASE_SHA" ] \
@@ -257,13 +269,13 @@ jobs:
               echo "PR head/base changed while final revalidation ran; it remains pending." >&2
               exit 1
             }
-          [ "$(GH_TOKEN="$MERGE_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "$BASE_SHA" ] || {
+          [ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "$BASE_SHA" ] || {
             echo "Protected main advanced while final revalidation ran; it remains pending." >&2
             exit 1
           }
-          # Re-read each external ref immediately before releasing the required
-          # check. The subsequent expected-head merge gives this check and the
-          # merge one indivisible candidate identity.
+          # Re-read each external ref immediately before the isolated
+          # exact-head merge. The expected-head merge binds this check to the
+          # one candidate identity without ever releasing its pending status.
           while IFS= read -r source; do
             repository="$(printf '%s' "$source" | jq -er .repository)"
             ref="$(printf '%s' "$source" | jq -er .ref)"
@@ -279,18 +291,47 @@ jobs:
               exit 1
             }
           done < <(jq -rc '.[]' "$RUNNER_TEMP/factory-publication-sources.json")
-          GH_TOKEN="$STATUS_TOKEN" gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
-            -f state=success -f context=factory-final-merge-gate \
-            -f description='Protected final revalidation passed; merging this exact head now.' \
-            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
-          merge_result="$(GH_TOKEN="$MERGE_TOKEN" gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}/merge" \
+      - name: Require the dedicated Finalizer App credentials
+        env:
+          FINALIZER_APP_ID: ${{ secrets.XSEC_MARKETPLACE_FINALIZER_APP_ID }}
+          FINALIZER_APP_PRIVATE_KEY: ${{ secrets.XSEC_MARKETPLACE_FINALIZER_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$FINALIZER_APP_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "XSEC_MARKETPLACE_FINALIZER_APP_ID must be configured as a GitHub App ID." >&2
+            exit 1
+          }
+          [ -n "$FINALIZER_APP_PRIVATE_KEY" ] || {
+            echo "XSEC_MARKETPLACE_FINALIZER_APP_PRIVATE_KEY must be configured." >&2
+            exit 1
+          }
+      # actions/create-github-app-token v2.2.2, pinned after resolving the
+      # signed v2.2.2 tag. The requested permissions are the sole merge scope.
+      - name: Create a repository-scoped Finalizer App token
+        id: finalizer
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.XSEC_MARKETPLACE_FINALIZER_APP_ID }}
+          private-key: ${{ secrets.XSEC_MARKETPLACE_FINALIZER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Merge the exact revalidated head with the isolated Finalizer App
+        env:
+          GH_TOKEN: ${{ steps.finalizer.outputs.token }}
+          PULL_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # This is the only call using the Finalizer App token. GitHub rejects
+          # a changed/closed head via `sha`; any failure leaves the arm-owned
+          # required status pending and requires a fresh protected revalidation.
+          merge_result="$(gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}/merge" \
             -f sha="$HEAD_SHA" -f merge_method=squash -f commit_title='chore: merge reviewed Marketplace publication')" || {
-            echo "GitHub did not merge the exact revalidated PR head; final status will be restored to pending." >&2
+            echo "GitHub did not merge the exact revalidated PR head; the Factory gate remains pending." >&2
             exit 1
           }
           printf '%s' "$merge_result" | jq -e '.merged == true' >/dev/null || {
-            echo "GitHub did not confirm an exact-head merge; final status will be restored to pending." >&2
+            echo "GitHub did not confirm an exact-head merge; the Factory gate remains pending." >&2
             exit 1
           }
-          merge_completed=true
-          trap - EXIT HUP INT TERM

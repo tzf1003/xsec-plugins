@@ -153,17 +153,27 @@ Stable、sidecar repair 和 adoption 工作流都先拒绝任何尚未合并的
 
 `arm-generated-marketplace-final-merge.yml` 使用 `pull_request_target`，只读取可信的默认分支
 workflow 和 GitHub 注入的 PR metadata，**从不 checkout 或执行 PR head**。它为同仓、受允许
-`xsec-marketplace/*` Factory 分支（包括 `adopt-first-party-*`）写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
+`xsec-marketplace/*` Factory 分支（包括 `adopt-first-party-*` 和
+`refresh-retained-sidecar-*`）写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
 success/not-applicable，故所需的 Factory context 不会卡住普通产品、文档或 fork PR。完成
 source gate、Codex review 且所有 Codex thread resolve 后，受保护 `production` 环境中的
 maintainer 必须手工运行 `final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live
 PR 的 head/base，使用精确 head SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref、
-source gate 与跨 REST pages 的精确 head Codex review、分页后的全部 reviewThreads，然后才设置
-success 并立即 exact-head squash merge。first-party adoption 也走同一个门禁：它只能激活一个
+source gate 与跨 REST pages 的精确 head Codex review、分页后的全部 reviewThreads。Factory
+candidate 的 `factory-final-merge-gate` 始终由 arm workflow 保持 `pending`：final workflow
+绝不写 success，也不依赖 EXIT/SIGTERM trap 恢复状态。全部检查通过后，它临时创建独立、仓库
+范围受限的 `XSEC_MARKETPLACE_FINALIZER_APP_ID` /
+`XSEC_MARKETPLACE_FINALIZER_APP_PRIVATE_KEY` GitHub App token，并且只用该 token 调用一次
+exact-head squash merge API。Finalizer App 不能复用 Publisher token；它仅有
+`contents: write`，并是规则/保护配置中唯一允许绕过 pending
+Factory gate 的身份。缺少任一配置、取消、runner 异常或 merge 拒绝时，PR 仍然 pending，必须
+重新受保护 revalidation，不能通过写 green status 恢复。first-party adoption 也走同一个门禁：它只能激活一个
 `pending-adoption` Registry 行，并在合并前后两次重新读取该 proof 绑定的外部 `beta` 与 `main`
-分支头。success 只在 exact-head merge 调用的最小窗口存在；取消、runner 异常或 merge 拒绝时的
-EXIT/SIGTERM trap 都会将该 SHA 恢复为 pending。任一检查或 merge 失败均保持/恢复 pending；不会因为可编辑 title、过期 green check 或事后
-post-merge 拒绝而让 stale PR 合入。
+分支头。任一检查或 merge 失败都不会让 stale PR 合入，也不会把 pending Factory gate 变为
+可复用的 green status。
+retained sidecar repair 同样走此门禁：diff 必须严格只修改一个现有
+`plugins/<plugin-id>/.xsec-market/releases.json.sig.jws.json`，并在 exact head 上重新进行
+KMS/JWS 验签、source gate 与 Codex review；它不改变 release history 或 channel pointer。
 唯一允许的 no-pointer 例外是当前 Stable 已选中当前 Beta 的 registered external Stable completion：
 它必须只包含严格形状的已签名 provenance/status 更新，重新校验外部 `main` ref 后才可合并，且不会
 再次触发 Desktop smoke。
@@ -171,11 +181,15 @@ post-merge 拒绝而让 stale PR 合入。
 `enforce-factory-main-protection.yml` 是唯一的保护配置自动化，须在 protected `main` 的
 production 环境中手工运行，且需要仓库管理权限的
 `XSEC_MARKETPLACE_ADMIN_TOKEN`。它将 `source-gate` 和
-`factory-final-merge-gate` 设为 strict、固定 GitHub Actions app 的 required checks，并启用
-`enforce_admins` 和 conversation resolution，同时保留现有无关 checks/review 设置。final merge
-只以单独的最小权限 `XSEC_MARKETPLACE_PUBLISH_TOKEN` 读取/合入精确 PR，写 status 使用
-GitHub Actions token。缺失任一环境审批或 token 时的安全回退是 PR 保持 pending 并修复/re-run
-gate，绝不临时降低保护或手工绕过。合并后的 protected-main dispatcher 再次验证相同 head、KMS
+`factory-final-merge-gate` 分别置于两个边界：它先创建并严格验证只覆盖 `main` 的
+`xsec-marketplace-final-exact-head` Ruleset；该 Ruleset 唯一要求固定 GitHub Actions app 的
+strict final gate，并且唯一 `pull_request` bypass 是配置的 Finalizer App。成功后才把 classic
+branch protection 收敛为严格的 `source-gate`、`enforce_admins` 和 conversation resolution，
+同时保留现有无关 checks/review 设置。final merge
+不用 Publisher token；它仅在全部 revalidation 后短暂创建独立、仓库范围受限的 Finalizer App
+token，并且只用它合入精确 PR。该 App 只有 `contents: write`，是唯一
+允许绕过持续 pending Factory gate 的 Ruleset 身份。缺失任一环境审批或 Finalizer 配置时的安全回退是
+PR 保持 pending 并修复/re-run gate，绝不临时降低保护或手工绕过。合并后的 protected-main dispatcher 再次验证相同 head、KMS
 sidecar、source gate、Codex review/已解决 threads，才会向 Desktop 发送 Beta 或 Stable smoke。
 它从 release diff 推导频道，不信任可编辑的 PR title 或 merge subject；任意普通 main push、
 adoption 或 sidecar-only repair 都不能触发 smoke。

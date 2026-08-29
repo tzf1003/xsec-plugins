@@ -15,10 +15,17 @@ def current_protection() -> dict[str, object]:
     return {
         "required_status_checks": {
             "strict": True,
-            "contexts": ["source-gate", "source-freshness-gate", "unrelated-build", "legacy-unpinned"],
+            "contexts": [
+                "source-gate",
+                "source-freshness-gate",
+                "factory-final-merge-gate",
+                "unrelated-build",
+                "legacy-unpinned",
+            ],
             "checks": [
                 {"context": "source-gate", "app_id": 15368},
                 {"context": "source-freshness-gate", "app_id": 15368},
+                {"context": "factory-final-merge-gate", "app_id": 15368},
                 {"context": "unrelated-build", "app_id": 42},
                 {"context": "nullable-unpinned", "app_id": None},
             ],
@@ -58,7 +65,7 @@ def current_protection() -> dict[str, object]:
 
 
 class FactoryMainProtectionPolicyTests(unittest.TestCase):
-    def test_strengthening_is_strict_admin_enforced_and_preserves_unrelated_checks(self) -> None:
+    def test_strengthening_moves_finalizer_gate_to_ruleset_and_preserves_unrelated_checks(self) -> None:
         desired = policy.desired_policy(current_protection())
 
         self.assertTrue(desired["required_status_checks"]["strict"])
@@ -68,10 +75,13 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
             {"context": "source-freshness-gate", "app_id": 15368},
             desired["required_status_checks"]["checks"],
         )
+        self.assertNotIn(
+            {"context": "factory-final-merge-gate", "app_id": 15368},
+            desired["required_status_checks"]["checks"],
+        )
         self.assertEqual(
             desired["required_status_checks"]["checks"],
             [
-                {"context": "factory-final-merge-gate", "app_id": 15368},
                 {"context": "legacy-unpinned", "app_id": -1},
                 {"context": "nullable-unpinned", "app_id": -1},
                 {"context": "source-gate", "app_id": 15368},
@@ -94,14 +104,13 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
         self.assertFalse(desired["allow_force_pushes"])
         self.assertFalse(desired["allow_deletions"])
 
-    def test_verifier_rejects_missing_factory_context_admin_bypass_or_non_strict_checks(self) -> None:
+    def test_verifier_rejects_missing_source_gate_finalizer_in_classic_admin_bypass_or_non_strict_checks(self) -> None:
         active = current_protection()
         active["enforce_admins"] = {"enabled": True}
         active["required_status_checks"] = {
             "strict": True,
             "checks": [
                 {"context": "source-gate", "app_id": 15368},
-                {"context": "factory-final-merge-gate", "app_id": 15368},
             ],
         }
         policy.verify_policy(active)
@@ -112,7 +121,8 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
             "strict": True,
             "checks": [{"context": "source-gate", "app_id": 15368}],
         }
-        with self.assertRaisesRegex(policy.ProtectionPolicyError, "factory-final-merge-gate"):
+        stale["required_status_checks"]["checks"] = [{"context": "unrelated", "app_id": 15368}]
+        with self.assertRaisesRegex(policy.ProtectionPolicyError, "source-gate"):
             policy.verify_policy(stale)
 
         non_strict = current_protection()
@@ -121,7 +131,6 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
             "strict": False,
             "checks": [
                 {"context": "source-gate", "app_id": 15368},
-                {"context": "factory-final-merge-gate", "app_id": 15368},
             ],
         }
         with self.assertRaisesRegex(policy.ProtectionPolicyError, "strict"):
@@ -132,11 +141,22 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
             "strict": True,
             "checks": [
                 {"context": "source-gate", "app_id": 15368},
-                {"context": "factory-final-merge-gate", "app_id": 15368},
             ],
         }
         with self.assertRaisesRegex(policy.ProtectionPolicyError, "administrators"):
             policy.verify_policy(admin_bypass)
+
+        finalizer_still_classic = current_protection()
+        finalizer_still_classic["enforce_admins"] = {"enabled": True}
+        finalizer_still_classic["required_status_checks"] = {
+            "strict": True,
+            "checks": [
+                {"context": "source-gate", "app_id": 15368},
+                {"context": "factory-final-merge-gate", "app_id": 15368},
+            ],
+        }
+        with self.assertRaisesRegex(policy.ProtectionPolicyError, "dedicated finalizer Ruleset"):
+            policy.verify_policy(finalizer_still_classic)
 
 
 if __name__ == "__main__":

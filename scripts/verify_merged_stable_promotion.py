@@ -134,6 +134,120 @@ def changed_paths(root: Path, before: str, after: str) -> list[str]:
     return [path for path in git_text(root, ["diff", "--name-only", "--no-renames", before, after]).splitlines() if path]
 
 
+def require_candidate_revisions(root: Path, before: str, after: str) -> None:
+    """Require a candidate range rooted in the exact protected-main base.
+
+    The final-merge workflow already makes this check before constructing its
+    detached candidate worktree.  Keeping it here means the narrow, non-release
+    Factory candidates get the same fail-closed contract as publication diffs
+    when this helper is used independently.
+    """
+
+    if not SHA_PATTERN.fullmatch(before) or not SHA_PATTERN.fullmatch(after):
+        fail("before and after must be lowercase 40-character Git SHAs")
+    if not git_succeeds(root, ["merge-base", "--is-ancestor", before, after]):
+        fail("Factory candidate must retain the protected-main base revision")
+
+
+def exact_changed_paths(root: Path, before: str, after: str, expected: set[str], label: str) -> None:
+    """Reject additions, deletions, renames, and unrelated candidate paths."""
+
+    paths = changed_paths(root, before, after)
+    if len(paths) != len(expected) or set(paths) != expected:
+        unexpected = sorted(set(paths).symmetric_difference(expected))
+        fail(f"{label} changed an unauthorized path set: {', '.join(unexpected) or '<duplicate paths>'}")
+
+
+def verify_first_party_adoption_candidate(root: Path, before: str, after: str) -> dict[str, object]:
+    """Authenticate the *shape* of the one Registry activation candidate.
+
+    Full Factory/adoption proof verification remains in
+    ``external_source_factory.py``.  This helper is deliberately a narrower
+    diff allowlist: no workflows, scripts, unrelated Registry entries, or
+    already-existing adoption material can piggyback on a privileged final
+    merge.
+    """
+
+    require_candidate_revisions(root, before, after)
+    paths = changed_paths(root, before, after)
+    adoption_paths = [path for path in paths if ADOPTION_PATH_PATTERN.fullmatch(path)]
+    if len(adoption_paths) != 1:
+        fail("first-party adoption candidate must add exactly one adoption document")
+    adoption_path = adoption_paths[0]
+    adoption_match = ADOPTION_PATH_PATTERN.fullmatch(adoption_path)
+    if adoption_match is None:  # Defensive: the filtered list above guarantees this.
+        fail("first-party adoption candidate has an invalid adoption document path")
+    plugin_id = adoption_match.group(1)
+    proof_path = f".xsec-factory/official-adoption-proofs/{plugin_id}.json"
+    exact_changed_paths(root, before, after, {REGISTRY_PATH, adoption_path, proof_path}, "first-party adoption candidate")
+    for path, label in ((adoption_path, "adoption document"), (proof_path, "adoption KMS proof")):
+        if git_succeeds(root, ["cat-file", "-e", f"{before}:{path}"]) or not git_succeeds(
+            root, ["cat-file", "-e", f"{after}:{path}"]
+        ):
+            fail(f"first-party adoption candidate must add its one {label}")
+    if not git_succeeds(root, ["cat-file", "-e", f"{before}:{REGISTRY_PATH}"]) or not git_succeeds(
+        root, ["cat-file", "-e", f"{after}:{REGISTRY_PATH}"]
+    ):
+        fail("first-party adoption candidate must modify the existing official Registry")
+    before_registry = json_blob(root, before, REGISTRY_PATH, "baseline official Factory registry")
+    after_registry = json_blob(root, after, REGISTRY_PATH, "candidate official Factory registry")
+    before_plugins = before_registry.get("plugins")
+    after_plugins = after_registry.get("plugins")
+    if not isinstance(before_plugins, list) or not isinstance(after_plugins, list) or len(before_plugins) != len(after_plugins):
+        fail("first-party adoption candidate must preserve the Registry plugin list")
+    if {key: value for key, value in before_registry.items() if key != "plugins"} != {
+        key: value for key, value in after_registry.items() if key != "plugins"
+    }:
+        fail("first-party adoption candidate may not modify Registry metadata")
+    seen = 0
+    for before_entry, after_entry in zip(before_plugins, after_plugins, strict=True):
+        if not isinstance(before_entry, dict) or not isinstance(after_entry, dict):
+            fail("first-party adoption candidate Registry entries must be objects")
+        if before_entry.get("pluginId") != after_entry.get("pluginId"):
+            fail("first-party adoption candidate may not reorder or replace Registry entries")
+        if before_entry.get("pluginId") == plugin_id:
+            seen += 1
+            if before_entry.get("status") != "pending-adoption" or after_entry.get("status") != "active":
+                fail("first-party adoption candidate must change its one Registry entry from pending-adoption to active")
+            if {key: value for key, value in before_entry.items() if key != "status"} != {
+                key: value for key, value in after_entry.items() if key != "status"
+            }:
+                fail("first-party adoption candidate may only change its Registry status")
+        elif before_entry != after_entry:
+            fail("first-party adoption candidate may not modify another Registry entry")
+    if seen != 1:
+        fail("first-party adoption candidate must activate exactly one pending Registry entry")
+    return {"kind": "adoption", "plugin_id": plugin_id, "adoption_path": adoption_path}
+
+
+def verify_retained_sidecar_refresh_candidate(root: Path, before: str, after: str) -> dict[str, object]:
+    """Require a repair candidate to modify one retained release JWS sidecar.
+
+    This is intentionally separate from normal ``maintenance`` classification:
+    a Factory-managed repair is eligible for a final exact-head gate only when
+    it cannot carry any Marketplace, source, artifact, Registry, or workflow
+    change alongside its newly issued detached JWS.
+    """
+
+    require_candidate_revisions(root, before, after)
+    paths = changed_paths(root, before, after)
+    if len(paths) != 1 or RELEASE_SIDECAR_PATTERN.fullmatch(paths[0]) is None:
+        fail("retained sidecar refresh candidate must change exactly one releases.json KMS sidecar")
+    # RELEASE_SIDECAR_PATTERN intentionally has no capture group because it is
+    # also used as a boolean allowlist elsewhere. The validated path has the
+    # fixed ``plugins/<plugin-id>/...`` form, so extracting this component is
+    # unambiguous after the full-match check above.
+    plugin_id = paths[0].split("/", 2)[1]
+    release_path = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    if not git_succeeds(root, ["cat-file", "-e", f"{before}:{release_path}"]) or not git_succeeds(
+        root, ["cat-file", "-e", f"{after}:{release_path}"]
+    ):
+        fail("retained sidecar refresh candidate must retain its immutable release index")
+    if git_bytes(root, ["show", f"{before}:{release_path}"]) != git_bytes(root, ["show", f"{after}:{release_path}"]):
+        fail("retained sidecar refresh candidate may not modify its immutable release index")
+    return {"kind": "retained-sidecar-refresh", "plugin_id": plugin_id, "sidecar_path": paths[0]}
+
+
 def allowed_paths(channel: str, paths: list[str], promoted_ids: set[str]) -> None:
     """Permit only the generated Factory surfaces for a signed release PR."""
 
@@ -413,12 +527,29 @@ def main() -> int:
     parser.add_argument("--after", required=True)
     parser.add_argument("--channel", choices=("beta", "stable"))
     parser.add_argument("--classify", action="store_true")
+    parser.add_argument("--verify-first-party-adoption-candidate", action="store_true")
+    parser.add_argument("--verify-retained-sidecar-refresh-candidate", action="store_true")
     args = parser.parse_args()
-    if args.classify == (args.channel is not None):
-        parser.error("supply exactly one of --classify or --channel")
+    modes = sum(
+        (
+            args.classify,
+            args.channel is not None,
+            args.verify_first_party_adoption_candidate,
+            args.verify_retained_sidecar_refresh_candidate,
+        )
+    )
+    if modes != 1:
+        parser.error("supply exactly one verification mode")
     try:
         root = args.root.resolve()
-        result = classify_merged_change(root, args.before, args.after) if args.classify else verify_merged_publication(root, args.before, args.after, str(args.channel))
+        if args.classify:
+            result = classify_merged_change(root, args.before, args.after)
+        elif args.channel is not None:
+            result = verify_merged_publication(root, args.before, args.after, args.channel)
+        elif args.verify_first_party_adoption_candidate:
+            result = verify_first_party_adoption_candidate(root, args.before, args.after)
+        else:
+            result = verify_retained_sidecar_refresh_candidate(root, args.before, args.after)
         print(json.dumps(result, separators=(",", ":"), sort_keys=True))
         return 0
     except PromotionVerificationError as error:

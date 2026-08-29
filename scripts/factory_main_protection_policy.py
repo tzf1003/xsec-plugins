@@ -21,10 +21,15 @@ from typing import Any
 
 GITHUB_ACTIONS_APP_ID = 15368
 ANY_APP_ID = -1
-REQUIRED_FACTORY_CHECKS = ("source-gate", "factory-final-merge-gate")
-# Earlier revisions proposed this as a global required check. Its workflow does
-# not provide a durable context for every PR, so retaining it would lock main.
-RETIRED_FACTORY_CHECKS = ("source-freshness-gate",)
+# ``factory-final-merge-gate`` has an intentionally different lifetime and a
+# dedicated PR-only GitHub App bypass.  It belongs to the exact-head Ruleset,
+# never to this classic branch-protection document.  Retaining it here would
+# let a stale classic status satisfy the finalizer or double-lock normal PRs.
+REQUIRED_CLASSIC_FACTORY_CHECKS = ("source-gate",)
+# Earlier revisions proposed freshness as a global required check; it does not
+# provide a durable context for every PR. The finalizer gate moved to a
+# separate Ruleset for the same reason.
+RETIRED_CLASSIC_FACTORY_CHECKS = ("source-freshness-gate", "factory-final-merge-gate")
 
 
 class ProtectionPolicyError(ValueError):
@@ -142,14 +147,14 @@ def normalized_review_policy(value: object) -> dict[str, Any] | None:
 
 
 def desired_policy(protection: dict[str, Any]) -> dict[str, Any]:
-    """Return an idempotent branch-protection payload with Factory gates pinned."""
+    """Return the classic protected-main payload without the finalizer gate."""
 
     if not isinstance(protection, dict):
         fail("branch protection response must be a JSON object")
     checks = preserved_checks(protection)
-    for context in RETIRED_FACTORY_CHECKS:
+    for context in RETIRED_CLASSIC_FACTORY_CHECKS:
         checks.pop(context, None)
-    for context in REQUIRED_FACTORY_CHECKS:
+    for context in REQUIRED_CLASSIC_FACTORY_CHECKS:
         checks[context] = GITHUB_ACTIONS_APP_ID
 
     # The API returns legacy ``contexts`` even for app-pinned ``checks``.  Do
@@ -183,9 +188,11 @@ def verify_policy(protection: dict[str, Any]) -> None:
     """Raise unless the live response still contains every fail-closed gate."""
 
     checks = preserved_checks(protection)
-    for context in REQUIRED_FACTORY_CHECKS:
+    for context in REQUIRED_CLASSIC_FACTORY_CHECKS:
         if checks.get(context) != GITHUB_ACTIONS_APP_ID:
             fail(f"required status check {context} is not pinned to github-actions")
+    if "factory-final-merge-gate" in checks:
+        fail("factory-final-merge-gate must be enforced by the dedicated finalizer Ruleset, not classic branch protection")
     required = object_or_none(protection.get("required_status_checks"), "required_status_checks")
     assert required is not None
     if required.get("strict") is not True:

@@ -275,6 +275,86 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 },
             )
 
+    def test_first_party_adoption_candidate_allows_only_its_registry_activation_and_fixed_proofs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-candidate-") as directory:
+            root = Path(directory)
+            registry = {
+                "schemaVersion": 2,
+                "plugins": [
+                    {"pluginId": PLUGIN_ID, "status": "pending-adoption", "source": {"repository": "example/plugin"}},
+                    {"pluginId": "com.example.unchanged", "status": "active"},
+                ],
+            }
+            write_json(root / ".xsec-factory/official-registry.json", registry)
+            git(root, "init", "--quiet", "--initial-branch=main")
+            git(root, "config", "user.name", "Verifier Test")
+            git(root, "config", "user.email", "verifier@example.invalid")
+            before = self.commit(root, "pending first-party registration")
+            registry["plugins"][0]["status"] = "active"
+            write_json(root / ".xsec-factory/official-registry.json", registry)
+            write_json(root / f".xsec-factory/official-adoptions/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
+            write_json(root / f".xsec-factory/official-adoption-proofs/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
+            after = self.commit(root, "activate one first-party registration")
+
+            self.assertEqual(
+                verifier.verify_first_party_adoption_candidate(root, before, after),
+                {
+                    "kind": "adoption",
+                    "plugin_id": PLUGIN_ID,
+                    "adoption_path": f".xsec-factory/official-adoptions/{PLUGIN_ID}.json",
+                },
+            )
+
+    def test_first_party_adoption_candidate_rejects_an_unrelated_change(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-extra-") as directory:
+            root = Path(directory)
+            registry = {"schemaVersion": 2, "plugins": [{"pluginId": PLUGIN_ID, "status": "pending-adoption"}]}
+            write_json(root / ".xsec-factory/official-registry.json", registry)
+            git(root, "init", "--quiet", "--initial-branch=main")
+            git(root, "config", "user.name", "Verifier Test")
+            git(root, "config", "user.email", "verifier@example.invalid")
+            before = self.commit(root, "pending first-party registration")
+            registry["plugins"][0]["status"] = "active"
+            write_json(root / ".xsec-factory/official-registry.json", registry)
+            write_json(root / f".xsec-factory/official-adoptions/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
+            write_json(root / f".xsec-factory/official-adoption-proofs/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
+            (root / ".github/workflows/unrelated.yml").parent.mkdir(parents=True)
+            (root / ".github/workflows/unrelated.yml").write_text("name: unrelated\n", encoding="utf-8")
+            after = self.commit(root, "unsafe first-party activation")
+
+            with self.assertRaisesRegex(verifier.PromotionVerificationError, "unauthorized path set"):
+                verifier.verify_first_party_adoption_candidate(root, before, after)
+
+    def test_retained_sidecar_refresh_candidate_allows_one_retained_sidecar_only(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-retained-sidecar-candidate-") as directory:
+            root = Path(directory)
+            before, _, _ = self.make_repository(root)
+            sidecar = root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json"
+            sidecar.write_text("refreshed retained release signature\n", encoding="utf-8")
+            after = self.commit(root, "refresh one retained sidecar")
+
+            self.assertEqual(
+                verifier.verify_retained_sidecar_refresh_candidate(root, before, after),
+                {
+                    "kind": "retained-sidecar-refresh",
+                    "plugin_id": PLUGIN_ID,
+                    "sidecar_path": f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json",
+                },
+            )
+
+    def test_retained_sidecar_refresh_candidate_rejects_an_unrelated_change(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-retained-sidecar-extra-") as directory:
+            root = Path(directory)
+            before, _, _ = self.make_repository(root)
+            sidecar = root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json"
+            sidecar.write_text("refreshed retained release signature\n", encoding="utf-8")
+            (root / ".github/workflows/unrelated.yml").parent.mkdir(parents=True)
+            (root / ".github/workflows/unrelated.yml").write_text("name: unrelated\n", encoding="utf-8")
+            after = self.commit(root, "unsafe sidecar refresh")
+
+            with self.assertRaisesRegex(verifier.PromotionVerificationError, "exactly one releases.json KMS sidecar"):
+                verifier.verify_retained_sidecar_refresh_candidate(root, before, after)
+
 
 if __name__ == "__main__":
     unittest.main()
