@@ -239,7 +239,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
-            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"plugins/{PLUGIN_ID}"}}]})
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],
@@ -278,12 +278,111 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 },
             )
 
+    def test_classifies_no_pointer_beta_main_gate_rebinds_and_downgrades(self) -> None:
+        # A later main event may leave an existing Beta reproducible, leave it
+        # non-reproducible, or change either result.  Each outcome must retain
+        # the identical immutable Beta tuple while binding a new main head.
+        cases = (
+            ("waiting_for_beta", "waiting_for_beta"),
+            ("waiting_for_smoke", "waiting_for_smoke"),
+            ("waiting_for_smoke", "waiting_for_beta"),
+        )
+        for before_state, after_state in cases:
+            with self.subTest(before_state=before_state, after_state=after_state), tempfile.TemporaryDirectory(
+                prefix="xsec-merged-beta-smoke-recheck-"
+            ) as directory:
+                root = Path(directory)
+                _, stable, beta = self.make_repository(root, registered=True)
+                self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+                write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
+                event = {
+                    "channel": "beta",
+                    "releaseId": beta["releaseId"],
+                    "source": {
+                        "repository": "example/plugin",
+                        "path": f"plugins/{PLUGIN_ID}",
+                        "ref": "refs/heads/beta",
+                        "sha": "a" * 40,
+                    },
+                    "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+                    "publisher": "factory",
+                }
+                write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
+                proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+                proof.parent.mkdir(parents=True, exist_ok=True)
+                proof.write_text("baseline evidence signature\n", encoding="utf-8")
+                self.write_inflight_beta_status(
+                    root, beta, main_gate_sha="c" * 40, state=before_state, stable_release_id=stable["releaseId"]
+                )
+                before = self.commit(root, "previous registered main gate")
+                (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
+                (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text(
+                    "refreshed release signature\n", encoding="utf-8"
+                )
+                proof.write_text("refreshed evidence signature\n", encoding="utf-8")
+                self.write_inflight_beta_status(
+                    root, beta, main_gate_sha="d" * 40, state=after_state, stable_release_id=stable["releaseId"]
+                )
+                after = self.commit(root, "registered main was rechecked")
+
+                self.assertEqual(
+                    verifier.classify_merged_change(root, before, after),
+                    {
+                        "kind": "beta-smoke-ready",
+                        "promotions": [
+                            {
+                                "plugin_id": PLUGIN_ID,
+                                "release_id": beta["releaseId"],
+                                "source": {"repository": "example/plugin", "ref": "refs/heads/beta", "sha": "a" * 40},
+                                "main_source": {"repository": "example/plugin", "ref": "refs/heads/main", "sha": "d" * 40},
+                            }
+                        ],
+                    },
+                )
+
+    def test_rejects_no_pointer_beta_smoke_transition_with_legacy_marketplace_source_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-smoke-legacy-path-") as directory:
+            root = Path(directory)
+            _, stable, beta = self.make_repository(root, registered=True)
+            self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            # The Factory Registry uses this value, but Marketplace's public
+            # schema deliberately requires the explicit repository-relative
+            # form below.  Do not allow a second spelling through this gate.
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"plugins/{PLUGIN_ID}"}}]})
+            event = {
+                "channel": "beta",
+                "releaseId": beta["releaseId"],
+                "source": {"repository": "example/plugin", "path": f"plugins/{PLUGIN_ID}", "ref": "refs/heads/beta", "sha": "a" * 40},
+                "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+                "publisher": "factory",
+            }
+            write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
+            proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            proof.write_text("baseline evidence signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(
+                root, beta, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=stable["releaseId"]
+            )
+            before = self.commit(root, "beta awaits a reproducible main")
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
+            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text(
+                "refreshed release signature\n", encoding="utf-8"
+            )
+            proof.write_text("refreshed evidence signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(
+                root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"]
+            )
+            after = self.commit(root, "unsafe legacy Marketplace source path")
+
+            with self.assertRaisesRegex(verifier.PromotionVerificationError, "Marketplace source path is not canonical"):
+                verifier.classify_merged_change(root, before, after)
+
     def test_rejects_no_pointer_beta_smoke_transition_that_refreshes_an_inactive_release_sidecar(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-smoke-ready-unsafe-") as directory:
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
-            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"plugins/{PLUGIN_ID}"}}]})
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],

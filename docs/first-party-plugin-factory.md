@@ -198,10 +198,11 @@ KMS/JWS 验签、source gate 与 Codex review；它不改变 release history 或
 唯一允许的 no-pointer 例外是当前 Stable 已选中当前 Beta 的 registered external Stable completion：
 它必须只包含严格形状的已签名 provenance/status 更新，重新校验外部 `main` ref 后才可合并，且不会
 再次触发 Desktop smoke。
-另一条独立的 no-pointer 形状是 `beta-smoke-ready`：仅当既有的 `waiting_for_beta` 的不可变
-Beta release/source SHA 未变、`main` 新近逐字节重建它时，才允许把状态精确转为
-`waiting_for_smoke`。它必须重签 Marketplace/release/provenance sidecar，并同时携带该次比较的
-精确 `mainGateSha`；release history、Beta/Stable 指针和 Beta evidence 均不得改变。finalizer 在
+另一条独立的 no-pointer 形状是 `beta-smoke-ready`：仅当既有等待状态的不可变 Beta
+release/source SHA 未变、注册 `main` 出现一个新的精确头时才允许重绑该 Beta 的可重建性；结果只能是
+`waiting_for_beta` 或 `waiting_for_smoke`。只有后者才会请求新的 Desktop smoke；前者会使已经排队的旧
+smoke callback 失效。它必须重签 Marketplace/release/provenance sidecar，并同时携带该次比较的精确
+`mainGateSha`；release history、Beta/Stable 指针和 Beta evidence 均不得改变。finalizer 在
 protected merge 前用只读 Source App 同时复验记录的 `beta` 与 `main` 分支头，任一推进便拒绝该
 候选，因而旧的可重建决定绝不会触发 Desktop smoke。
 

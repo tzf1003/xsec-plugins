@@ -25,6 +25,7 @@ PLUGIN_ID_PATTERN = r"[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?"
 RELEASE_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})/\.xsec-market/releases\.json$")
 RELEASE_SIDECAR_PATTERN = re.compile(rf"^plugins/{PLUGIN_ID_PATTERN}/\.xsec-market/releases\.json\.sig\.jws\.json$")
 PLUGIN_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})/(.+)$")
+MARKETPLACE_SOURCE_PATH_PATTERN = re.compile(rf"^\./plugins/({PLUGIN_ID_PATTERN})$")
 PUBLICATION_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-publications/({PLUGIN_ID_PATTERN})\.json$")
 PUBLICATION_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-publication-proofs/({PLUGIN_ID_PATTERN})\.json$")
 ADOPTION_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-adoptions/({PLUGIN_ID_PATTERN})\.json$")
@@ -552,7 +553,7 @@ def verify_stable_maintenance(root: Path, before: str, after: str, paths: list[s
 
 
 def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str]) -> dict[str, object]:
-    """Authenticate one no-pointer ``waiting_for_beta`` -> smoke transition.
+    """Authenticate one no-pointer main-gate recheck for an existing Beta.
 
     A source ``main`` event can make an already immutable Beta reproducible
     without appending a release record.  This candidate is intentionally not
@@ -585,7 +586,12 @@ def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str
         source_path = entry["source"].get("path")
         if not isinstance(source_path, str):
             fail("no-pointer Beta smoke transition retained Marketplace source path is invalid")
-        match = re.fullmatch(rf"plugins/({PLUGIN_ID_PATTERN})", source_path)
+        # The marketplace's public source contract intentionally uses an
+        # explicit repository-relative ``./plugins/<id>`` path.  Registry and
+        # status documents use the source repository's ``plugins/<id>`` path,
+        # so accepting that representation here would both reject production
+        # snapshots and weaken this candidate's Marketplace-bound allowlist.
+        match = MARKETPLACE_SOURCE_PATH_PATTERN.fullmatch(source_path)
         if match is None:
             fail("no-pointer Beta smoke transition retained Marketplace source path is not canonical")
         active_release_sidecars.add(f"plugins/{match.group(1)}/.xsec-market/releases.json.sig.jws.json")
@@ -655,8 +661,13 @@ def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str
     expected_publication_keys = {"state", "deliveryId", "factoryRunUrl", "smokeRunUrl", "marketplaceRevision"}
     if set(before_publication) != expected_publication_keys or set(after_publication) != expected_publication_keys:
         fail("no-pointer Beta smoke transition status has an invalid publication shape")
-    if before_publication.get("state") != "waiting_for_beta" or after_publication.get("state") != "waiting_for_smoke":
-        fail("no-pointer Beta smoke transition must move exactly from waiting_for_beta to waiting_for_smoke")
+    before_state = before_publication.get("state")
+    after_state = after_publication.get("state")
+    if before_state not in {"waiting_for_beta", "waiting_for_smoke"} or after_state not in {
+        "waiting_for_beta",
+        "waiting_for_smoke",
+    }:
+        fail("no-pointer Beta smoke transition must retain an in-flight Beta gate state")
     if (
         before_publication.get("smokeRunUrl") is not None
         or before_publication.get("marketplaceRevision") is not None
