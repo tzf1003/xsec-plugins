@@ -451,7 +451,7 @@ jobs:
               --stable-sha "$SOURCE_SHA" --state promoting_stable --delivery-id "$DELIVERY_ID" \
               --factory-run-url "$FACTORY_RUN_URL"
           fi
-      - name: Skip a byte-identical external Stable retry without KMS or dispatch
+      - name: Skip a no-op Factory publication without KMS or dispatch
         id: publication-decision
         env:
           EXTERNAL: ${{ steps.request.outputs.external }}
@@ -483,6 +483,44 @@ jobs:
             # use the separately audited smoke recovery path if needed.
             python scripts/external_source_factory.py validate
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "$EXTERNAL" != "true" ]; then
+            # build_market --clean removes the prior active KMS sidecars
+            # before it decides whether it needs to append a release.  Ignore
+            # no other change: only tracked *deletions* of the exact active
+            # sidecar shapes may be restored for the no-op proof below.
+            sidecar_paths=()
+            only_cleaned_sidecars=true
+            while IFS=$'\t' read -r change path; do
+              [ "$change" = "D" ] || { only_cleaned_sidecars=false; break; }
+              case "$path" in
+                .agents/plugins/marketplace.json.sig.jws.json|plugins/*/.xsec-market/releases.json.sig.jws.json)
+                  sidecar_paths+=("$path")
+                  ;;
+                *)
+                  only_cleaned_sidecars=false
+                  break
+                  ;;
+              esac
+            done < <(git diff --name-status -- .agents/plugins plugins .xsec-factory)
+            if "$only_cleaned_sidecars"; then
+              # Restore only the verified expected cleanup.  A source change,
+              # release-index advance, Factory evidence change, replacement,
+              # or untracked output takes the publication path and will be
+              # freshly signed instead.
+              if [ "${#sidecar_paths[@]}" -gt 0 ]; then
+                git restore --source=HEAD --worktree -- "${sidecar_paths[@]}"
+              fi
+              python scripts/external_source_factory.py validate
+              git diff --exit-code
+              test -z "$(git status --porcelain --untracked-files=all)" || {
+                echo "A built-in no-op left unexpected Factory changes." >&2
+                git status --short >&2
+                exit 1
+              }
+              echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
