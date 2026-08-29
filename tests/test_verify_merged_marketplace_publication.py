@@ -239,6 +239,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"plugins/{PLUGIN_ID}"}}]})
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],
@@ -282,6 +283,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"plugins/{PLUGIN_ID}"}}]})
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],
