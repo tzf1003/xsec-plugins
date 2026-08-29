@@ -113,7 +113,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "verify_merged_stable_promotion.py",
             "--verify-active-marketplace-signatures",
             "successful immutable Factory source gate",
-            "terminal Codex review after its latest @codex review request",
+            "terminal Codex review: neither a REST review nor completed official summary follows its latest @codex review request",
             "unresolved Codex review threads",
             "Revalidate each registered source branch at the reviewed merge boundary",
             'event_type:"xsec_official_marketplace_published"',
@@ -324,6 +324,10 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
                 self.assertIn('.state == "APPROVED" or .state == "COMMENTED"', workflow)
                 self.assertIn('review_request_at=', workflow)
                 self.assertIn('.author_association == "OWNER"', workflow)
+                self.assertIn("codex-pull-request-review-summary", workflow)
+                self.assertIn("Code Review", workflow)
+                self.assertIn("Completed", workflow)
+                self.assertIn("short_head", workflow)
 
 
 if __name__ == "__main__":

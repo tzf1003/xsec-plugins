@@ -349,7 +349,7 @@ def active_adoption_provenance_documents(root: Path) -> list[MarketplaceDocument
             fail("official Factory adoption document has no matching first-party Registry entry")
         if status == "active":
             active.append(document)
-        elif status != "pending-adoption":
+        elif status not in {"pending-adoption", "disabled"}:
             fail("official Factory adoption document has a Registry entry in an invalid lifecycle state")
     return active
 

@@ -259,7 +259,8 @@ jobs:
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }
-          review_request_at="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PULL_NUMBER}/comments?per_page=100" | jq -er '
+          comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PULL_NUMBER}/comments?per_page=100")"
+          review_request_at="$(printf '%s' "$comments" | jq -er '
             [ .[][]
               | select(.body | type == "string" and test("(^|[[:space:]])@codex[[:space:]]+review([[:space:]]|$)"; "i"))
               | select(.author_association == "OWNER")
@@ -268,17 +269,31 @@ jobs:
             ] | if length > 0 then max else error("no current @codex review request") end
           ')"
           reviews="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}/reviews?per_page=100")"
-          printf '%s' "$reviews" | jq -e --arg head "$HEAD_SHA" --arg requested_at "$review_request_at" '
+          if printf '%s' "$reviews" | jq -e --arg head "$HEAD_SHA" --arg requested_at "$review_request_at" '
             any(.[][];
               (.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector")
               and .commit_id == $head
               and (.state == "APPROVED" or .state == "COMMENTED")
               and (.submitted_at | type == "string" and . >= $requested_at)
             )
-          ' >/dev/null || {
-            echo "The exact PR head has no terminal Codex review after its latest @codex review request." >&2
+          ' >/dev/null; then
+            echo "Accepted terminal Codex REST review for the exact PR head."
+          elif printf '%s' "$comments" | jq -e --arg head "$HEAD_SHA" --arg short_head "${HEAD_SHA:0:7}" --arg requested_at "$review_request_at" '
+            any(.[][];
+              .user.login == "chatgpt-codex-connector[bot]"
+              and (.body | type == "string" and contains("<!-- codex-pull-request-review-summary -->"))
+              and (.body | test("\\|[^\\r\\n|]*Code Review[^\\r\\n|]*\\|[^\\r\\n|]*✅[^\\r\\n|]*Completed[^\\r\\n|]*\\|[^\\r\\n|]*`(" + $head + "|" + $short_head + ")`[^\\r\\n|]*\\|"))
+              and (. as $comment | [ $comment.created_at, $comment.updated_at | select(type == "string" and . >= $requested_at) ] | length > 0)
+            )
+          ' >/dev/null; then
+            # The Codex connector occasionally publishes only this immutable
+            # bot-owned status summary and no REST review record. It is an
+            # equivalent terminal signal only for this exact head and request.
+            echo "Accepted terminal Codex bot summary for the exact PR head."
+          else
+            echo "The exact PR head has no terminal Codex review: neither a REST review nor completed official summary follows its latest @codex review request." >&2
             exit 1
-          }
+          fi
           cursor=""
           while :; do
             query='query($owner:String!,$repository:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:1){nodes{author{login}}}} pageInfo{hasNextPage endCursor}}}}}'

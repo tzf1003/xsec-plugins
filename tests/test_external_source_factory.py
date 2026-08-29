@@ -357,6 +357,35 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                     factory_revision="d" * 40,
                 )
 
+    def test_staged_adoption_remains_canonical_after_later_factory_main_work(self) -> None:
+        """A reviewed proof retains its own baseline through a later rebase."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-staged-first-party-adoption-rebased-") as directory:
+            root = Path(directory)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            self.make_first_party_adoption(root)
+
+            registry_path = root / ".xsec-factory" / "official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["status"] = "pending-adoption"
+            write_json(registry_path, registry)
+            (root / factory.ADOPTION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
+            baseline = Path(f"{directory}-original-staging-baseline")
+            self.addCleanup(shutil.rmtree, baseline, ignore_errors=True)
+            shutil.copytree(root, baseline)
+            (baseline / factory.ADOPTIONS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
+
+            # Model unrelated protected-main work landing while the unsigned
+            # staging PR is updated for its final protected merge.
+            (root / "protected-main-advanced.txt").write_text("unrelated main work\n", encoding="utf-8")
+            staged = factory.prepare_staged_adoption(
+                root,
+                plugin_id,
+                baseline_root=baseline,
+                factory_revision="c" * 40,
+            )
+            self.assertEqual(staged["adoption"], "staged")
+
     def test_registry_rejects_unsafe_external_repository_and_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-registry-") as directory:
             root = Path(directory)

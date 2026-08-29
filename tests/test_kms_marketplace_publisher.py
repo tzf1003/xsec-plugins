@@ -485,6 +485,16 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 publisher.documents_for_active_signature_verification(root),
             )
 
+            registry.write_bytes(json.dumps({"plugins": [{
+                "pluginId": plugin_id,
+                "trustTier": "first-party",
+                "status": "disabled",
+            }]}).encode("utf-8"))
+            self.assertNotIn(
+                adoption_document,
+                publisher.documents_for_active_signature_verification(root),
+            )
+
     def test_publisher_signs_factory_status_in_its_own_fixed_proof_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-status-") as directory:
             root = Path(directory)

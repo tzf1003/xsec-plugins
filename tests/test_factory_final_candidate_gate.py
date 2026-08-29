@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ARM_WORKFLOW = ROOT / ".github" / "workflows" / "arm-generated-marketplace-final-merge.yml"
 FINAL_WORKFLOW = ROOT / ".github" / "workflows" / "final-merge-generated-marketplace-pr.yml"
+ADOPTION_WORKFLOW = ROOT / ".github" / "workflows" / "adopt-first-party.yml"
 
 
 class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
@@ -65,7 +66,19 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("latest @codex review request", workflow)
         self.assertIn(".state == \"APPROVED\" or .state == \"COMMENTED\"", workflow)
         self.assertIn("terminal Codex review", workflow)
+        self.assertIn("codex-pull-request-review-summary", workflow)
+        self.assertIn("Code Review", workflow)
+        self.assertIn("Completed", workflow)
+        self.assertIn("chatgpt-codex-connector[bot]", workflow)
+        self.assertIn("short_head", workflow)
         self.assertIn("unresolved Codex review thread", workflow)
+
+    def test_adoption_signer_uses_the_retained_protected_pre_staging_revision(self) -> None:
+        workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(".legacy.factoryRevision", workflow)
+        self.assertIn('git merge-base --is-ancestor "$baseline_revision" HEAD', workflow)
+        self.assertIn('git cat-file -e "${baseline_revision}^{commit}"', workflow)
+        self.assertNotIn("git log --diff-filter=A", workflow)
 
     def test_final_gate_never_turns_the_arm_owned_candidate_status_green(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")

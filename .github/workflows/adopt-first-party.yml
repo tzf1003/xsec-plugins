@@ -84,15 +84,17 @@ jobs:
             exit 1
           }
           adoption_path=".xsec-factory/official-adoptions/${PLUGIN_ID}.json"
-          mapfile -t additions < <(git log --diff-filter=A --format=%H --reverse -- "$adoption_path")
-          [ "${#additions[@]}" -eq 1 ] || {
-            printf 'Expected exactly one protected addition of %s, got %s.\n' "$adoption_path" "${#additions[@]}" >&2
+          baseline_revision="$(jq -er '.legacy.factoryRevision | strings | select(test("^[a-f0-9]{40}$"))' "$adoption_path")"
+          git cat-file -e "${baseline_revision}^{commit}" || {
+            echo "The staged assertion does not name an available protected Factory baseline commit." >&2
             exit 1
           }
-          staged_commit="${additions[0]}"
-          baseline_revision="$(git rev-parse "${staged_commit}^")"
-          [ "$(git rev-parse "HEAD:${adoption_path}")" = "$(git rev-parse "${staged_commit}:${adoption_path}")" ] || {
-            echo "The staged assertion has changed since its protected addition." >&2
+          # A staging PR may be rebased or squash-merged after unrelated
+          # protected-main work. The assertion retains the exact protected
+          # revision it was built from, which must remain on main's ancestry;
+          # do not derive the baseline from the later merge commit's parent.
+          git merge-base --is-ancestor "$baseline_revision" HEAD || {
+            echo "The staged assertion Factory baseline is not retained by protected main." >&2
             exit 1
           }
           baseline_root="${RUNNER_TEMP}/xsec-adoption-baseline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

@@ -60,6 +60,9 @@ digest、原始 release document bytes、完整有序 release records，以及�
 能用固定 KMS issuer 的 JWKS 验证。迁移不会生成 release、改变 SemVer、替换 artifact
 或移动频道指针。
 
+`status: "disabled"` 的第一方插件保留 adoption assertion 与 KMS sidecar 以保持历史可审计，但它们
+不进入 active Marketplace signature batch；因此一次合法下架不会阻塞其他插件的发布、reconcile 或 smoke。
+
 两阶段的受保护工作流调用：第一阶段传入仍是远端当前头的来源 SHA；第二阶段**只传入
 `plugin_id`**，从已审查、已合入的 staging assertion 中读取来源 SHA，再重新核验远端分支头。
 
@@ -72,6 +75,9 @@ stage-first-party-adoption.yml
 adopt-first-party.yml
 ```
 
+第二阶段会从 assertion 内保留的 `legacy.factoryRevision` materialize 受保护 Factory baseline，
+要求该 revision 仍是当前 protected main 的祖先，并重新生成完全相同的 assertion bytes；所以 staging
+PR 因随后 main 更新而 rebase/squash merge 时仍绑定其原始审查 baseline，不能改为 merge parent。
 第二阶段随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。两个 PR 都必须经 source
 gate、`@codex review` 和 Finalizer。未来 Beta 发布可追加 history，
 但 adoption 中的历史 prefix 永远不能改写。只要 split source 首次记录 post-adoption Beta/Stable
@@ -188,7 +194,11 @@ success/not-applicable，故所需的 Factory context 不会卡住普通产品�
 source gate、Codex review 且所有 Codex thread resolve 后，受保护 `production` 环境中的
 maintainer 必须手工运行 `final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live
 PR 的 head/base，使用精确 head SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref、
-source gate 与跨 REST pages 的精确 head Codex review、分页后的全部 reviewThreads。Factory
+source gate 与跨 REST pages 的精确 head Codex review、分页后的全部 reviewThreads。若 GitHub
+没有为已完成的 Codex 审查创建 REST review object，门禁只接受官方
+`chatgpt-codex-connector[bot]` 的 summary：它必须显示 `Code Review` 为 `Completed`、精确 full/short
+head，且创建或更新不早于最后一个可信 OWNER 的 `@codex review` 请求；任何普通 bot 评论、运行中
+summary 或不匹配 head 都不能作为回退。Factory
 candidate 的 `factory-final-merge-gate` 始终由 arm workflow 保持 `pending`：final workflow
 绝不写 success，也不依赖 EXIT/SIGTERM trap 恢复状态。全部检查通过后，它临时创建独立、仓库
 范围受限的 `XSEC_MARKETPLACE_FINALIZER_APP_ID` /
@@ -226,7 +236,7 @@ branch protection 收敛为严格的 `source-gate`、`enforce_admins` 和 conver
 token，并且只用它合入精确 PR。该 App 只有 `contents: write`，是唯一
 允许绕过持续 pending Factory gate 的 Ruleset 身份。缺失任一环境审批或 Finalizer 配置时的安全回退是
 PR 保持 pending 并修复/re-run gate，绝不临时降低保护或手工绕过。合并后的 protected-main dispatcher 再次验证相同 head、KMS
-sidecar、source gate、Codex review/已解决 threads，才会向 Desktop 发送 Beta 或 Stable smoke。
+sidecar、source gate、Codex review/已解决 threads（使用同一严格的官方 completed-summary 回退），才会向 Desktop 发送 Beta 或 Stable smoke。
 它从 release diff 推导频道，不信任可编辑的 PR title 或 merge subject；任意普通 main push、
 adoption 或 sidecar-only repair 都不能触发 smoke。
 
