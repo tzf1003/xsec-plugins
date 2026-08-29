@@ -631,6 +631,10 @@ def prepare(root: Path, plugin_id: str, channel: str, source_sha: str) -> dict[s
         "source_repo": repository,
         "source_path": registration.source_path.as_posix(),
         "source_ref": registration.ref_for(channel),
+        # Always emit the registered protected main ref from the allowlisted
+        # Registry v2 row.  The beta publisher uses it only as a read-only
+        # reproducibility gate; callers never choose a comparison branch.
+        "stable_ref": registration.stable_ref,
     }
 
 
@@ -714,6 +718,8 @@ def prepare_reconcile_source(
         "source_repository": registration.repository,
         "source_ref": ref,
         "source_sha": safe_sha(source_sha, "reconcile source SHA"),
+        "beta_ref": registration.beta_ref,
+        "stable_ref": registration.stable_ref,
         "channel": channel,
     }
 
@@ -1413,6 +1419,38 @@ def verify_stable(
     return {"plugin_id": registration.plugin_id, "release_id": release_id_value, "channel": "stable"}
 
 
+def check_main_rebuild(root: Path, plugin_id: str, source_root: Path) -> dict[str, str]:
+    """Classify whether registered main deterministically rebuilds current Beta.
+
+    This is intentionally a read-only preflight for the beta lifecycle.  A
+    nonmatching main is a normal release-ordering condition, not a Stable
+    promotion failure: the caller records ``waiting_for_beta`` and must not
+    create Stable provenance, move a channel pointer, or request Desktop
+    smoke.  Malformed source, registry, or immutable release data still fails
+    closed instead of being misreported as an ordinary mismatch.
+    """
+
+    registration = registration_for(root, plugin_id)
+    source_dir = resolve_source_directory(
+        source_root,
+        registration.source_path,
+        f"external main source for {registration.plugin_id}",
+    )
+    candidate = candidate_release_id(source_dir, registration)
+    _, current_beta = current_beta_record(root, registration.plugin_id)
+    beta_release_id = current_beta.get("releaseId")
+    if not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id):
+        fail("external beta release pointer is unavailable")
+    smoke_ready = candidate == beta_release_id
+    return {
+        "plugin_id": registration.plugin_id,
+        "beta_release_id": beta_release_id,
+        "candidate_release_id": candidate,
+        "state": "waiting_for_smoke" if smoke_ready else "waiting_for_beta",
+        "smoke_ready": "true" if smoke_ready else "false",
+    }
+
+
 def record_stable(root: Path, plugin_id: str, source_sha: str, release_id_value: str, publisher: str) -> dict[str, str]:
     registration = registration_for(root, plugin_id)
     if not isinstance(release_id_value, str) or not RELEASE_ID_PATTERN.fullmatch(release_id_value):
@@ -1806,7 +1844,7 @@ def record_status(
         # identical; a new Beta, pointer movement, or source revision still
         # starts a new state transition.
         if (
-            state == "waiting_for_smoke"
+            state in {"waiting_for_beta", "waiting_for_smoke"}
             and existing.get("schemaVersion") == document["schemaVersion"]
             and existing.get("pluginId") == document["pluginId"]
             and existing.get("trustTier") == document["trustTier"]
@@ -2009,7 +2047,7 @@ def validate_status(
     # progress label.  A status can be introduced after adoption without a
     # prior baseline file, so bind every waiting/promoting tuple directly to
     # KMS-signed Beta provenance instead of relying on a later diff check.
-    if state in {"waiting_for_smoke", "promoting_stable"}:
+    if state in {"waiting_for_beta", "waiting_for_smoke", "promoting_stable"}:
         if beta_id is None or beta_sha is None:
             fail("in-flight Factory status must retain a Beta release ID and source SHA")
         if not release_file.exists():
@@ -2038,7 +2076,7 @@ def validate_status(
         # Stable or Desktop smoke evidence already exists.  Conversely, the
         # controlled manual-recovery state is allowed to describe Stable, but
         # only after its exact immutable Stable provenance was appended.
-        if state == "waiting_for_smoke":
+        if state in {"waiting_for_beta", "waiting_for_smoke"}:
             if stable_sha is not None or smoke_run_url is not None or marketplace_revision is not None:
                 fail("waiting Factory status must not claim Stable or smoke evidence")
         elif state == "promoting_stable":
@@ -2838,7 +2876,7 @@ def validate_trusted_baseline_continuity(
             state_label="trusted Factory baseline",
         )
         current_status = status_beta_identity(root, registration, state_label="current Factory")
-        if baseline_status is not None and baseline_status[0] in {"waiting_for_smoke", "promoting_stable"}:
+        if baseline_status is not None and baseline_status[0] in {"waiting_for_beta", "waiting_for_smoke", "promoting_stable"}:
             # A smoke callback needs its preceding Factory status to bind the
             # Beta source/release identity. Do not let an ordinary PR delete
             # or replace that in-flight state with a cosmetic failure record.
@@ -2863,7 +2901,17 @@ def validate_trusted_baseline_continuity(
             ):
                 continue
             if (
-                current_status[0] == "waiting_for_smoke"
+                baseline_status[0] in {"waiting_for_beta", "waiting_for_smoke"}
+                and current_status[0] in {"waiting_for_beta", "waiting_for_smoke"}
+                and current_status[1:] == baseline_status[1:]
+            ):
+                # A registered main update may make the same accepted Beta
+                # become reproducible (or cease to be reproducible) while a
+                # smoke callback is in flight. Preserve its exact Beta
+                # identity and allow only this nonterminal gate transition.
+                continue
+            if (
+                current_status[0] in {"waiting_for_beta", "waiting_for_smoke"}
                 and current_status[1] is not None
                 and current_status[2] is not None
                 and current_status[1:] != baseline_status[1:]
@@ -2913,7 +2961,7 @@ def validate_trusted_baseline_continuity(
                         continue
             if (
                 current_status is not None
-                and current_status[0] == "waiting_for_smoke"
+                and current_status[0] in {"waiting_for_beta", "waiting_for_smoke"}
                 and current_status[1] is not None
                 and current_status[2] is not None
                 and current_status[1:] != baseline_status[1:]
@@ -3172,6 +3220,9 @@ def main() -> None:
     verify_parser.add_argument("--source-root", type=Path, required=True)
     verify_parser.add_argument("--release-id", required=True)
     verify_parser.add_argument("--expected-beta-sha")
+    main_rebuild_parser = commands.add_parser("check-main-rebuild")
+    main_rebuild_parser.add_argument("--plugin-id", required=True)
+    main_rebuild_parser.add_argument("--source-root", type=Path, required=True)
     stable_parser = commands.add_parser("record-stable")
     stable_parser.add_argument("--plugin-id", required=True)
     stable_parser.add_argument("--source-sha", required=True)
@@ -3252,6 +3303,8 @@ def main() -> None:
                 args.release_id,
                 expected_beta_sha=args.expected_beta_sha,
             )
+        elif args.command == "check-main-rebuild":
+            result = check_main_rebuild(root, args.plugin_id, args.source_root)
         elif args.command == "record-stable":
             result = record_stable(root, args.plugin_id, args.source_sha, args.release_id, args.publisher)
         elif args.command == "adopt-first-party":

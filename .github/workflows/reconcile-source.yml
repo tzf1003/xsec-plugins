@@ -115,16 +115,25 @@ jobs:
           # redirect-hardened checkout/reachability proof before packaging.
           head_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_REF" | awk 'NR == 1 { print $1 }')"
           [ "$head_sha" = "$SOURCE_SHA" ] || { echo "Source delivery is stale; the registered branch head changed." >&2; exit 1; }
-      - name: Publish the exact current beta source or leave main for smoke-gated promotion
+      - name: Publish current Beta or recheck its main reproducibility gate
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ steps.request.outputs.channel }}
           PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
+          SOURCE_BETA_REF: ${{ steps.request.outputs.beta_ref }}
         run: |
           set -euo pipefail
           if [ "$CHANNEL" = "stable" ]; then
-            echo "Registered main is current. Stable promotion is deliberately deferred until reconcile-smoke validates a Beta smoke callback."
+            # main never promotes Stable directly. Re-read the protected
+            # Registry beta ref and let publish.yml deterministically compare
+            # that exact current Beta with current main. A mismatch leaves
+            # waiting_for_beta; a match starts a fresh Desktop smoke cycle.
+            beta_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_BETA_REF" | awk 'NR == 1 { print $1 }')"
+            [ -n "$beta_sha" ] || { echo "Cannot resolve registered source beta for ${PLUGIN_ID}." >&2; exit 1; }
+            gh workflow run publish.yml --ref main \
+              -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$beta_sha"
             exit 0
           fi
           gh workflow run publish.yml --ref main \
