@@ -377,6 +377,11 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             exec_path.mkdir(parents=True)
             manager.parent.mkdir(parents=True)
             manager.write_bytes(b"platform helper")
+            # Keep the production boundary strict: non-Windows hosts must
+            # require a runnable helper even when this fixture models the
+            # Windows Git-for-Windows layout.
+            if os.name != "nt":
+                manager.chmod(manager.stat().st_mode | 0o111)
             completed = subprocess.CompletedProcess(
                 ["git", "--exec-path"],
                 0,
