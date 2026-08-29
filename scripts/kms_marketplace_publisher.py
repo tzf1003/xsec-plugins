@@ -283,7 +283,7 @@ def official_adoption_provenance_document(root: Path, plugin_id: str) -> Marketp
 
 
 def official_adoption_provenance_documents(root: Path) -> list[MarketplaceDocument]:
-    """Enumerate only fixed-path first-party adoption proofs for KMS signing."""
+    """Enumerate fixed-path first-party adoption documents for an explicit selector."""
 
     adoption_root = root / OFFICIAL_ADOPTIONS_RELATIVE_PATH
     if not adoption_root.exists():
@@ -303,6 +303,55 @@ def official_adoption_provenance_documents(root: Path) -> list[MarketplaceDocume
             fail(f"official Factory adoption path does not match its subject: {adoption.name}")
         documents.append(document)
     return documents
+
+
+def active_adoption_provenance_documents(root: Path) -> list[MarketplaceDocument]:
+    """Return only adoption documents belonging to active Registry entries.
+
+    A pending adoption assertion is deliberately unsigned while it awaits the
+    separately reviewed activation PR.  It must never leak into a normal
+    publish/validate batch, even when an unrelated plugin release happens in
+    that interval.  Active assertions still participate in full signature
+    verification so an active first-party entry cannot silently lose its KMS
+    proof.
+    """
+
+    documents = official_adoption_provenance_documents(root)
+    if not documents:
+        return []
+    registry_subject = ".xsec-factory/official-registry.json"
+    registry_path = safe_document_path(root, registry_subject, must_exist=True)
+    registry = json_object(registry_path.read_bytes(), registry_subject)
+    entries = registry.get("plugins")
+    if not isinstance(entries, list):
+        fail("official Factory registry plugins must be a list")
+    statuses: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            fail("official Factory registry entries must be objects")
+        plugin_id = entry.get("pluginId")
+        trust_tier = entry.get("trustTier")
+        status = entry.get("status")
+        if (
+            isinstance(plugin_id, str)
+            and OFFICIAL_PLUGIN_ID_PATTERN.fullmatch(plugin_id)
+            and trust_tier == "first-party"
+            and isinstance(status, str)
+        ):
+            if plugin_id in statuses:
+                fail("official Factory registry has duplicate first-party plugin IDs")
+            statuses[plugin_id] = status
+    active: list[MarketplaceDocument] = []
+    for document in documents:
+        plugin_id = Path(document.subject).name.removesuffix(".json")
+        status = statuses.get(plugin_id)
+        if status is None:
+            fail("official Factory adoption document has no matching first-party Registry entry")
+        if status == "active":
+            active.append(document)
+        elif status not in {"pending-adoption", "disabled"}:
+            fail("official Factory adoption document has a Registry entry in an invalid lifecycle state")
+    return active
 
 
 def official_status_document(root: Path, plugin_id: str) -> MarketplaceDocument:
@@ -390,7 +439,10 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
             )
         )
     documents.extend(official_publication_provenance_documents(root))
-    documents.extend(official_adoption_provenance_documents(root))
+    # Adoption proofs are intentionally absent here.  The one pending,
+    # unsigned assertion is selectable only by --first-party-adoption-plugin-id
+    # in the protected activation workflow; ordinary beta/stable publishers
+    # must neither sign it nor fail because it is correctly unsigned.
     documents.extend(official_status_documents(root))
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
 
@@ -422,6 +474,8 @@ def documents_for_active_signature_verification(
     """
 
     documents = marketplace_documents(root)
+    documents.extend(active_adoption_provenance_documents(root))
+    documents = [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
     if allow_unsigned_official_status_plugin_id is None:
         return documents
     pending = official_status_document(root, allow_unsigned_official_status_plugin_id)
@@ -946,23 +1000,40 @@ def main() -> None:
         "--official-status-plugin-id",
         help="sign or validate only one canonical official Factory status document",
     )
+    parser.add_argument(
+        "--first-party-adoption-plugin-id",
+        help="sign or validate only one staged first-party adoption document",
+    )
     args = parser.parse_args()
     if args.verify_retained_release_signature and args.retained_release_plugin_id is None:
         parser.error("--verify-retained-release-signature requires --retained-release-plugin-id")
     if args.verify_retained_release_signature and args.validate_only:
         parser.error("--verify-retained-release-signature cannot be combined with --validate-only")
     if args.verify_active_marketplace_signatures and (
-        args.validate_only or args.retained_release_plugin_id is not None or args.official_status_plugin_id is not None
+        args.validate_only
+        or args.retained_release_plugin_id is not None
+        or args.official_status_plugin_id is not None
+        or args.first_party_adoption_plugin_id is not None
     ):
         parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release, status-only, or validate-only options")
     if args.allow_unsigned_official_status_plugin_id is not None and not args.verify_active_marketplace_signatures:
         parser.error("--allow-unsigned-official-status-plugin-id requires --verify-active-marketplace-signatures")
     if args.exclude_official_status and (
-        args.retained_release_plugin_id is not None or args.official_status_plugin_id is not None
+        args.retained_release_plugin_id is not None
+        or args.official_status_plugin_id is not None
+        or args.first_party_adoption_plugin_id is not None
     ):
         parser.error("--exclude-official-status cannot be combined with a single-document selector")
-    if args.retained_release_plugin_id is not None and args.official_status_plugin_id is not None:
-        parser.error("--retained-release-plugin-id and --official-status-plugin-id are mutually exclusive")
+    selectors = sum(
+        value is not None
+        for value in (
+            args.retained_release_plugin_id,
+            args.official_status_plugin_id,
+            args.first_party_adoption_plugin_id,
+        )
+    )
+    if selectors > 1:
+        parser.error("the Marketplace single-document selectors are mutually exclusive")
     root = args.root.resolve()
     try:
         if args.verify_active_marketplace_signatures:
@@ -974,6 +1045,8 @@ def main() -> None:
             documents = [retained_release_document(root, args.retained_release_plugin_id)]
         elif args.official_status_plugin_id is not None:
             documents = [official_status_document(root, args.official_status_plugin_id)]
+        elif args.first_party_adoption_plugin_id is not None:
+            documents = [official_adoption_provenance_document(root, args.first_party_adoption_plugin_id)]
         else:
             documents = marketplace_documents(root)
             if args.exclude_official_status:
@@ -1001,7 +1074,13 @@ def main() -> None:
                 # unrelated immutable index/release/provenance documents to
                 # be re-signed (which Cloud now correctly disallows from the
                 # reconcile-only workflow identity).
-                if document.purpose != OFFICIAL_STATUS_PURPOSE:
+                # An adoption sidecar is also independently issued after its
+                # unsigned assertion has passed protected review. Like an
+                # observable status, it is immutable data but need not share
+                # the current publication batch's Factory revision. Requiring
+                # that would force every release/index/provenance sidecar to
+                # be needlessly re-signed at activation time.
+                if document.purpose not in {OFFICIAL_STATUS_PURPOSE, OFFICIAL_ADOPTION_PROVENANCE_PURPOSE}:
                     immutable_revisions.add(revision)
             if len(immutable_revisions) != 1:
                 fail("active immutable Marketplace KMS sidecars do not share one source revision")

@@ -1,18 +1,10 @@
-name: Adopt retained first-party plugin history
+name: Sign staged first-party adoption proof
 
 on:
   workflow_dispatch:
     inputs:
       plugin_id:
-        description: Pending Registry v2 first-party plugin ID to activate
-        required: true
-        type: string
-      beta_sha:
-        description: Exact current refs/heads/beta commit in the approved source repository
-        required: true
-        type: string
-      stable_sha:
-        description: Exact current refs/heads/main commit in the approved source repository
+        description: Pending Registry v2 first-party plugin ID with a reviewed staged proof
         required: true
         type: string
 
@@ -42,7 +34,8 @@ jobs:
           set -euo pipefail
           [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || { echo "First-party adoption requires protected Factory main." >&2; exit 1; }
           [ -n "$XSEC_MARKETPLACE_PUBLISH_TOKEN" ] || { echo "The protected Factory publisher token is required." >&2; exit 1; }
-      - uses: actions/checkout@v4
+      # actions/checkout v4.4.0, pinned after resolving the signed tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           ref: refs/heads/main
@@ -72,22 +65,45 @@ jobs:
             printf 'A generated Marketplace PR is still awaiting source/Codex review and protected merge:\n%s\n' "$pending" >&2
             exit 1
           fi
-      - uses: actions/setup-python@v5
+      # actions/setup-python v6.3.0, pinned after resolving the signed tag.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@v4
+      # actions/setup-node v4.4.0, pinned after resolving the signed tag.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24"
-      - name: Resolve only the pending reviewed Registry entry
+      - name: Rebuild the staged assertion from its protected pre-staging baseline
         id: request
         env:
           PLUGIN_ID: ${{ inputs.plugin_id }}
-          BETA_SHA: ${{ inputs.beta_sha }}
-          STABLE_SHA: ${{ inputs.stable_sha }}
         run: |
-          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-adoption \
-            --plugin-id "$PLUGIN_ID" --beta-sha "$BETA_SHA" --stable-sha "$STABLE_SHA"
-      - name: Require both supplied source heads to remain the reviewed branch heads
+          set -euo pipefail
+          [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ && "$PLUGIN_ID" != *..* && "$PLUGIN_ID" != *--* ]] || {
+            echo "First-party adoption plugin ID is unsafe." >&2
+            exit 1
+          }
+          adoption_path=".xsec-factory/official-adoptions/${PLUGIN_ID}.json"
+          baseline_revision="$(jq -er '.legacy.factoryRevision | strings | select(test("^[a-f0-9]{40}$"))' "$adoption_path")"
+          git cat-file -e "${baseline_revision}^{commit}" || {
+            echo "The staged assertion does not name an available protected Factory baseline commit." >&2
+            exit 1
+          }
+          # A staging PR may be rebased or squash-merged after unrelated
+          # protected-main work. The assertion retains the exact protected
+          # revision it was built from, which must remain on main's ancestry;
+          # do not derive the baseline from the later merge commit's parent.
+          git merge-base --is-ancestor "$baseline_revision" HEAD || {
+            echo "The staged assertion Factory baseline is not retained by protected main." >&2
+            exit 1
+          }
+          baseline_root="${RUNNER_TEMP}/xsec-adoption-baseline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          [ ! -e "$baseline_root" ] || { echo "The pre-staging baseline worktree path already exists." >&2; exit 1; }
+          git worktree add --detach "$baseline_root" "$baseline_revision"
+          trap 'git worktree remove --force "$baseline_root"' EXIT
+          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-staged-adoption \
+            --plugin-id "$PLUGIN_ID" --baseline-root "$baseline_root" --factory-revision "$baseline_revision"
+      - name: Require both staged source heads to remain the reviewed branch heads
         env:
           SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
           BETA_REF: ${{ steps.request.outputs.beta_ref }}
@@ -101,37 +117,36 @@ jobs:
           stable_head="$(git -c credential.helper= -c http.followRedirects=false ls-remote "$remote" "$STABLE_REF" | awk 'NR == 1 { print $1 }')"
           [ "$beta_head" = "$BETA_SHA" ] || { echo "The source beta head changed before adoption." >&2; exit 1; }
           [ "$stable_head" = "$STABLE_SHA" ] || { echo "The source main head changed before adoption." >&2; exit 1; }
-      - name: Stage the immutable adoption and activate the reviewed Registry entry
-        env:
-          PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
-          BETA_SHA: ${{ steps.request.outputs.beta_sha }}
-          STABLE_SHA: ${{ steps.request.outputs.stable_sha }}
-          FACTORY_REVISION: ${{ steps.factory.outputs.revision }}
-        run: |
-          set -euo pipefail
-          python scripts/external_source_factory.py adopt-first-party --plugin-id "$PLUGIN_ID" \
-            --beta-sha "$BETA_SHA" --stable-sha "$STABLE_SHA" --factory-revision "$FACTORY_REVISION"
-          python scripts/external_source_factory.py activate-first-party --plugin-id "$PLUGIN_ID"
-      - name: Validate retained artifacts and unsigned staged adoption before KMS
+      - name: Validate retained artifacts and reviewed unsigned adoption before KMS
         run: |
           python scripts/validate_market.py source --source-root . --built-root .
-          python scripts/external_source_factory.py validate --allow-unsigned-publication-proofs
-      - name: Request KMS sidecars through the production Cloud broker
+          python scripts/external_source_factory.py validate
+      - name: Request the one staged KMS adoption sidecar through the production Cloud broker
         env:
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.factory.outputs.revision }}
-        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status
-      - name: Require the signed adoption before any write
+          PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
+        run: python scripts/kms_marketplace_publisher.py --root . --first-party-adoption-plugin-id "$PLUGIN_ID"
+      - name: Require the KMS proof before activating the Registry
         env:
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.factory.outputs.revision }}
+          PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
         run: |
-          python scripts/kms_marketplace_publisher.py --root . --exclude-official-status --validate-only
+          python scripts/kms_marketplace_publisher.py --root . --first-party-adoption-plugin-id "$PLUGIN_ID" --validate-only
+          python scripts/external_source_factory.py activate-first-party --plugin-id "$PLUGIN_ID"
           python scripts/external_source_factory.py validate
       - name: Open a signed activation PR for independent review
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
-          git add -A -- .xsec-factory
+          plugin_id="${{ steps.request.outputs.plugin_id }}"
+          git add -- ".xsec-factory/official-registry.json" \
+            ".xsec-factory/official-adoption-proofs/${plugin_id}.json"
+          expected="$(printf '%s\n%s' \
+            '.xsec-factory/official-adoption-proofs/'"${plugin_id}"'.json' \
+            '.xsec-factory/official-registry.json' | sort)"
+          changed="$(git diff --cached --name-only | sort)"
+          [ "$changed" = "$expected" ] || { printf 'Activation may change only Registry and KMS sidecar, got:\n%s\n' "$changed" >&2; exit 1; }
           git diff --cached --quiet && { echo "No first-party adoption changes to publish." >&2; exit 1; }
           git config user.name "xsec-marketplace[bot]"
           git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
@@ -140,7 +155,7 @@ jobs:
           branch="xsec-marketplace/adopt-first-party-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
-          pull_url="$(gh pr create --base main --head "$branch" --title "chore: adopt first-party plugin history" --body "Generated by protected adoption workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It binds retained immutable release history to exact approved source heads and a KMS proof; it does not create a release or move a channel pointer.")"
+          pull_url="$(gh pr create --base main --head "$branch" --title "chore: activate signed first-party plugin history" --body "Generated by protected adoption workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Cloud KMS signed the exact immutable assertion already reviewed on protected main. This PR only adds the KMS sidecar and activates the reviewed Registry entry; it does not create a release or move a channel pointer.")"
           pull_number="$(gh pr view "$pull_url" --json number --jq .number)"
           gh workflow run validate.yml --ref "$branch"
           deadline="$((SECONDS + 900))"
@@ -155,7 +170,7 @@ jobs:
             [ "$SECONDS" -lt "$deadline" ] || { echo "Timed out waiting for signed adoption source gate." >&2; exit 1; }
             sleep 5
           done
-          review_body="@codex review"$'\n\n'"This is an immutable first-party adoption generated by protected workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It has passed the Factory source gate. Review the exact source heads, retained release history and KMS adoption sidecar before merging."
+          review_body="@codex review"$'\n\n'"This is the signed first-party adoption activation generated by protected workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It has passed the Factory source gate. Review that the exact source heads and retained history assertion previously staged on protected main match the KMS adoption sidecar before merging."
           gh pr comment "$pull_number" --body "$review_body"
           {
             echo "## First-party adoption PR"

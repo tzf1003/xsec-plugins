@@ -35,7 +35,11 @@ supplies a URL, a public key, or a plugin list.
 `channel` is exactly `beta` or `stable`. Before merge, the protected Factory
 final gate re-reads the exact PR head/base and registered source heads with the
 separate read-only Source App, then requires the current source gate, completed
-Codex review and no unresolved Codex threads. The dispatcher derives the
+Codex review and no unresolved Codex threads. If GitHub omits the matching
+REST review object, this may only be the official Codex bot's completed
+summary for the exact full/short head, created or updated after the trusted
+OWNER review request; pending summaries and ordinary comments never qualify.
+The dispatcher derives the
 channel from the reviewed release-index transition, authenticates all KMS
 sidecars, and revalidates every registered external source head again after
 merge with another exact-repository read-only Source App token. The Finalizer

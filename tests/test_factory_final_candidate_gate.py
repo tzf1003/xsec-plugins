@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ARM_WORKFLOW = ROOT / ".github" / "workflows" / "arm-generated-marketplace-final-merge.yml"
 FINAL_WORKFLOW = ROOT / ".github" / "workflows" / "final-merge-generated-marketplace-pr.yml"
+ADOPTION_WORKFLOW = ROOT / ".github" / "workflows" / "adopt-first-party.yml"
 
 
 class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
@@ -24,6 +25,10 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertNotIn('commits/${PR_HEAD_SHA}/pulls', workflow)
         self.assertIn("factory_generated=true", workflow)
         self.assertIn("state=pending", workflow)
+        # Both stages are privileged, review-gated Factory changes. The arm
+        # workflow must keep an ordinary same-SHA PR from overwriting either
+        # candidate's required pending finalizer status.
+        self.assertGreaterEqual(workflow.count("xsec-marketplace/stage-first-party-adoption-"), 2)
 
     def test_release_shaped_content_is_pending_even_on_an_ordinary_branch(self) -> None:
         workflow = ARM_WORKFLOW.read_text(encoding="utf-8")
@@ -47,6 +52,10 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
 
     def test_final_gate_revalidates_narrow_adoption_and_sidecar_candidates(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("xsec-marketplace/stage-first-party-adoption-*", workflow)
+        self.assertIn("Adoption is a two-step non-release transition", workflow)
+        self.assertIn("staging PR adds one unsigned assertion", workflow)
+        self.assertIn("activation PR later adds only the matching sidecar", workflow)
         self.assertIn("xsec-marketplace/refresh-retained-sidecar-*", workflow)
         self.assertIn("beta-smoke-ready", workflow)
         self.assertIn("Only external Beta branches may reopen a no-pointer Desktop smoke cycle", workflow)
@@ -54,8 +63,22 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("--verify-retained-sidecar-refresh-candidate", workflow)
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
         self.assertIn("exact PR head has no successful Factory source gate", workflow)
-        self.assertIn("exact PR head has no completed Codex review", workflow)
+        self.assertIn("latest @codex review request", workflow)
+        self.assertIn(".state == \"APPROVED\" or .state == \"COMMENTED\"", workflow)
+        self.assertIn("terminal Codex review", workflow)
+        self.assertIn("codex-pull-request-review-summary", workflow)
+        self.assertIn("Code Review", workflow)
+        self.assertIn("Completed", workflow)
+        self.assertIn("chatgpt-codex-connector[bot]", workflow)
+        self.assertIn("short_head", workflow)
         self.assertIn("unresolved Codex review thread", workflow)
+
+    def test_adoption_signer_uses_the_retained_protected_pre_staging_revision(self) -> None:
+        workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(".legacy.factoryRevision", workflow)
+        self.assertIn('git merge-base --is-ancestor "$baseline_revision" HEAD', workflow)
+        self.assertIn('git cat-file -e "${baseline_revision}^{commit}"', workflow)
+        self.assertNotIn("git log --diff-filter=A", workflow)
 
     def test_final_gate_never_turns_the_arm_owned_candidate_status_green(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")

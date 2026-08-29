@@ -80,7 +80,7 @@ jobs:
             exit 1
           }
           case "$head_ref" in
-            xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*) ;;
+            xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*) ;;
             *) echo "Final gate accepts only protected Factory publication branches." >&2; exit 1 ;;
           esac
           [[ "$base_sha" =~ ^[a-f0-9]{40}$ && "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
@@ -114,54 +114,18 @@ jobs:
           HEAD_REF: ${{ steps.pr.outputs.head_ref }}
         run: |
           set -euo pipefail
-          if [[ "$HEAD_REF" == xsec-marketplace/adopt-first-party-* ]]; then
-            # An adoption is not a release transition, but it activates a
-            # first-party Registry row and therefore has the same trusted
-            # review/merge boundary.  These scripts come from checked-out
+          if [[ "$HEAD_REF" == xsec-marketplace/stage-first-party-adoption-* || "$HEAD_REF" == xsec-marketplace/adopt-first-party-* ]]; then
+            # Adoption is a two-step non-release transition. The reviewed
+            # staging PR adds one unsigned assertion; the KMS-generated
+            # activation PR later adds only the matching sidecar and changes
+            # that exact Registry row. These scripts come from checked-out
             # protected main; CANDIDATE is data only and is never executed.
-            # The diff itself has an independent three-path allowlist. Full
-            # Factory validation below proves the newly added KMS adoption
-            # proof, but cannot allow workflows or unrelated Factory state to
-            # piggyback on the privileged Registry activation.
             adoption_shape="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" --before "$BEFORE" --after "$AFTER" --verify-first-party-adoption-candidate)"
             expected_adoption_path="$(printf '%s' "$adoption_shape" | jq -er .adoption_path)"
             expected_plugin_id="$(printf '%s' "$adoption_shape" | jq -er .plugin_id)"
-            mapfile -t adoption_paths < <(git -C "$CANDIDATE" diff --name-only --no-renames "$BEFORE" "$AFTER" | grep '^\.xsec-factory/official-adoptions/.*\.json$' || true)
-            [ "${#adoption_paths[@]}" -eq 1 ] || {
-              echo "An adoption PR must add exactly one first-party adoption document." >&2
-              exit 1
-            }
-            adoption_path="${adoption_paths[0]}"
-            plugin_id="${adoption_path#.xsec-factory/official-adoptions/}"
-            plugin_id="${plugin_id%.json}"
-            [ "$adoption_path" = "$expected_adoption_path" ] && [ "$plugin_id" = "$expected_plugin_id" ] || {
-              echo "The adoption candidate no longer matches its strict Registry/proof allowlist." >&2
-              exit 1
-            }
-            [[ "$plugin_id" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]] || {
-              echo "The adoption document has an unsafe plugin ID." >&2
-              exit 1
-            }
-            mapfile -t adoption_proof_paths < <(git -C "$CANDIDATE" diff --name-only --no-renames "$BEFORE" "$AFTER" | grep '^\.xsec-factory/official-adoption-proofs/.*\.json$' || true)
-            [ "${#adoption_proof_paths[@]}" -eq 1 ] && [ "${adoption_proof_paths[0]}" = ".xsec-factory/official-adoption-proofs/${plugin_id}.json" ] || {
-              echo "An adoption PR must add the matching fixed KMS adoption proof." >&2
-              exit 1
-            }
-            before_registry="$(git -C "$CANDIDATE" show "$BEFORE:.xsec-factory/official-registry.json")"
-            after_registry="$(git -C "$CANDIDATE" show "$AFTER:.xsec-factory/official-registry.json")"
-            before_entry="$(printf '%s' "$before_registry" | jq -ce --arg id "$plugin_id" '[.plugins[] | select(.pluginId == $id)] | if length == 1 then .[0] else error("expected one pending Registry entry") end')"
-            after_entry="$(printf '%s' "$after_registry" | jq -ce --arg id "$plugin_id" '[.plugins[] | select(.pluginId == $id)] | if length == 1 then .[0] else error("expected one active Registry entry") end')"
-            [ "$(printf '%s' "$before_entry" | jq -er .status)" = "pending-adoption" ] \
-              && [ "$(printf '%s' "$after_entry" | jq -er .status)" = "active" ] \
-              && [ "$(printf '%s' "$before_entry" | jq -c 'del(.status)')" = "$(printf '%s' "$after_entry" | jq -c 'del(.status)')" ] || {
-              echo "The adoption may only activate its one pending Registry entry." >&2
-              exit 1
-            }
-            [ "$(printf '%s' "$before_registry" | jq -c --arg id "$plugin_id" '.plugins | map(select(.pluginId != $id))')" = "$(printf '%s' "$after_registry" | jq -c --arg id "$plugin_id" '.plugins | map(select(.pluginId != $id))')" ] \
-              && [ "$(printf '%s' "$before_registry" | jq -c 'del(.plugins)')" = "$(printf '%s' "$after_registry" | jq -c 'del(.plugins)')" ] || {
-              echo "An adoption may not modify any other official Registry entry." >&2
-              exit 1
-            }
+            adoption_path="$expected_adoption_path"
+            plugin_id="$expected_plugin_id"
+            [[ "$plugin_id" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]] || { echo "The adoption document has an unsafe plugin ID." >&2; exit 1; }
             python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
             sources="$(jq -ce '
               .source as $source
@@ -295,11 +259,41 @@ jobs:
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }
+          comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PULL_NUMBER}/comments?per_page=100")"
+          review_request_at="$(printf '%s' "$comments" | jq -er '
+            [ .[][]
+              | select(.body | type == "string" and test("(^|[[:space:]])@codex[[:space:]]+review([[:space:]]|$)"; "i"))
+              | select(.author_association == "OWNER")
+              | select(.created_at | type == "string")
+              | .created_at
+            ] | if length > 0 then max else error("no current @codex review request") end
+          ')"
           reviews="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}/reviews?per_page=100")"
-          printf '%s' "$reviews" | jq -e --arg head "$HEAD_SHA" 'any(.[][]; (.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") and .commit_id == $head)' >/dev/null || {
-            echo "The exact PR head has no completed Codex review." >&2
+          if printf '%s' "$reviews" | jq -e --arg head "$HEAD_SHA" --arg requested_at "$review_request_at" '
+            any(.[][];
+              (.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector")
+              and .commit_id == $head
+              and (.state == "APPROVED" or .state == "COMMENTED")
+              and (.submitted_at | type == "string" and . >= $requested_at)
+            )
+          ' >/dev/null; then
+            echo "Accepted terminal Codex REST review for the exact PR head."
+          elif printf '%s' "$comments" | jq -e --arg head "$HEAD_SHA" --arg short_head "${HEAD_SHA:0:7}" --arg requested_at "$review_request_at" '
+            any(.[][];
+              .user.login == "chatgpt-codex-connector[bot]"
+              and (.body | type == "string" and contains("<!-- codex-pull-request-review-summary -->"))
+              and (.body | test("\\|[^\\r\\n|]*Code Review[^\\r\\n|]*\\|[^\\r\\n|]*✅[^\\r\\n|]*Completed[^\\r\\n|]*\\|[^\\r\\n|]*`(" + $head + "|" + $short_head + ")`[^\\r\\n|]*\\|"))
+              and (. as $comment | [ $comment.created_at, $comment.updated_at | select(type == "string" and . >= $requested_at) ] | length > 0)
+            )
+          ' >/dev/null; then
+            # The Codex connector occasionally publishes only this immutable
+            # bot-owned status summary and no REST review record. It is an
+            # equivalent terminal signal only for this exact head and request.
+            echo "Accepted terminal Codex bot summary for the exact PR head."
+          else
+            echo "The exact PR head has no terminal Codex review: neither a REST review nor completed official summary follows its latest @codex review request." >&2
             exit 1
-          }
+          fi
           cursor=""
           while :; do
             query='query($owner:String!,$repository:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:1){nodes{author{login}}}} pageInfo{hasNextPage endCursor}}}}}'

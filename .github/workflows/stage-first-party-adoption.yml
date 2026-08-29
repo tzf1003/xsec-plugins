@@ -1,0 +1,158 @@
+name: Stage reviewed first-party adoption proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin_id:
+        description: Pending Registry v2 first-party plugin ID to stage
+        required: true
+        type: string
+      beta_sha:
+        description: Exact current refs/heads/beta commit in the approved source repository
+        required: true
+        type: string
+      stable_sha:
+        description: Exact current refs/heads/main commit in the approved source repository
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # The unsigned proof must be reviewed and merged before the separately
+  # protected signing workflow can ask Cloud KMS to attest its bytes.
+  # Share the publication slot: an empty-PR preflight is not a mutex on its
+  # own, and the staging flow must not race a release, promotion, or signing
+  # flow between that preflight and creating its generated PR.
+  group: xsec-marketplace-publish-main
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Require protected main and the narrowly scoped Factory publisher token
+        env:
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          XSEC_MARKETPLACE_PUBLISH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || { echo "First-party adoption staging requires protected Factory main." >&2; exit 1; }
+          [ -n "$XSEC_MARKETPLACE_PUBLISH_TOKEN" ] || { echo "The protected Factory publisher token is required." >&2; exit 1; }
+      # actions/checkout v4.4.0, pinned after resolving the signed tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: refs/heads/main
+          token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+      - name: Record the protected Factory revision after acquiring the staging slot
+        id: factory
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          [ "$revision" = "$(git rev-parse origin/main)" ] || { echo "Checkout is not current protected Factory main." >&2; exit 1; }
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Refuse to stage while any generated Factory PR awaits review
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          pending="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" |
+              jq -r --arg repository "$GITHUB_REPOSITORY" '
+                .[] |
+                select(.head.repo.full_name == $repository) |
+                .head.ref |
+                select(startswith("xsec-marketplace/"))
+              '
+          )"
+          if [ -n "$pending" ]; then
+            printf 'A generated Marketplace PR is still awaiting source/Codex review and protected merge:\n%s\n' "$pending" >&2
+            exit 1
+          fi
+      # actions/setup-python v6.3.0, pinned after resolving the signed tag.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13"
+      - name: Resolve only the pending reviewed Registry entry
+        id: request
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          BETA_SHA: ${{ inputs.beta_sha }}
+          STABLE_SHA: ${{ inputs.stable_sha }}
+        run: |
+          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-adoption \
+            --plugin-id "$PLUGIN_ID" --beta-sha "$BETA_SHA" --stable-sha "$STABLE_SHA"
+      - name: Require both supplied source heads to remain the reviewed branch heads
+        env:
+          SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
+          BETA_REF: ${{ steps.request.outputs.beta_ref }}
+          STABLE_REF: ${{ steps.request.outputs.stable_ref }}
+          BETA_SHA: ${{ steps.request.outputs.beta_sha }}
+          STABLE_SHA: ${{ steps.request.outputs.stable_sha }}
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${SOURCE_REPOSITORY}.git"
+          beta_head="$(git -c credential.helper= -c http.followRedirects=false ls-remote "$remote" "$BETA_REF" | awk 'NR == 1 { print $1 }')"
+          stable_head="$(git -c credential.helper= -c http.followRedirects=false ls-remote "$remote" "$STABLE_REF" | awk 'NR == 1 { print $1 }')"
+          [ "$beta_head" = "$BETA_SHA" ] || { echo "The source beta head changed before adoption staging." >&2; exit 1; }
+          [ "$stable_head" = "$STABLE_SHA" ] || { echo "The source main head changed before adoption staging." >&2; exit 1; }
+      - name: Stage only the immutable unsigned adoption proof
+        env:
+          PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
+          BETA_SHA: ${{ steps.request.outputs.beta_sha }}
+          STABLE_SHA: ${{ steps.request.outputs.stable_sha }}
+          FACTORY_REVISION: ${{ steps.factory.outputs.revision }}
+        run: |
+          set -euo pipefail
+          python scripts/external_source_factory.py adopt-first-party --plugin-id "$PLUGIN_ID" \
+            --beta-sha "$BETA_SHA" --stable-sha "$STABLE_SHA" --factory-revision "$FACTORY_REVISION"
+          python scripts/validate_market.py source --source-root . --built-root .
+          python scripts/external_source_factory.py validate
+          git add -- ".xsec-factory/official-adoptions/${PLUGIN_ID}.json"
+          expected=".xsec-factory/official-adoptions/${PLUGIN_ID}.json"
+          changed="$(git diff --cached --name-only)"
+          [ "$changed" = "$expected" ] || { printf 'Staging may change only %s, got:\n%s\n' "$expected" "$changed" >&2; exit 1; }
+      - name: Open the unsigned staging PR for independent review
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
+        run: |
+          set -euo pipefail
+          git diff --cached --quiet && { echo "No first-party adoption proof changes to stage." >&2; exit 1; }
+          git config user.name "xsec-marketplace[bot]"
+          git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
+          git commit -m "chore: stage first-party adoption proof"
+          revision="$(git rev-parse HEAD)"
+          branch="xsec-marketplace/stage-first-party-adoption-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch"
+          git push --set-upstream origin "$branch"
+          pull_url="$(gh pr create --base main --head "$branch" --title "chore: stage first-party adoption proof" --body "Generated by protected staging workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It records the immutable, unsigned adoption assertion for Cloud KMS to read from protected main. The Registry remains pending-adoption and this PR cannot activate the plugin, publish a release, or move a channel pointer.")"
+          pull_number="$(gh pr view "$pull_url" --json number --jq .number)"
+          gh workflow run validate.yml --ref "$branch"
+          deadline="$((SECONDS + 900))"
+          while :; do
+            source_gate="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 20 --json headSha,status,conclusion | jq -rc --arg revision "$revision" '.[] | select(.headSha == $revision) | @base64' | head -n 1)"
+            if [ -n "$source_gate" ]; then
+              source_gate_json="$(printf '%s' "$source_gate" | base64 --decode)"
+              [ "$(printf '%s' "$source_gate_json" | jq -r .status)" = "completed" ] || { sleep 5; continue; }
+              [ "$(printf '%s' "$source_gate_json" | jq -r .conclusion)" = "success" ] || { echo "The staged adoption source gate failed." >&2; exit 1; }
+              break
+            fi
+            [ "$SECONDS" -lt "$deadline" ] || { echo "Timed out waiting for staged adoption source gate." >&2; exit 1; }
+            sleep 5
+          done
+          review_body="@codex review"$'\n\n'"This is an unsigned first-party adoption staging PR generated by protected workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It has passed the Factory source gate. Review the exact source heads and retained history assertion. It must merge through normal protected review before the separate production signing workflow can create a KMS sidecar; do not activate the Registry in this PR."
+          gh pr comment "$pull_number" --body "$review_body"
+          {
+            echo "## First-party adoption staging PR"
+            echo
+            echo "${pull_url}"
+            echo
+            echo "The workflow intentionally does **not** sign or merge this PR. It requires review and a protected-branch merge."
+          } >> "$GITHUB_STEP_SUMMARY"
