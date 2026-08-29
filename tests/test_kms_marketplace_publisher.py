@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -327,6 +328,20 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             ):
                 self.assertIsNone(publisher.main())
 
+    def test_cli_authenticates_every_active_sidecar_and_requires_one_source_revision(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-active-release-verify-") as directory:
+            root = Path(directory)
+            documents = self.make_marketplace(root)
+            for document in documents:
+                publisher.sidecar_path_for(document).write_bytes(self.signed_historical_sidecar(document))
+            with patch.object(publisher, "download_pinned_issuer_jwks", return_value=TEST_KMS_JWKS), patch.object(
+                sys,
+                "argv",
+                ["kms_marketplace_publisher.py", "--root", str(root), "--verify-active-marketplace-signatures"],
+            ), patch("sys.stdout", new_callable=StringIO) as output:
+                self.assertIsNone(publisher.main())
+            self.assertEqual(json.loads(output.getvalue()), {"documents": len(documents), "source_revision": REVISION})
+
     def test_publisher_signs_external_factory_provenance_in_a_separate_fixed_proof_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-") as directory:
             root = Path(directory)
@@ -595,6 +610,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
     def test_publish_workflow_requires_protected_main_oidc_and_desktop_smoke_dispatch(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
         validation_workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
+        merge_guard = (ROOT / ".github" / "workflows" / "verify-generated-marketplace-publication.yml").read_text(encoding="utf-8")
         self.assertIn("actions: write", workflow)
         self.assertIn("id-token: write", workflow)
         self.assertIn("pull-requests: write", workflow)
@@ -624,29 +641,33 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertNotIn("require_publish_token:", workflow)
         self.assertIn("needs: enforce-publish-ref", workflow)
         self.assertNotIn("needs.require_publish_token.result == 'success'", workflow)
-        self.assertLess(
-            workflow.index("Require the protected marketplace publication token before checkout or KMS"),
-            workflow.index("actions/checkout@v4"),
-        )
-        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release')", workflow)
-        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release')", workflow)
+        self.assertIn("classify-generated-main-change", workflow)
+        self.assertIn("verify_merged_stable_promotion.py", workflow)
+        self.assertIn("--verify-active-marketplace-signatures", workflow)
+        self.assertIn("Refuse to sign while any generated Factory PR awaits review", workflow)
+        self.assertNotIn("github.event.head_commit.message", workflow)
         self.assertIn("python scripts/kms_marketplace_publisher.py --root .", workflow)
         self.assertIn("python scripts/kms_marketplace_publisher.py --root . --validate-only", workflow)
         self.assertNotIn("XSEC_MARKETPLACE_SIGNING_KEY_B64", workflow)
-        # Keep this sender in lockstep with Desktop's repository_dispatch
+        # Keep the reviewed post-merge sender in lockstep with Desktop's repository_dispatch
         # receiver. Desktop accepts only the official source repository/ref,
         # then proves the protected source SHA is an ancestor of the generated
         # immutable marketplace commit before it constructs its own raw URL.
-        self.assertIn('event_type:"xsec_official_marketplace_published"', workflow)
-        self.assertIn("source_repository:$source_repository", workflow)
-        self.assertIn("source_ref:$source_ref", workflow)
-        self.assertIn("source_sha:$source_sha", workflow)
-        self.assertIn("marketplace_revision:$marketplace_revision", workflow)
-        self.assertIn("channel:$channel", workflow)
-        self.assertIn('--arg source_repository "$GITHUB_REPOSITORY"', workflow)
-        self.assertIn('--arg source_ref "refs/heads/main"', workflow)
+        self.assertIn('event_type:"xsec_official_marketplace_published"', dispatcher)
+        self.assertIn("source_repository:$source_repository", dispatcher)
+        self.assertIn("source_ref:$source_ref", dispatcher)
+        self.assertIn("source_sha:$source_sha", dispatcher)
+        self.assertIn("marketplace_revision:$marketplace_revision", dispatcher)
+        self.assertIn("channel:$channel", dispatcher)
+        self.assertIn('--arg source_repository "$GITHUB_REPOSITORY"', dispatcher)
+        self.assertIn('--arg source_ref "refs/heads/main"', dispatcher)
         self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
-        self.assertIn('--arg source_sha "${{ steps.current-main.outputs.source_revision }}"', workflow)
+        self.assertIn('--arg source_sha "$SOURCE_SHA"', dispatcher)
+        self.assertIn("Require the merged generated PR, source gate, and completed Codex review", dispatcher)
+        self.assertIn("unresolved Codex review threads", dispatcher)
+        self.assertIn("Revalidate each registered source branch at the reviewed merge boundary", dispatcher)
+        self.assertIn("merge_group:", merge_guard)
+        self.assertIn("Reject a generated PR whose registered source branch advanced during review", merge_guard)
         self.assertNotIn('event_type:"xsec_marketplace_smoke"', workflow)
         self.assertNotIn("marketplace_public_key_b64", workflow)
         self.assertNotIn("expected_default_plugin_ids", workflow)
@@ -679,7 +700,6 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("python scripts/promote_release.py", workflow)
         self.assertNotIn("scripts/build_market.py", workflow)
         self.assertIn("chore: promote marketplace stable release", workflow)
-        self.assertIn('--arg channel "stable"', workflow)
         # Both workflows write the same signed index and generated PRs; do
         # not allow an otherwise valid promotion to race beta publication.
         self.assertIn("group: xsec-marketplace-publish-main", workflow)
@@ -689,15 +709,14 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('source_revision="$(git rev-parse HEAD)"', workflow)
         self.assertIn('git rev-parse origin/main', workflow)
         self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
-        self.assertIn('--arg source_sha "${{ steps.current-main.outputs.source_revision }}"', workflow)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
         self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
         self.assertIn("This workflow intentionally does not merge this PR", workflow)
-        self.assertIn("steps.publish.outputs.published == 'true'", workflow)
-        self.assertIn("'publish-main'", publish_workflow)
-        self.assertIn("github.run_id", publish_workflow)
+        self.assertIn("Refuse to sign while any generated Factory PR awaits review", workflow)
+        self.assertNotIn("steps.publish.outputs.published == 'true'", workflow)
+        self.assertIn("group: xsec-marketplace-publish-main", publish_workflow)
         self.assertIn("chore: publish marketplace beta release", publish_workflow)
-        self.assertIn("chore: promote marketplace stable release", publish_workflow)
+        self.assertIn("chore: promote external marketplace stable release", publish_workflow)
 
 
 if __name__ == "__main__":

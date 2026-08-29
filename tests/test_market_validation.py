@@ -1060,11 +1060,11 @@ export function renderPlaceholder() {}
         self.assertIn('[ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]', workflow)
         self.assertIn('[ "$REF_PROTECTED" != "true" ]', workflow)
         signing_job = workflow.split("  sign-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
-        self.assertIn("needs: enforce-publish-ref", signing_job)
+        self.assertIn("needs: [enforce-publish-ref, classify-generated-main-change]", signing_job)
         self.assertIn("needs.enforce-publish-ref.result == 'success'", signing_job)
         self.assertNotIn("needs.require_publish_token.result == 'success'", signing_job)
-        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: publish marketplace beta release')", signing_job)
-        self.assertIn("!startsWith(github.event.head_commit.message, 'chore: promote marketplace stable release')", signing_job)
+        self.assertIn("needs.classify-generated-main-change.outputs.generated != 'true'", signing_job)
+        self.assertNotIn("github.event.head_commit.message", signing_job)
         steps = workflow.split("  sign-and-publish:\n", 1)[1].split("    steps:\n", 1)[1]
         self.assertLess(
             steps.index("Require the protected marketplace publication token before checkout or KMS"),

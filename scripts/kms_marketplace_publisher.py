@@ -822,6 +822,11 @@ def main() -> None:
         help="cryptographically verify one retained releases.json KMS sidecar against the pinned issuer JWKS",
     )
     parser.add_argument(
+        "--verify-active-marketplace-signatures",
+        action="store_true",
+        help="cryptographically verify every active Marketplace document and return its shared source revision",
+    )
+    parser.add_argument(
         "--retained-release-plugin-id",
         help="refresh or validate only one current Marketplace immutable releases.json sidecar",
     )
@@ -830,6 +835,8 @@ def main() -> None:
         parser.error("--verify-retained-release-signature requires --retained-release-plugin-id")
     if args.verify_retained_release_signature and args.validate_only:
         parser.error("--verify-retained-release-signature cannot be combined with --validate-only")
+    if args.verify_active_marketplace_signatures and (args.validate_only or args.retained_release_plugin_id is not None):
+        parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release or validate-only options")
     root = args.root.resolve()
     try:
         documents = (
@@ -844,6 +851,17 @@ def main() -> None:
                 fail(f"KMS sidecar is unavailable: {sidecar}")
             verify_historical_sidecar_signature(sidecar.read_bytes(), document)
             print("cryptographically verified 1 retained KMS marketplace sidecar")
+            return
+        if args.verify_active_marketplace_signatures:
+            revisions: set[str] = set()
+            for document in documents:
+                sidecar = sidecar_path_for(document)
+                if is_link(sidecar) or not sidecar.is_file():
+                    fail(f"KMS sidecar is unavailable: {sidecar}")
+                revisions.add(verify_historical_sidecar_signature(sidecar.read_bytes(), document))
+            if len(revisions) != 1:
+                fail("active Marketplace KMS sidecars do not share one source revision")
+            print(stable_json({"documents": len(documents), "source_revision": revisions.pop()}).decode("utf-8"), end="")
             return
         source_revision = source_revision_from_environment(os.environ)
         if args.validate_only:

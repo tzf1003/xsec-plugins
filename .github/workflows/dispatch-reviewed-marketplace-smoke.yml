@@ -1,0 +1,173 @@
+name: Dispatch reviewed merged Marketplace revision to Desktop smoke
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: xsec-marketplace-reviewed-smoke-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify-reviewed-publication:
+    # A source-gated Factory PR deliberately remains pending after the
+    # publisher exits.  Protected main is the review-completion boundary; no
+    # unmerged publication workflow is allowed to contact Desktop.
+    if: ${{ github.ref_protected }}
+    runs-on: ubuntu-latest
+    outputs:
+      eligible: ${{ steps.classify.outputs.eligible }}
+      channel: ${{ steps.classify.outputs.channel }}
+      source_sha: ${{ steps.classify.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # A push runner may start after a newer main commit exists. Inspect
+          # the immutable event revision, not the mutable branch ref, so a
+          # reviewed publication cannot be stranded by unrelated later work.
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Classify only a signed generated Beta or Stable merge
+        id: classify
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
+            echo "Desktop smoke dispatch requires protected refs/heads/main." >&2
+            exit 1
+          }
+          [[ "$BEFORE" =~ ^[a-f0-9]{40}$ && "$AFTER" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Protected main push has invalid Git revision metadata." >&2
+            exit 1
+          }
+          [ "$AFTER" = "$(git rev-parse HEAD)" ] || {
+            echo "Checkout does not match the pushed protected-main revision." >&2
+            exit 1
+          }
+          result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
+          kind="$(printf '%s' "$result" | jq -er .kind)"
+          if [ "$kind" != "beta" ] && [ "$kind" != "stable" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "No generated Marketplace release transition is present."
+            exit 0
+          fi
+          # The diff verifier proves the allowed transition and the following
+          # verifier authenticates every exact post-merge document byte with
+          # the pinned KMS issuer. A title, merge subject, or changed path
+          # alone can never enter the Desktop path.
+          verification="$(python scripts/kms_marketplace_publisher.py --root . --verify-active-marketplace-signatures)"
+          source_sha="$(printf '%s' "$verification" | jq -er .source_revision)"
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Merged Marketplace signatures did not provide a canonical source revision." >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$source_sha" "$AFTER" || {
+            echo "Merged Marketplace signature source revision is not retained by protected main." >&2
+            exit 1
+          }
+          printf '%s\n' "$result" > "$RUNNER_TEMP/marketplace-publication.json"
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "channel=$kind" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+      - name: Revalidate each registered source branch at the reviewed merge boundary
+        if: ${{ steps.classify.outputs.eligible == 'true' }}
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
+          while IFS= read -r source; do
+            repository="$(printf '%s' "$source" | jq -er .repository)"
+            ref="$(printf '%s' "$source" | jq -er .ref)"
+            expected_sha="$(printf '%s' "$source" | jq -er .sha)"
+            remote="https://github.com/${repository}.git"
+            actual_sha="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+              -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
+              -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
+              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
+              git -c credential.helper= -c http.followRedirects=false ls-remote "$remote" "$ref" | awk 'NR == 1 { print $1 }')"
+            [ "$actual_sha" = "$expected_sha" ] || {
+              echo "Registered ${repository} ${ref} advanced after the generated PR was reviewed; refusing Desktop smoke." >&2
+              exit 1
+            }
+          done < <(printf '%s' "$result" | jq -rc '.promotions[] | select(.source != null) | .source')
+      - name: Require the merged generated PR, source gate, and completed Codex review
+        if: ${{ steps.classify.outputs.eligible == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          prs="$(gh api -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100")"
+          pr="$(printf '%s' "$prs" | jq -cer '[.[] | select(.merged_at != null and .base.ref == "main" and (.head.ref | startswith("xsec-marketplace/")))] | if length == 1 then .[0] else error("expected exactly one merged Factory generated PR") end')"
+          number="$(printf '%s' "$pr" | jq -er .number)"
+          head_sha="$(printf '%s' "$pr" | jq -er .head.sha)"
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${head_sha}&event=workflow_dispatch&per_page=100")"
+          printf '%s' "$runs" | jq -e 'any(.workflow_runs[]; .status == "completed" and .conclusion == "success")' >/dev/null || {
+            echo "The merged generated PR has no successful immutable Factory source gate." >&2
+            exit 1
+          }
+          reviews="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}/reviews?per_page=100")"
+          printf '%s' "$reviews" | jq -e --arg head "$head_sha" 'any(.[]; (.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") and .commit_id == $head)' >/dev/null || {
+            echo "The merged generated PR has no Codex review for its reviewed head." >&2
+            exit 1
+          }
+          cursor=""
+          while :; do
+            query='query($owner:String!,$repository:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:1){nodes{author{login}}}} pageInfo{hasNextPage endCursor}}}}}'
+            page="$(gh api graphql -f query="$query" -F owner="${GITHUB_REPOSITORY%%/*}" -F repository="${GITHUB_REPOSITORY##*/}" -F number="$number" -f cursor="$cursor")"
+            printf '%s' "$page" | jq -e '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[]?.author.login] | any(. == "chatgpt-codex-connector" or . == "chatgpt-codex-connector[bot]") | not' >/dev/null || {
+              echo "The merged generated PR still has unresolved Codex review threads." >&2
+              exit 1
+            }
+            has_next="$(printf '%s' "$page" | jq -er .data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage)"
+            [ "$has_next" = "true" ] || break
+            cursor="$(printf '%s' "$page" | jq -er .data.repository.pullRequest.reviewThreads.pageInfo.endCursor)"
+            [ -n "$cursor" ] || { echo "GitHub returned a paginated review thread page without a cursor." >&2; exit 1; }
+          done
+
+  dispatch-desktop-smoke:
+    needs: verify-reviewed-publication
+    if: ${{ needs.verify-reviewed-publication.outputs.eligible == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Dispatch the reviewed Beta or Stable revision to Desktop smoke
+        env:
+          XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
+          SOURCE_SHA: ${{ needs.verify-reviewed-publication.outputs.source_sha }}
+          MARKETPLACE_REVISION: ${{ github.sha }}
+          MARKETPLACE_CHANNEL: ${{ needs.verify-reviewed-publication.outputs.channel }}
+        run: |
+          set -euo pipefail
+          [ -n "$XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN" ] || {
+            echo "The protected Desktop smoke-dispatch token is required." >&2
+            exit 1
+          }
+          payload="$(jq -cn \
+            --arg source_repository "$GITHUB_REPOSITORY" \
+            --arg source_ref "refs/heads/main" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg marketplace_revision "$MARKETPLACE_REVISION" \
+            --arg channel "$MARKETPLACE_CHANNEL" \
+            '{event_type:"xsec_official_marketplace_published",client_payload:{source_repository:$source_repository,source_ref:$source_ref,source_sha:$source_sha,marketplace_revision:$marketplace_revision,channel:$channel}}')"
+          curl --fail --silent --show-error --retry 3 --retry-all-errors \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data "$payload" \
+            https://api.github.com/repos/tzf1003/xSecDesktop/dispatches

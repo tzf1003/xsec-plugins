@@ -1,0 +1,49 @@
+name: Enforce Factory protected-main merge policy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xsec-marketplace-main-protection
+  cancel-in-progress: false
+
+jobs:
+  enforce:
+    # This is deliberately manual and protected: changing branch protection is
+    # a repository-administration operation, not a side effect of publishing.
+    if: ${{ github.ref == 'refs/heads/main' && github.ref_protected }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Require the repository-administration credential
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$GH_TOKEN" ] || {
+            echo "XSEC_MARKETPLACE_ADMIN_TOKEN is required to change main branch protection." >&2
+            exit 1
+          }
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Strengthen main protection with exact Factory gates
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          current="$RUNNER_TEMP/main-protection-current.json"
+          desired="$RUNNER_TEMP/main-protection-desired.json"
+          verified="$RUNNER_TEMP/main-protection-verified.json"
+          gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" > "$current"
+          python scripts/factory_main_protection_policy.py --input "$current" --output "$desired"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/branches/main/protection" --input "$desired" > "$verified"
+          python scripts/factory_main_protection_policy.py --input "$verified" --verify
+          echo "Factory protected-main policy is active: strict GitHub-Actions source and freshness checks, admin enforcement, and resolved conversations."

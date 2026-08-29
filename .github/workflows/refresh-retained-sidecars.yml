@@ -68,6 +68,16 @@ jobs:
             exit 1
           }
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
+      - name: Refuse to sign while any generated Factory PR awaits review
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          pending="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" --jq '.[] | .head.ref | select(startswith("xsec-marketplace/"))')"
+          if [ -n "$pending" ]; then
+            printf 'A generated Marketplace PR is still awaiting source/Codex review and protected merge:\n%s\n' "$pending" >&2
+            exit 1
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"

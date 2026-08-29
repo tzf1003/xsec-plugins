@@ -5,9 +5,10 @@ successful protected publication, this repository invokes the Desktop workflow
 with a GitHub `repository_dispatch` event. The event name and payload below are
 the exact receiver contract.
 
-After a signed marketplace commit is merged, the protected publisher triggers
-the Desktop workflow with a GitHub `repository_dispatch` event named
-`xsec_official_marketplace_published`. The payload is:
+After a signed marketplace commit is merged through the protected Factory final
+gate, the protected post-merge Factory dispatcher triggers the Desktop workflow
+with a GitHub `repository_dispatch` event named `xsec_official_marketplace_published`.
+The payload is:
 
 ```json
 {
@@ -31,7 +32,12 @@ reject any different repository/ref, malformed revision, or ancestry failure.
 It constructs the raw GitHub content URL itself; a dispatch payload never
 supplies a URL, a public key, or a plugin list.
 
-`channel` is exactly `beta` or `stable`. A normal protected-main publication
+`channel` is exactly `beta` or `stable`. Before merge, the protected Factory
+final gate re-reads the exact PR head/base and registered source heads, then
+requires the current source gate, completed Codex review and no unresolved
+Codex threads. The dispatcher derives the channel from the reviewed
+release-index transition, authenticates all KMS sidecars, and revalidates
+every registered external source head again after merge. A normal protected-main publication
 appends immutable release records as needed and dispatches `beta`; the separate
 manual stable-promotion workflow changes only a v2 release index's
 `channels.stable` pointer and dispatches `stable`. Desktop must select the

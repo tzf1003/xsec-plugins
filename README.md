@@ -204,16 +204,75 @@ exact protected `refresh-retained-sidecars.yml` workflow ref in
 reject the request. This fail-closed prerequisite is separate from repository
 source code and no KMS secret is stored here.
 
-Both workflows dispatch the resulting immutable revision to Desktop with an
-explicit `channel` (`beta` or `stable`). Desktop defaults to stable; opting
-into beta must be an explicit Desktop setting. Desktop automatically installs
-the default official plugins on its first successful online launch, then
-stages official updates; custom sources remain confirmation-driven and
-continue to use their own user-pinned raw-signature protocol.
+`dispatch-reviewed-marketplace-smoke.yml` is the only Desktop hand-off. It
+runs after a protected `main` merge, derives `beta` or `stable` from the exact
+release-index delta (not a PR title or merge subject), cryptographically
+verifies every post-merge KMS sidecar, and checks the merged generated PR's
+successful source gate, completed Codex review, and resolved Codex threads.
+For a registered plugin it also re-reads the exact `beta`/`main` source branch
+head recorded in newly appended provenance; a branch that advanced during
+review is rejected and must be regenerated and reviewed again. The companion
+`verify-generated-marketplace-publication.yml` check proves the candidate's
+current source heads before review, but an external source may still advance
+after that check completes. Therefore a generated Factory PR is not merged by
+a normal PR button: the trusted-base
+`arm-generated-marketplace-final-merge.yml` workflow posts the required
+`factory-final-merge-gate` status as **pending** without checking out or
+executing PR code. It posts **success / not applicable** for every ordinary
+main PR, so a Factory-only context cannot block product or documentation work.
+
+After Codex review is completed and every Codex thread is resolved, a protected
+maintainer runs `final-merge-generated-marketplace-pr.yml` with that PR number.
+It re-reads the live PR head and base, revalidates the exact release diff,
+every KMS sidecar and every registered external ref, then posts success and
+immediately invokes GitHub's exact-head squash-merge API. If the head, base,
+source ref, or merge operation changes/fails, it leaves (or restores) the
+required status to pending; it never releases a stale candidate or pretends a
+failed merge succeeded. This is the merge-time rejection boundary on personal
+repositories too; it does not rely on merge queue availability. The protected
+post-merge dispatcher is a fail-closed second boundary and never auto-rolls
+back a pointer. The one deliberate no-pointer exception is a registered
+external Stable completion where Stable already selects the current Beta: its
+strictly shaped signed provenance/status update is revalidated against the
+current external `main` ref and may merge, but it never dispatches a second
+Desktop smoke.
+
+Run `enforce-factory-main-protection.yml` once from protected `main` after
+installing this code and whenever protection is audited. Its reviewer-gated
+`production` job needs only the repository-scoped administration secret
+`XSEC_MARKETPLACE_ADMIN_TOKEN`; it sets strict, GitHub-Actions-app-pinned
+`source-gate` and `factory-final-merge-gate` checks,
+enforces those checks for administrators, preserves unrelated protection
+settings, and requires resolved conversations. The final merge workflow uses
+the separate scoped `XSEC_MARKETPLACE_PUBLISH_TOKEN` only for reading and
+merging the exact PR; its status writes use the GitHub Actions token so the
+required context remains app-pinned. If either protected environment approval,
+admin token, or final workflow is unavailable, the safe recovery is to leave
+the generated PR pending and repair/re-run the gate—never to loosen protection
+or merge it manually.
+The protection workflow normalizes GET-only user/team/app response objects to
+the REST PUT request shape before updating, so existing review dismissals,
+bypass allowances, and branch restrictions are preserved rather than causing a
+failed protection update.
+
+The resulting Desktop dispatch has an explicit `channel` (`beta` or `stable`).
+Desktop defaults to stable; opting into beta must be an explicit Desktop
+setting. Desktop automatically installs the default official plugins on its
+first successful online launch, then stages official updates; custom sources
+remain confirmation-driven and continue to use their own user-pinned raw-
+signature protocol.
 
 ## Publication queue and Agent evidence
 
-Beta publication and Stable promotion share one serialized publication slot.
+Beta publication, Stable promotion, retained-sidecar repair, and first-party
+adoption share one serialized publication slot. Before any of them calls KMS,
+it refuses to sign if an `xsec-marketplace/*` generated PR is still open.
+This makes the review interval part of the queue: a second candidate cannot be
+signed against the same Factory base, then become stale or conflict when a
+reviewed PR merges. After merge, the diff/sidecar classifier makes that
+generated transition a no-op for `publish.yml`, independent of how GitHub or a
+reviewer chose the merge subject.
+
 When a run waited in that queue, it checks out the protected `main` tip after
 obtaining the slot; it does not rebuild the historical GitHub event SHA that
 originally queued it. The resulting `source_sha` therefore identifies the
@@ -221,9 +280,8 @@ actual source that built and KMS-signed the documents, and may include more
 than one previously queued `main` change. Agents must use the workflow's
 `source_sha`, `marketplace_revision`, and `channel` as publication evidence;
 they must not rerun an old event or hand-edit an index merely because that old
-event SHA has no standalone Beta artifact. Bot-generated metadata pushes are
-skip/no-op runs in a separate concurrency group, so they cannot replace a
-pending Stable promotion.
+event SHA has no standalone Beta artifact. A generated sidecar-only repair is
+classified as maintenance and cannot dispatch Desktop smoke.
 
 ## Local validation
 

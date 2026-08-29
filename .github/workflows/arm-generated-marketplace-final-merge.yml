@@ -1,0 +1,80 @@
+name: Arm generated Marketplace final merge gate
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+  statuses: write
+
+jobs:
+  arm-final-gate:
+    # This is evaluated from the trusted default branch workflow. It must not
+    # check out or execute PR files.  It writes a pending status for Factory
+    # branches and a success/not-applicable status for every other main PR, so
+    # the required context never deadlocks normal product or documentation PRs.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify trusted PR metadata without reading PR files
+        id: classify
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ "$PR_BASE" = "main" ] || {
+            echo "Final merge gate only applies to main PRs." >&2
+            exit 1
+          }
+          [[ "$PR_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Factory PR head SHA is malformed." >&2
+            exit 1
+          }
+          # Statuses are keyed only by SHA, not PR number. An ordinary/fork PR
+          # can point at the same commit as an open Factory PR, so classify the
+          # commit's associated open PR metadata as well as this event's head
+          # branch. No PR content is checked out or executed.
+          # `gh api --paginate` writes one JSON array per response page.  Slurp
+          # all pages before evaluating the predicate: otherwise jq's exit
+          # status would reflect only the final page and an ordinary PR sharing
+          # this SHA could overwrite a Factory candidate's pending status.
+          associated="$(gh api --paginate --slurp "repos/${REPOSITORY}/commits/${PR_HEAD_SHA}/pulls?per_page=100")"
+          factory_for_sha="$(printf '%s' "$associated" | jq -e --arg repo "$REPOSITORY" 'any(.[][]; .state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-")))' >/dev/null && echo true || echo false)"
+          case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in
+            "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*) event_factory=true ;;
+            *) event_factory=false ;;
+          esac
+          if [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ]; then
+            echo "factory_generated=true" >> "$GITHUB_OUTPUT"
+          else
+            # An external fork or any non-Factory same-base branch cannot
+            # obtain a release merge from this status; source-gate and the
+            # normal PR policy still apply. It simply does not need the
+            # Factory-only final revalidation workflow.
+            echo "factory_generated=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Keep Factory PRs pending and mark non-Factory PRs not applicable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FACTORY_GENERATED: ${{ steps.classify.outputs.factory_generated }}
+        run: |
+          set -euo pipefail
+          if [ "$FACTORY_GENERATED" = "true" ]; then
+            state=pending
+            description='Awaiting protected final source/Codex revalidation and exact-head merge.'
+          else
+            state=success
+            description='Not a Factory-generated Marketplace publication PR.'
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+            -f state="$state" \
+            -f context=factory-final-merge-gate \
+            -f description="$description" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/final-merge-generated-marketplace-pr.yml"

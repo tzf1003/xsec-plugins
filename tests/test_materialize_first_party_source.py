@@ -487,6 +487,26 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
 
             self.assertEqual(verified_documents, [blob])
 
+    def test_release_selection_consumes_the_authenticated_blob_after_worktree_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-authenticated-release-") as directory:
+            factory = Path(directory) / "factory"
+            factory.mkdir()
+            stable, beta = self.make_factory(factory)
+            authenticated = materializer.verify_retained_release_signature(factory, PLUGIN_ID)
+            release_path = factory / "plugins" / PLUGIN_ID / ".xsec-market" / "releases.json"
+            mutated = json.loads(release_path.read_text(encoding="utf-8"))
+            mutated["channels"]["stable"]["releaseId"] = beta["releaseId"]
+            write_json(release_path, mutated)
+
+            record, _ = materializer.selected_release_artifact(
+                factory,
+                PLUGIN_ID,
+                "stable",
+                release_document=authenticated,
+            )
+
+            self.assertEqual(record["releaseId"], stable["releaseId"])
+
 
 if __name__ == "__main__":
     unittest.main()

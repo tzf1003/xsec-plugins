@@ -10,6 +10,11 @@ LIFECYCLE = ROOT / "docs" / "plugin-development-release-lifecycle.md"
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish.yml"
 REFRESH_SIDECAR_WORKFLOW = ROOT / ".github" / "workflows" / "refresh-retained-sidecars.yml"
 ADOPTION_WORKFLOW = ROOT / ".github" / "workflows" / "adopt-first-party.yml"
+POST_MERGE_DISPATCHER = ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml"
+MERGE_GUARD_WORKFLOW = ROOT / ".github" / "workflows" / "verify-generated-marketplace-publication.yml"
+ARM_FINAL_GATE_WORKFLOW = ROOT / ".github" / "workflows" / "arm-generated-marketplace-final-merge.yml"
+FINAL_MERGE_WORKFLOW = ROOT / ".github" / "workflows" / "final-merge-generated-marketplace-pr.yml"
+PROTECTION_WORKFLOW = ROOT / ".github" / "workflows" / "enforce-factory-main-protection.yml"
 
 
 class ReleaseLifecycleDocumentationTests(unittest.TestCase):
@@ -70,12 +75,87 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("同一 PR 同时删除 registry、快照和证据", document)
         self.assertIn("设为 `disabled`", document)
 
-    def test_duplicate_beta_delivery_replays_only_the_current_waiting_smoke_status(self) -> None:
+    def test_duplicate_beta_delivery_never_dispatches_before_the_reviewed_merge(self) -> None:
         workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("needs-smoke-redispatch", workflow)
-        self.assertIn("smoke_redispatch=true", workflow)
-        self.assertIn("marketplace_revision=$(git rev-parse HEAD)", workflow)
-        self.assertIn("steps.publication-decision.outputs.smoke_redispatch == 'true'", workflow)
+        dispatcher = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
+        self.assertIn("A duplicate source delivery", workflow)
+        self.assertIn("separately audited smoke recovery path", workflow)
+        self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
+        self.assertIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
+
+    def test_reviewed_merge_dispatcher_requires_signed_diff_review_and_fresh_sources(self) -> None:
+        dispatcher = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
+        merge_guard = MERGE_GUARD_WORKFLOW.read_text(encoding="utf-8")
+        publisher = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+        for rule in (
+            "github.ref_protected",
+            "verify_merged_stable_promotion.py",
+            "--verify-active-marketplace-signatures",
+            "successful immutable Factory source gate",
+            "Codex review for its reviewed head",
+            "unresolved Codex review threads",
+            "Revalidate each registered source branch at the reviewed merge boundary",
+            'event_type:"xsec_official_marketplace_published"',
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, dispatcher)
+        self.assertNotIn("head_commit.message", dispatcher)
+        self.assertIn("reviewThreads(first:100,after:$cursor)", dispatcher)
+        self.assertIn("pageInfo{hasNextPage endCursor}", dispatcher)
+        self.assertIn("ref: ${{ github.sha }}", dispatcher)
+        self.assertIn("merge_group:", merge_guard)
+        self.assertIn("Registered ${repository} ${ref} advanced", merge_guard)
+        self.assertIn("Refuse to sign while any generated Factory PR awaits review", publisher)
+        self.assertNotIn("github.event.head_commit.message", publisher)
+
+    def test_final_merge_gate_is_trusted_revalidating_and_does_not_deadlock_normal_prs(self) -> None:
+        arm = ARM_FINAL_GATE_WORKFLOW.read_text(encoding="utf-8")
+        final_merge = FINAL_MERGE_WORKFLOW.read_text(encoding="utf-8")
+        protection = PROTECTION_WORKFLOW.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("pull_request_target:", arm)
+        self.assertNotIn("actions/checkout", arm)
+        self.assertIn("factory_generated=true", arm)
+        self.assertIn("factory_generated=false", arm)
+        self.assertIn("commits/${PR_HEAD_SHA}/pulls?per_page=100", arm)
+        self.assertIn("factory_for_sha", arm)
+        self.assertIn('.state == "open"', arm)
+        self.assertIn("state=pending", arm)
+        self.assertIn("state=success", arm)
+        self.assertIn("Not a Factory-generated Marketplace publication PR.", arm)
+        self.assertIn("context=factory-final-merge-gate", arm)
+        self.assertIn("workflow_dispatch:", final_merge)
+        self.assertIn("environment: production", final_merge)
+        self.assertIn("XSEC_MARKETPLACE_PUBLISH_TOKEN", final_merge)
+        self.assertIn("STATUS_TOKEN: ${{ github.token }}", final_merge)
+        self.assertIn("Recheck the live PR/source boundary", final_merge)
+        self.assertIn("PR head/base changed while final revalidation ran", final_merge)
+        self.assertIn("factory-final-merge-gate", final_merge)
+        self.assertIn("stable-maintenance", final_merge)
+        self.assertIn("external-stable-*", final_merge)
+        self.assertIn("-f sha=\"$HEAD_SHA\"", final_merge)
+        self.assertIn("reviewThreads(first:100,after:$cursor)", final_merge)
+        self.assertIn("pageInfo{hasNextPage endCursor}", final_merge)
+        self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
+        self.assertIn("branches/main/protection", protection)
+        self.assertIn("factory_main_protection_policy.py", protection)
+        self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", readme)
+        self.assertIn("factory-final-merge-gate", readme)
+        self.assertNotIn("requiring that check and GitHub merge queue", readme)
+
+    def test_pending_generated_pr_scan_is_paginated_before_every_kms_call(self) -> None:
+        workflows = (
+            PUBLISH_WORKFLOW,
+            ROOT / ".github" / "workflows" / "promote-stable.yml",
+            REFRESH_SIDECAR_WORKFLOW,
+            ADOPTION_WORKFLOW,
+        )
+        for workflow_path in workflows:
+            workflow = workflow_path.read_text(encoding="utf-8")
+            with self.subTest(workflow=workflow_path.name):
+                self.assertIn('gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100"', workflow)
+                self.assertIn('select(startswith("xsec-marketplace/"))', workflow)
+                self.assertNotIn('gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open', workflow)
 
     def test_retained_sidecar_refresh_is_manual_narrow_and_never_auto_merges(self) -> None:
         workflow = REFRESH_SIDECAR_WORKFLOW.read_text(encoding="utf-8")
@@ -116,6 +196,11 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
         self.assertNotIn("\n\nThis is an immutable first-party adoption", workflow)
+
+    def test_final_gate_arms_shared_commit_status_only_after_slurping_all_associated_pr_pages(self) -> None:
+        workflow = ARM_FINAL_GATE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('gh api --paginate --slurp "repos/${REPOSITORY}/commits/${PR_HEAD_SHA}/pulls?per_page=100"', workflow)
+        self.assertIn("any(.[][]; .state == \"open\"", workflow)
 
 
 if __name__ == "__main__":

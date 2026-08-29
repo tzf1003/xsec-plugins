@@ -1,0 +1,64 @@
+name: Verify generated Marketplace publication merge
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  source-freshness-gate:
+    # This check is deliberately present on every PR and merge-group candidate
+    # so branch protection can require it. Ordinary changes classify as a
+    # harmless no-op; generated branches receive the additional source-head
+    # proof. A skipped job would not be a durable required-check boundary.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Require a safe generated release delta and authenticate its documents
+        id: publication
+        env:
+          BEFORE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          AFTER: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
+          kind="$(printf '%s' "$result" | jq -er .kind)"
+          if [ "$kind" != "beta" ] && [ "$kind" != "stable" ] && [ "$kind" != "stable-maintenance" ]; then
+            echo "This is not a generated Marketplace release transition; source freshness is not applicable."
+            exit 0
+          fi
+          python scripts/kms_marketplace_publisher.py --root . --verify-active-marketplace-signatures >/dev/null
+          printf '%s\n' "$result" > "$RUNNER_TEMP/marketplace-publication.json"
+      - name: Reject a generated PR whose registered source branch advanced during review
+        env:
+          BEFORE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          AFTER: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
+          while IFS= read -r source; do
+            repository="$(printf '%s' "$source" | jq -er .repository)"
+            ref="$(printf '%s' "$source" | jq -er .ref)"
+            expected_sha="$(printf '%s' "$source" | jq -er .sha)"
+            actual_sha="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+              -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
+              -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
+              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
+              git -c credential.helper= -c http.followRedirects=false \
+              ls-remote "https://github.com/${repository}.git" "$ref" | awk 'NR == 1 { print $1 }')"
+            [ "$actual_sha" = "$expected_sha" ] || {
+              echo "Registered ${repository} ${ref} advanced; regenerate/sign and re-review this Factory PR." >&2
+              exit 1
+            }
+          done < <(printf '%s' "$result" | jq -rc '.promotions[] | select(.source != null) | .source')

@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import factory_main_protection_policy as policy  # noqa: E402
+
+
+def current_protection() -> dict[str, object]:
+    return {
+        "required_status_checks": {
+            "strict": True,
+            "contexts": ["source-gate", "source-freshness-gate", "unrelated-build", "legacy-unpinned"],
+            "checks": [
+                {"context": "source-gate", "app_id": 15368},
+                {"context": "source-freshness-gate", "app_id": 15368},
+                {"context": "unrelated-build", "app_id": 42},
+                {"context": "nullable-unpinned", "app_id": None},
+            ],
+        },
+        "enforce_admins": {"enabled": False},
+        "required_pull_request_reviews": {
+            "dismiss_stale_reviews": True,
+            "require_code_owner_reviews": False,
+            "require_last_push_approval": True,
+            "required_approving_review_count": 1,
+            "dismissal_restrictions": {
+                "users": [{"login": "reviewer"}],
+                "teams": [{"slug": "release-team"}],
+                "apps": [{"slug": "review-app"}],
+                "url": "response-only",
+            },
+            "bypass_pull_request_allowances": {
+                "users": [{"login": "admin"}],
+                "teams": [{"slug": "maintainers"}],
+                "apps": [{"slug": "merge-app"}],
+            },
+        },
+        "restrictions": {
+            "users": [{"login": "release-admin"}],
+            "teams": [{"slug": "release-team"}],
+            "apps": [{"slug": "release-app"}],
+            "url": "response-only",
+        },
+        "required_linear_history": {"enabled": True},
+        "allow_force_pushes": {"enabled": False},
+        "allow_deletions": {"enabled": False},
+        "block_creations": {"enabled": False},
+        "required_conversation_resolution": {"enabled": True},
+        "lock_branch": {"enabled": False},
+        "allow_fork_syncing": {"enabled": False},
+    }
+
+
+class FactoryMainProtectionPolicyTests(unittest.TestCase):
+    def test_strengthening_is_strict_admin_enforced_and_preserves_unrelated_checks(self) -> None:
+        desired = policy.desired_policy(current_protection())
+
+        self.assertTrue(desired["required_status_checks"]["strict"])
+        self.assertTrue(desired["enforce_admins"])
+        self.assertEqual(desired["required_status_checks"]["contexts"], [])
+        self.assertNotIn(
+            {"context": "source-freshness-gate", "app_id": 15368},
+            desired["required_status_checks"]["checks"],
+        )
+        self.assertEqual(
+            desired["required_status_checks"]["checks"],
+            [
+                {"context": "factory-final-merge-gate", "app_id": 15368},
+                {"context": "legacy-unpinned", "app_id": -1},
+                {"context": "nullable-unpinned", "app_id": -1},
+                {"context": "source-gate", "app_id": 15368},
+                {"context": "unrelated-build", "app_id": 42},
+            ],
+        )
+        self.assertEqual(
+            desired["required_pull_request_reviews"],
+            {
+                "dismiss_stale_reviews": True,
+                "require_code_owner_reviews": False,
+                "require_last_push_approval": True,
+                "required_approving_review_count": 1,
+                "dismissal_restrictions": {"users": ["reviewer"], "teams": ["release-team"], "apps": ["review-app"]},
+                "bypass_pull_request_allowances": {"users": ["admin"], "teams": ["maintainers"], "apps": ["merge-app"]},
+            },
+        )
+        self.assertEqual(desired["restrictions"], {"users": ["release-admin"], "teams": ["release-team"], "apps": ["release-app"]})
+        self.assertTrue(desired["required_linear_history"])
+        self.assertFalse(desired["allow_force_pushes"])
+        self.assertFalse(desired["allow_deletions"])
+
+    def test_verifier_rejects_missing_factory_context_admin_bypass_or_non_strict_checks(self) -> None:
+        active = current_protection()
+        active["enforce_admins"] = {"enabled": True}
+        active["required_status_checks"] = {
+            "strict": True,
+            "checks": [
+                {"context": "source-gate", "app_id": 15368},
+                {"context": "factory-final-merge-gate", "app_id": 15368},
+            ],
+        }
+        policy.verify_policy(active)
+
+        stale = current_protection()
+        stale["enforce_admins"] = {"enabled": True}
+        stale["required_status_checks"] = {
+            "strict": True,
+            "checks": [{"context": "source-gate", "app_id": 15368}],
+        }
+        with self.assertRaisesRegex(policy.ProtectionPolicyError, "factory-final-merge-gate"):
+            policy.verify_policy(stale)
+
+        non_strict = current_protection()
+        non_strict["enforce_admins"] = {"enabled": True}
+        non_strict["required_status_checks"] = {
+            "strict": False,
+            "checks": [
+                {"context": "source-gate", "app_id": 15368},
+                {"context": "factory-final-merge-gate", "app_id": 15368},
+            ],
+        }
+        with self.assertRaisesRegex(policy.ProtectionPolicyError, "strict"):
+            policy.verify_policy(non_strict)
+
+        admin_bypass = current_protection()
+        admin_bypass["required_status_checks"] = {
+            "strict": True,
+            "checks": [
+                {"context": "source-gate", "app_id": 15368},
+                {"context": "factory-final-merge-gate", "app_id": 15368},
+            ],
+        }
+        with self.assertRaisesRegex(policy.ProtectionPolicyError, "administrators"):
+            policy.verify_policy(admin_bypass)
+
+
+if __name__ == "__main__":
+    unittest.main()
