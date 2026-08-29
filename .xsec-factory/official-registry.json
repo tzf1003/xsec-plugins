@@ -89,7 +89,7 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Security",
-      "status": "pending-adoption"
+      "status": "active"
     },
     {
       "pluginId": "com.xsec.workspace.browser",
