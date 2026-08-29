@@ -1,8 +1,6 @@
 name: Publish immutable marketplace beta release
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       channel:
@@ -131,11 +129,11 @@ jobs:
           fi
   classify-generated-main-change:
     needs: enforce-publish-ref
-    # A skipped job in `needs` skips its dependants even when their own `if`
-    # permits workflow_dispatch.  Dispatches have no before/after merge range
-    # to classify, so they deliberately produce `generated=false`; protected
-    # main pushes retain the exact diff classification below.
-    if: ${{ needs.enforce-publish-ref.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected }}
+    # Factory publication is driven only by an explicit protected-main
+    # dispatch from the source reconciler or a manual recovery operator.
+    # Merging Registry/adoption/generated metadata must never imply a new
+    # release build merely because it updates `main`.
+    if: ${{ needs.enforce-publish-ref.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected }}
     runs-on: ubuntu-latest
     outputs:
       generated: ${{ steps.classify.outputs.generated }}
@@ -185,7 +183,7 @@ jobs:
   sign-and-publish:
     needs: [enforce-publish-ref, classify-generated-main-change]
     if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && github.ref == 'refs/heads/main' && github.ref_protected && (github.event_name == 'workflow_dispatch' || needs.classify-generated-main-change.outputs.generated != 'true') }}
+      ${{ needs.enforce-publish-ref.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && needs.classify-generated-main-change.outputs.generated != 'true' }}
     runs-on: ubuntu-latest
     environment: production
     steps:
