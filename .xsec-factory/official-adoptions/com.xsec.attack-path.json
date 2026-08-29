@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.attack-path",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-attack-path",
+    "path": "plugins/com.xsec.attack-path",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "e1b333fefa79e2d89d0921dbb7762d149bd88746",
+    "stableSha": "f9b3d39c42b1bdf914e6e5a3d3f72466447dd2bf"
+  },
+  "legacy": {
+    "factoryRevision": "1803a7dc7007e87c255d945c05554b3b710d5797",
+    "releaseDocumentSha256": "bd31510d277e78ca87e5d3960f0c572f05431233c1d659578c43476f664a0862",
+    "releaseDocumentB64": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAicGx1Z2luSWQiOiAiY29tLnhzZWMuYXR0YWNrLXBhdGgiLAogICJyZWxlYXNlcyI6IFsKICAgIHsKICAgICAgInJlbGVhc2VJZCI6ICJzaGEyNTYtYWEzNDIyN2RiMTY0MDRkNTk3MjA5M2Q1ZWMyMmQyZWFhMGVhOGFlZDA4ZmY5MWQ3ZTA2OWJhMDVhNGRhZWUxMCIsCiAgICAgICJ2ZXJzaW9uIjogIjEuMi4wIiwKICAgICAgImVuZ2luZXMiOiB7CiAgICAgICAgInhzZWMiOiAiPj0wLjEuMCIsCiAgICAgICAgInBsdWdpbkFwaSI6ICJeMS4yLjAiCiAgICAgIH0sCiAgICAgICJhcnRpZmFjdHMiOiBbCiAgICAgICAgewogICAgICAgICAgIm9zIjogImFueSIsCiAgICAgICAgICAiYXJjaCI6ICJhbnkiLAogICAgICAgICAgInVybCI6ICJhcnRpZmFjdHMvY29tLnhzZWMuYXR0YWNrLXBhdGgtMS4yLjAtYW55LWFueS54c2VjLXBsdWdpbiIsCiAgICAgICAgICAic2hhMjU2IjogImY2MDVlNmMzOGU3YzE4ZDExZDNkOGU4NzVmMmYyNTAzZGM0NGQ2YWI5NWVlODg3NjVhYzcyMGY5ZTI3NWQ0MDIiCiAgICAgICAgfQogICAgICBdCiAgICB9LAogICAgewogICAgICAicmVsZWFzZUlkIjogInNoYTI1Ni02ZjYyMjRkZTNiNDlmNDJlYzgzMDI0MWZhNGExNGJlNGI1ODFlODEwODhhNWMxMDY2YzY5ZDZhYWQ2ZmE5ODdlIiwKICAgICAgInZlcnNpb24iOiAiMS4yLjEiLAogICAgICAiZW5naW5lcyI6IHsKICAgICAgICAieHNlYyI6ICI+PTAuMS4wIiwKICAgICAgICAicGx1Z2luQXBpIjogIl4xLjIuMCIKICAgICAgfSwKICAgICAgImFydGlmYWN0cyI6IFsKICAgICAgICB7CiAgICAgICAgICAib3MiOiAiYW55IiwKICAgICAgICAgICJhcmNoIjogImFueSIsCiAgICAgICAgICAidXJsIjogImFydGlmYWN0cy9jb20ueHNlYy5hdHRhY2stcGF0aC0xLjIuMS1zaGEyNTYtZWRmMjRlZjNkNDg4NDlmNi1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiZWRmMjRlZjNkNDg4NDlmNmM4N2IyMjg2NDgyMTBlNjk4ZTA2MjA1NGRlZTJhNjViZWZkNjdiYjY1ODBjYzYyYSIKICAgICAgICB9CiAgICAgIF0KICAgIH0sCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTI4NDVhMzgwMzUyN2Y2ZmM0YzI1YWNlMjdjYWUxZDJlZjQxYzFmMjE1NGY4MTUwYzY5ZTAzNzkzNjYzN2QwNDMiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMiIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLmF0dGFjay1wYXRoLTEuMi4yLXNoYTI1Ni0zOGEzZWM2NmRhODlhNjczLWFueS1hbnkueHNlYy1wbHVnaW4iLAogICAgICAgICAgInNoYTI1NiI6ICIzOGEzZWM2NmRhODlhNjczZTVkOTlkYWUzY2MzNmEwNTJmZmY0NWM4ZTkyYzgxM2I2YTk5MDE2ZjkxN2Y5ZWRjIgogICAgICAgIH0KICAgICAgXQogICAgfSwKICAgIHsKICAgICAgInJlbGVhc2VJZCI6ICJzaGEyNTYtOTlhYWY0ZjUwMDMxNzQ3ZDgzZjY5MThmZGRjZWVlMTFiZWEyMjI0M2Y3NzcxZTE1NWM2YzdkMTBjNjI1Y2Q2MyIsCiAgICAgICJ2ZXJzaW9uIjogIjEuMi4zIiwKICAgICAgImVuZ2luZXMiOiB7CiAgICAgICAgInhzZWMiOiAiPj0wLjEuMCIsCiAgICAgICAgInBsdWdpbkFwaSI6ICJeMS4zLjAiCiAgICAgIH0sCiAgICAgICJhcnRpZmFjdHMiOiBbCiAgICAgICAgewogICAgICAgICAgIm9zIjogImFueSIsCiAgICAgICAgICAiYXJjaCI6ICJhbnkiLAogICAgICAgICAgInVybCI6ICJhcnRpZmFjdHMvY29tLnhzZWMuYXR0YWNrLXBhdGgtMS4yLjMtc2hhMjU2LWZjZGZiNWE3MDBlY2RiMTgtYW55LWFueS54c2VjLXBsdWdpbiIsCiAgICAgICAgICAic2hhMjU2IjogImZjZGZiNWE3MDBlY2RiMTg3NzcwNDM5MTg4ZTQ3Nzk3ZmJiODFiODQzNDk1ZDJmY2Q5ZDI1ZWIyMzk3NTVmZWUiCiAgICAgICAgfQogICAgICBdCiAgICB9CiAgXSwKICAiY2hhbm5lbHMiOiB7CiAgICAiYmV0YSI6IHsKICAgICAgInJlbGVhc2VJZCI6ICJzaGEyNTYtOTlhYWY0ZjUwMDMxNzQ3ZDgzZjY5MThmZGRjZWVlMTFiZWEyMjI0M2Y3NzcxZTE1NWM2YzdkMTBjNjI1Y2Q2MyIKICAgIH0sCiAgICAic3RhYmxlIjogewogICAgICAicmVsZWFzZUlkIjogInNoYTI1Ni1hYTM0MjI3ZGIxNjQwNGQ1OTcyMDkzZDVlYzIyZDJlYWEwZWE4YWVkMDhmZjkxZDdlMDY5YmEwNWE0ZGFlZTEwIgogICAgfQogIH0KfQo=",
+    "releaseIds": [
+      "sha256-aa34227db16404d5972093d5ec22d2eaa0ea8aed08ff91d7e069ba05a4daee10",
+      "sha256-6f6224de3b49f42ec830241fa4a14be4b581e81088a5c1066c69d6aad6fa987e",
+      "sha256-2845a3803527f6fc4c25ace27cae1d2ef41c1f2154f8150c69e037936637d043",
+      "sha256-99aaf4f50031747d83f6918fddceee11bea22243f7771e155c6c7d10c625cd63"
+    ],
+    "releaseRecords": [
+      {
+        "releaseId": "sha256-aa34227db16404d5972093d5ec22d2eaa0ea8aed08ff91d7e069ba05a4daee10",
+        "version": "1.2.0",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.attack-path-1.2.0-any-any.xsec-plugin",
+            "sha256": "f605e6c38e7c18d11d3d8e875f2f2503dc44d6ab95ee88765ac720f9e275d402"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-6f6224de3b49f42ec830241fa4a14be4b581e81088a5c1066c69d6aad6fa987e",
+        "version": "1.2.1",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.attack-path-1.2.1-sha256-edf24ef3d48849f6-any-any.xsec-plugin",
+            "sha256": "edf24ef3d48849f6c87b228648210e698e062054dee2a65befd67bb6580cc62a"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-2845a3803527f6fc4c25ace27cae1d2ef41c1f2154f8150c69e037936637d043",
+        "version": "1.2.2",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.attack-path-1.2.2-sha256-38a3ec66da89a673-any-any.xsec-plugin",
+            "sha256": "38a3ec66da89a673e5d99dae3cc36a052fff45c8e92c813b6a99016f917f9edc"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-99aaf4f50031747d83f6918fddceee11bea22243f7771e155c6c7d10c625cd63",
+        "version": "1.2.3",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.3.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.attack-path-1.2.3-sha256-fcdfb5a700ecdb18-any-any.xsec-plugin",
+            "sha256": "fcdfb5a700ecdb187770439188e47797fbb81b843495d2fcd9d25eb239755fee"
+          }
+        ]
+      }
+    ]
+  },
+  "channels": {
+    "beta": {
+      "releaseId": "sha256-99aaf4f50031747d83f6918fddceee11bea22243f7771e155c6c7d10c625cd63"
+    },
+    "stable": {
+      "releaseId": "sha256-aa34227db16404d5972093d5ec22d2eaa0ea8aed08ff91d7e069ba05a4daee10"
+    }
+  }
+}
