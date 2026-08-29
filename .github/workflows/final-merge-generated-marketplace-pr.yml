@@ -105,7 +105,8 @@ jobs:
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
-      - name: Revalidate the exact Factory transition, KMS proofs, and live external heads
+      - name: Revalidate the exact Factory transition and KMS proofs
+        id: publication
         env:
           BEFORE: ${{ steps.pr.outputs.base_sha }}
           AFTER: ${{ steps.pr.outputs.head_sha }}
@@ -204,6 +205,61 @@ jobs:
           fi
           printf '%s\n' "$result" > "$RUNNER_TEMP/factory-publication.json"
           printf '%s\n' "$sources" > "$RUNNER_TEMP/factory-publication-sources.json"
+          # Every release transition may bind multiple beta/main refs, but
+          # its source repositories must belong to one GitHub owner. The
+          # Source App token is then limited to that exact deduplicated
+          # repository list; candidates crossing owners fail closed instead
+          # of receiving an organisation-wide read token.
+          source_scope="$(jq -cer '
+            if type != "array" then error("publication sources must be an array")
+            elif length == 0 then {required:false, owner:"", repositories:""}
+            else
+              [ .[] | .repository ] as $repositories
+              | if all($repositories[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")) then . else error("publication source repository is invalid") end
+              | ($repositories | map(split("/")[0]) | unique) as $owners
+              | if ($owners | length) != 1 then error("one Factory candidate cannot span multiple source owners")
+                else {required:true, owner:$owners[0], repositories:($repositories | map(split("/")[1]) | unique | join(","))}
+                end
+            end
+          ' "$RUNNER_TEMP/factory-publication-sources.json")"
+          echo "source_app_required=$(printf '%s' "$source_scope" | jq -er .required)" >> "$GITHUB_OUTPUT"
+          echo "source_owner=$(printf '%s' "$source_scope" | jq -er .owner)" >> "$GITHUB_OUTPUT"
+          echo "source_repositories=$(printf '%s' "$source_scope" | jq -er .repositories)" >> "$GITHUB_OUTPUT"
+      - name: Require the read-only Source App credentials for registered source proofs
+        if: ${{ steps.publication.outputs.source_app_required == 'true' }}
+        env:
+          SOURCE_APP_ID: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          SOURCE_APP_PRIVATE_KEY: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_APP_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "XSEC_MARKETPLACE_SOURCE_APP_ID must be configured as a read-only GitHub App ID." >&2
+            exit 1
+          }
+          [ -n "$SOURCE_APP_PRIVATE_KEY" ] || {
+            echo "XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY must be configured for registered source proofs." >&2
+            exit 1
+          }
+      # actions/create-github-app-token v2.2.2, pinned after resolving the
+      # signed v2.2.2 tag. This token is source-read-only and is never used
+      # for a Factory mutation or the final protected-main merge.
+      - name: Create a narrowly scoped read-only Source App token
+        id: source-token
+        if: ${{ steps.publication.outputs.source_app_required == 'true' }}
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.publication.outputs.source_owner }}
+          repositories: ${{ steps.publication.outputs.source_repositories }}
+          permission-contents: read
+      - name: Authenticate each registered source branch before review completion
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          token_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
+          unset SOURCE_TOKEN
           while IFS= read -r source; do
             repository="$(printf '%s' "$source" | jq -er .repository)"
             ref="$(printf '%s' "$source" | jq -er .ref)"
@@ -212,13 +268,15 @@ jobs:
               -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
               -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
               GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
-              git -c credential.helper= -c http.followRedirects=false \
+              GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c http.followRedirects=false \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
               ls-remote "https://github.com/${repository}.git" "$ref" | awk 'NR == 1 { print $1 }')"
             [ "$actual_sha" = "$expected_sha" ] || {
-              echo "Registered ${repository} ${ref} advanced; regenerate, re-sign, and re-review the PR." >&2
+              echo "Registered ${repository} ${ref} advanced or could not be read; regenerate, re-sign, and re-review the PR." >&2
               exit 1
             }
           done < <(jq -rc '.[]' "$RUNNER_TEMP/factory-publication-sources.json")
+          unset token_header
       - name: Require a current source gate, Codex review, and every Codex thread resolved
         env:
           GH_TOKEN: ${{ github.token }}
@@ -255,6 +313,7 @@ jobs:
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
           set -euo pipefail
           # The arm workflow owns factory-final-merge-gate and keeps the exact
@@ -274,8 +333,11 @@ jobs:
             exit 1
           }
           # Re-read each external ref immediately before the isolated
-          # exact-head merge. The expected-head merge binds this check to the
-          # one candidate identity without ever releasing its pending status.
+          # exact-head merge. Use only the Source App's exact-repository,
+          # contents:read token: the finalizer credential never proves an
+          # external source head or reaches another repository.
+          token_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
+          unset SOURCE_TOKEN
           while IFS= read -r source; do
             repository="$(printf '%s' "$source" | jq -er .repository)"
             ref="$(printf '%s' "$source" | jq -er .ref)"
@@ -284,13 +346,15 @@ jobs:
               -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
               -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
               GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
-              git -c credential.helper= -c http.followRedirects=false \
+              GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c http.followRedirects=false \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
               ls-remote "https://github.com/${repository}.git" "$ref" | awk 'NR == 1 { print $1 }')"
             [ "$actual_sha" = "$expected_sha" ] || {
-              echo "Registered ${repository} ${ref} advanced while final revalidation ran; it remains pending." >&2
+              echo "Registered ${repository} ${ref} advanced or could not be read while final revalidation ran; it remains pending." >&2
               exit 1
             }
           done < <(jq -rc '.[]' "$RUNNER_TEMP/factory-publication-sources.json")
+          unset token_header
       - name: Require the dedicated Finalizer App credentials
         env:
           FINALIZER_APP_ID: ${{ secrets.XSEC_MARKETPLACE_FINALIZER_APP_ID }}
@@ -320,12 +384,16 @@ jobs:
         env:
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
           set -euo pipefail
           # Token creation is intentionally outside the source-head proof, so
           # beta/main can advance while the App action runs. Re-read every
           # source immediately before giving the Finalizer token to the one
-          # exact-head PUT; this loop deliberately uses no GitHub credential.
+          # exact-head PUT. This proof uses only the separate, read-only
+          # Source App token; the Finalizer token is unavailable until PUT.
+          token_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
+          unset SOURCE_TOKEN
           while IFS= read -r source; do
             repository="$(printf '%s' "$source" | jq -er .repository)"
             ref="$(printf '%s' "$source" | jq -er .ref)"
@@ -334,13 +402,15 @@ jobs:
               -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
               -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
               GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
-              git -c credential.helper= -c http.followRedirects=false \
+              GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c http.followRedirects=false \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
               ls-remote "https://github.com/${repository}.git" "$ref" | awk 'NR == 1 { print $1 }')"
             [ "$actual_sha" = "$expected_sha" ] || {
-              echo "Registered ${repository} ${ref} advanced immediately before the Finalizer merge; it remains pending." >&2
+              echo "Registered ${repository} ${ref} advanced or could not be read immediately before the Finalizer merge; it remains pending." >&2
               exit 1
             }
           done < <(jq -rc '.[]' "$RUNNER_TEMP/factory-publication-sources.json")
+          unset token_header
           # This is the only call that receives the Finalizer App token. GitHub
           # rejects a changed/closed head via `sha`; any failure leaves the
           # arm-owned required status pending and requires fresh revalidation.

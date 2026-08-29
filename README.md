@@ -210,11 +210,14 @@ release-index delta (not a PR title or merge subject), cryptographically
 verifies every post-merge KMS sidecar, and checks the merged generated PR's
 successful source gate, completed Codex review, and resolved Codex threads.
 For a registered plugin it also re-reads the exact `beta`/`main` source branch
-head recorded in newly appended provenance; a branch that advanced during
-review is rejected and must be regenerated and reviewed again. The companion
-`verify-generated-marketplace-publication.yml` check proves the candidate's
-current source heads before review, but an external source may still advance
-after that check completes. Therefore a generated Factory PR is not merged by
+head recorded in newly appended provenance with a new, read-only Source App
+token scoped to that candidate's exact source repositories; a branch that
+advanced during review is rejected and must be regenerated and reviewed again. The companion
+`verify-generated-marketplace-publication.yml` check proves a publicly readable
+candidate source head before review; it deliberately defers a private source
+instead of exposing the protected Source App to unreviewed PR code. The final
+protected gate proves every source head with its separately scoped Source App
+token, so a generated Factory PR is not merged by
 a normal PR button: the trusted-base
 `arm-generated-marketplace-final-merge.yml` workflow posts the required
 `factory-final-merge-gate` status as **pending** without checking out or
@@ -228,7 +231,9 @@ every KMS sidecar and every registered external ref. The arm workflow, not the
 final workflow, owns the candidate's required status and keeps it **pending**
 for the complete lifetime of the PR. After revalidation, the final workflow
 creates an isolated Finalizer GitHub App token and uses it only for GitHub's
-exact-head squash-merge API. If the head, base, source ref, Finalizer setup, or
+exact-head squash-merge API. Source-head rechecks instead use the separate
+read-only Source App and never expose the Finalizer token outside this
+repository. If the head, base, source ref, Finalizer setup, or
 merge operation changes/fails, the candidate remains pending; it never releases
 a stale candidate or pretends a failed merge succeeded. This is the merge-time rejection boundary on personal
 repositories too; it does not rely on merge queue availability. The protected

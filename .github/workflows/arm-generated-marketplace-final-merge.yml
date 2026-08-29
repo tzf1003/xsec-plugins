@@ -24,6 +24,7 @@ jobs:
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -34,6 +35,10 @@ jobs:
           }
           [[ "$PR_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || {
             echo "Factory PR head SHA is malformed." >&2
+            exit 1
+          }
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Factory PR number is malformed." >&2
             exit 1
           }
           # Statuses are keyed only by SHA, not PR number. An ordinary/fork PR
@@ -48,11 +53,38 @@ jobs:
           # this SHA could overwrite a Factory candidate's pending status.
           main_prs="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls?state=all&base=main&per_page=100")"
           factory_for_sha="$(printf '%s' "$main_prs" | jq -e --arg repo "$REPOSITORY" --arg sha "$PR_HEAD_SHA" 'any(.[][]; .head.sha == $sha and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-") or startswith("xsec-marketplace/adopt-first-party-") or startswith("xsec-marketplace/refresh-retained-sidecar-")))' >/dev/null && echo true || echo false)"
+          # A Factory release diff may be cherry-picked onto a normally named
+          # branch, with a no-op commit making its SHA distinct from every
+          # generated branch.  Classify that *content* as privileged too.
+          # This only consumes GitHub's authenticated PR-file metadata; the
+          # pull_request_target job never checks out or executes PR content.
+          # The classifier is deliberately a conservative superset: a normal
+          # PR that touches a release/signature/provenance surface stays
+          # pending until the independent final workflow cryptographically
+          # revalidates the exact tree, rather than receiving a shared-SHA
+          # not-applicable success status.
+          pr_metadata="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          changed_file_count="$(printf '%s' "$pr_metadata" | jq -er '.changed_files | if type == "number" and floor == . and . >= 0 then . else error("invalid changed_files") end')"
+          pr_files="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100")"
+          returned_file_count="$(printf '%s' "$pr_files" | jq -er '[.[][]] | if all(.[]; type == "object" and (.filename | type == "string")) then length else error("invalid PR file response") end')"
+          if [ "$returned_file_count" -ne "$changed_file_count" ]; then
+            # GitHub bounds this endpoint for huge diffs. Its incomplete
+            # content inventory must never produce a not-applicable success.
+            factory_content=true
+          else
+            factory_content="$(printf '%s' "$pr_files" | jq -e '
+              def plugin_id: "[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?";
+              def release_index: test("^plugins/" + plugin_id + "/\\.xsec-market/releases\\.json$");
+              def release_sidecar: test("^plugins/" + plugin_id + "/\\.xsec-market/releases\\.json\\.sig\\.jws\\.json$");
+              def factory_document: test("^\\.xsec-factory/(?:official-registry\\.json|official-(?:publications|publication-proofs|adoptions|adoption-proofs|status)/" + plugin_id + "\\.json)$");
+              any(.[][]; (.filename | type == "string") and (release_index or release_sidecar or factory_document))
+            ' >/dev/null && echo true || echo false)"
+          fi
           case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in
             "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*) event_factory=true ;;
             *) event_factory=false ;;
           esac
-          if [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ]; then
+          if [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ]; then
             echo "factory_generated=true" >> "$GITHUB_OUTPUT"
           else
             # An external fork or any non-Factory same-base branch cannot

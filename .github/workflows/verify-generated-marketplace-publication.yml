@@ -57,6 +57,17 @@ jobs:
               GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
               git -c credential.helper= -c http.followRedirects=false \
               ls-remote "https://github.com/${repository}.git" "$ref" | awk 'NR == 1 { print $1 }')"
+            # This pull_request workflow intentionally receives no protected
+            # Source App secret: executing a candidate's workflow definition
+            # with that credential would let unreviewed PR content exfiltrate
+            # it. A public ref is checked here as an early signal; an empty
+            # anonymous result may be a private source and is deferred to the
+            # protected final gate, which re-runs the exact check using an
+            # isolated read-only Source App token before merge.
+            if [ -z "$actual_sha" ]; then
+              echo "Anonymous source-head lookup is unavailable for ${repository}; defer private-source proof to the protected final gate."
+              continue
+            fi
             [ "$actual_sha" = "$expected_sha" ] || {
               echo "Registered ${repository} ${ref} advanced; regenerate/sign and re-review this Factory PR." >&2
               exit 1

@@ -13,12 +13,15 @@ active only for `refs/heads/main`, requires the strict
 has exactly one bypass actor: the numeric GitHub App integration ID supplied as
 `XSEC_MARKETPLACE_FINALIZER_APP_ID`.  Its bypass mode is `pull_request`, so the
 App can complete the already-reviewed exact-head merge but cannot bypass a
-direct update. The final workflow creates a short-lived, repository-scoped App
-token only after its earlier revalidation. It then re-reads every registered
-external source branch SHA immediately before providing that token to the one
-exact-head merge API request; the source proof itself receives no App token.
-Missing App credentials, an advanced source branch, or a failed merge leaves
-the candidate pending and requires a fresh protected revalidation.
+direct update. The final workflow separately creates a short-lived,
+contents-read-only Source App token from
+`XSEC_MARKETPLACE_SOURCE_APP_ID` / `XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY`.
+It is limited to the exact deduplicated source repositories of one owner in the
+candidate and re-reads every registered external source branch SHA immediately
+before providing the distinct Finalizer token to the one exact-head merge API
+request. The Finalizer token never reads an external source repository. Missing
+App credentials, an advanced source branch, or a failed merge leaves the
+candidate pending and requires a fresh protected revalidation.
 
 `production` is itself a required review boundary: both the policy workflow
 and final merge query its server-side Environment policy and require at least

@@ -24,6 +24,10 @@ jobs:
       eligible: ${{ steps.classify.outputs.eligible }}
       channel: ${{ steps.classify.outputs.channel }}
       source_sha: ${{ steps.classify.outputs.source_sha }}
+      sources: ${{ steps.classify.outputs.sources }}
+      source_app_required: ${{ steps.classify.outputs.source_app_required }}
+      source_owner: ${{ steps.classify.outputs.source_owner }}
+      source_repositories: ${{ steps.classify.outputs.source_repositories }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,32 +82,29 @@ jobs:
             exit 1
           }
           printf '%s\n' "$result" > "$RUNNER_TEMP/marketplace-publication.json"
+          sources="$(printf '%s' "$result" | jq -c '[.promotions[] | select(.source != null) | .source]')"
+          # Use a single source-owner scope and an exact, deduplicated
+          # repository list. A candidate that crosses owners fails closed;
+          # this dispatcher must never request an owner-wide source token.
+          source_scope="$(printf '%s' "$sources" | jq -cer '
+            if type != "array" then error("publication sources must be an array")
+            elif length == 0 then {required:false, owner:"", repositories:""}
+            else
+              [ .[] | .repository ] as $repositories
+              | if all($repositories[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")) then . else error("publication source repository is invalid") end
+              | ($repositories | map(split("/")[0]) | unique) as $owners
+              | if ($owners | length) != 1 then error("one Factory candidate cannot span multiple source owners")
+                else {required:true, owner:$owners[0], repositories:($repositories | map(split("/")[1]) | unique | join(","))}
+                end
+            end
+          ' )"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
           echo "channel=$kind" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
-      - name: Revalidate each registered source branch at the reviewed merge boundary
-        if: ${{ steps.classify.outputs.eligible == 'true' }}
-        env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
-          while IFS= read -r source; do
-            repository="$(printf '%s' "$source" | jq -er .repository)"
-            ref="$(printf '%s' "$source" | jq -er .ref)"
-            expected_sha="$(printf '%s' "$source" | jq -er .sha)"
-            remote="https://github.com/${repository}.git"
-            actual_sha="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
-              -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
-              -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
-              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
-              git -c credential.helper= -c http.followRedirects=false ls-remote "$remote" "$ref" | awk 'NR == 1 { print $1 }')"
-            [ "$actual_sha" = "$expected_sha" ] || {
-              echo "Registered ${repository} ${ref} advanced after the generated PR was reviewed; refusing Desktop smoke." >&2
-              exit 1
-            }
-          done < <(printf '%s' "$result" | jq -rc '.promotions[] | select(.source != null) | .source')
+          echo "sources=$sources" >> "$GITHUB_OUTPUT"
+          echo "source_app_required=$(printf '%s' "$source_scope" | jq -er .required)" >> "$GITHUB_OUTPUT"
+          echo "source_owner=$(printf '%s' "$source_scope" | jq -er .owner)" >> "$GITHUB_OUTPUT"
+          echo "source_repositories=$(printf '%s' "$source_scope" | jq -er .repositories)" >> "$GITHUB_OUTPUT"
       - name: Require the merged generated PR, source gate, and completed Codex review
         if: ${{ steps.classify.outputs.eligible == 'true' }}
         env:
@@ -150,6 +151,60 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - name: Require the read-only Source App credentials for registered source proofs
+        if: ${{ needs.verify-reviewed-publication.outputs.source_app_required == 'true' }}
+        env:
+          SOURCE_APP_ID: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          SOURCE_APP_PRIVATE_KEY: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_APP_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "XSEC_MARKETPLACE_SOURCE_APP_ID must be configured as a read-only GitHub App ID." >&2
+            exit 1
+          }
+          [ -n "$SOURCE_APP_PRIVATE_KEY" ] || {
+            echo "XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY must be configured for registered source proofs." >&2
+            exit 1
+          }
+      # actions/create-github-app-token v2.2.2, pinned after resolving the
+      # signed v2.2.2 tag. This token can read only the exact source
+      # repositories bound into the reviewed Marketplace revision.
+      - name: Create a narrowly scoped read-only Source App token
+        id: source-token
+        if: ${{ needs.verify-reviewed-publication.outputs.source_app_required == 'true' }}
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+          owner: ${{ needs.verify-reviewed-publication.outputs.source_owner }}
+          repositories: ${{ needs.verify-reviewed-publication.outputs.source_repositories }}
+          permission-contents: read
+      - name: Revalidate each registered source branch at the reviewed merge boundary
+        env:
+          SOURCES: ${{ needs.verify-reviewed-publication.outputs.sources }}
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          token_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
+          unset SOURCE_TOKEN
+          while IFS= read -r source; do
+            repository="$(printf '%s' "$source" | jq -er .repository)"
+            ref="$(printf '%s' "$source" | jq -er .ref)"
+            expected_sha="$(printf '%s' "$source" | jq -er .sha)"
+            remote="https://github.com/${repository}.git"
+            actual_sha="$(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+              -u GIT_SSL_NO_VERIFY -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy \
+              -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
+              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https \
+              GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c http.followRedirects=false \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
+              ls-remote "$remote" "$ref" | awk 'NR == 1 { print $1 }')"
+            [ "$actual_sha" = "$expected_sha" ] || {
+              echo "Registered ${repository} ${ref} advanced or could not be read after the generated PR was reviewed; refusing Desktop smoke." >&2
+              exit 1
+            }
+          done < <(printf '%s' "$SOURCES" | jq -rc '.[]')
+          unset token_header
       - name: Dispatch the reviewed Beta or Stable revision to Desktop smoke
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}

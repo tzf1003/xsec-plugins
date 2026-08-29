@@ -25,6 +25,25 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("factory_generated=true", workflow)
         self.assertIn("state=pending", workflow)
 
+    def test_release_shaped_content_is_pending_even_on_an_ordinary_branch(self) -> None:
+        workflow = ARM_WORKFLOW.read_text(encoding="utf-8")
+        # A Factory change may be cherry-picked and followed by an empty commit
+        # on a normally named branch, producing a new SHA with no historical
+        # Factory PR association. The trusted pull_request_target workflow may
+        # read GitHub's authenticated file inventory, but must never check out
+        # or execute that PR's files merely to make this safety classification.
+        self.assertIn('pulls/${PR_NUMBER}/files?per_page=100', workflow)
+        self.assertIn('repos/${REPOSITORY}/pulls/${PR_NUMBER}', workflow)
+        self.assertIn('changed_file_count=', workflow)
+        self.assertIn('returned_file_count=', workflow)
+        self.assertIn('factory_content=true', workflow)
+        self.assertIn('def release_index:', workflow)
+        self.assertIn('def release_sidecar:', workflow)
+        self.assertIn('def factory_document:', workflow)
+        self.assertIn('|| [ "$factory_content" = "true" ]', workflow)
+        self.assertIn("never checks out or executes PR content", workflow)
+        self.assertNotIn("actions/checkout", workflow)
+
     def test_final_gate_revalidates_narrow_adoption_and_sidecar_candidates(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("xsec-marketplace/refresh-retained-sidecar-*", workflow)
@@ -62,19 +81,39 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         # The short-lived bypass token must not exist in the source-read loop.
         # A source beta/main push while the token action runs is therefore
         # detected by this second proof, immediately before the only PUT that
-        # receives the token.
+        # receives the token. Private registered sources use the separate
+        # exact-repository Source App reader; the Finalizer App never crosses
+        # that repository boundary.
         self.assertNotIn("GH_TOKEN: ${{ steps.finalizer.outputs.token }}", workflow)
+        self.assertIn("XSEC_MARKETPLACE_SOURCE_APP_ID", workflow)
+        self.assertIn("XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY", workflow)
+        self.assertIn("permission-contents: read", workflow)
+        self.assertIn("SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}", merge_step)
+        self.assertIn('http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header', merge_step)
         self.assertIn(source_check, merge_step)
         self.assertIn('factory-publication-sources.json', merge_step)
         self.assertIn(token_assignment, merge_step)
         self.assertIn(
-            "advanced immediately before the Finalizer merge; it remains pending.",
+            "advanced or could not be read immediately before the Finalizer merge; it remains pending.",
             merge_step,
         )
         self.assertLess(merge_step.index(source_check), merge_step.index(token_assignment))
         self.assertNotIn("GH_TOKEN", merge_step[: merge_step.index(token_assignment)])
         self.assertEqual(merge_step.count("GH_TOKEN="), 1)
         self.assertEqual(merge_step.count("gh api"), 1)
+
+    def test_final_gate_scopes_source_reader_to_exact_owner_repositories(self) -> None:
+        workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
+        source_token = workflow.split("- name: Create a narrowly scoped read-only Source App token", 1)[1].split(
+            "- name: Authenticate each registered source branch before review completion", 1
+        )[0]
+
+        self.assertIn("one Factory candidate cannot span multiple source owners", workflow)
+        self.assertIn("repositories:($repositories | map(split(\"/\")[1]) | unique | join(\",\"))", workflow)
+        self.assertIn("owner: ${{ steps.publication.outputs.source_owner }}", source_token)
+        self.assertIn("repositories: ${{ steps.publication.outputs.source_repositories }}", source_token)
+        self.assertIn("permission-contents: read", source_token)
+        self.assertNotIn("permission-contents: write", source_token)
 
 
 if __name__ == "__main__":

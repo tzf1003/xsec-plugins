@@ -73,7 +73,15 @@ jobs:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
-          pending="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" --jq '.[] | .head.ref | select(startswith("xsec-marketplace/"))')"
+          pending="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" |
+              jq -r --arg repository "$GITHUB_REPOSITORY" '
+                .[] |
+                select(.head.repo.full_name == $repository) |
+                .head.ref |
+                select(startswith("xsec-marketplace/"))
+              '
+          )"
           if [ -n "$pending" ]; then
             printf 'A generated Marketplace PR is still awaiting source/Codex review and protected merge:\n%s\n' "$pending" >&2
             exit 1

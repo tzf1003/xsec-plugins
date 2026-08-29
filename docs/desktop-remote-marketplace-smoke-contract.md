@@ -33,11 +33,13 @@ It constructs the raw GitHub content URL itself; a dispatch payload never
 supplies a URL, a public key, or a plugin list.
 
 `channel` is exactly `beta` or `stable`. Before merge, the protected Factory
-final gate re-reads the exact PR head/base and registered source heads, then
-requires the current source gate, completed Codex review and no unresolved
-Codex threads. The dispatcher derives the channel from the reviewed
-release-index transition, authenticates all KMS sidecars, and revalidates
-every registered external source head again after merge. A normal protected-main publication
+final gate re-reads the exact PR head/base and registered source heads with the
+separate read-only Source App, then requires the current source gate, completed
+Codex review and no unresolved Codex threads. The dispatcher derives the
+channel from the reviewed release-index transition, authenticates all KMS
+sidecars, and revalidates every registered external source head again after
+merge with another exact-repository read-only Source App token. The Finalizer
+App is not used for either cross-repository read. A normal protected-main publication
 appends immutable release records as needed and dispatches `beta`; the separate
 manual stable-promotion workflow changes only a v2 release index's
 `channels.stable` pointer and dispatches `stable`. Desktop must select the
