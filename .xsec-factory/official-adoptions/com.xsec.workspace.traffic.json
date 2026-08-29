@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.traffic",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-traffic",
+    "path": "plugins/com.xsec.workspace.traffic",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "f274d9e2cb8d6c51c11db5de0cae56a8f4082a83",
+    "stableSha": "f58c1651b4940cd0be1895e65964bd2900e704d5"
+  },
+  "legacy": {
+    "factoryRevision": "1bd1e58814ed63aaedcf1fc5cb6f1ac9ecf7ed7d",
+    "releaseDocumentSha256": "1d6971cb65ea5cd1b6f70f6de57eff0e352538b3f5ec2980f55e2b7d7ec36a5d",
+    "releaseDocumentB64": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAicGx1Z2luSWQiOiAiY29tLnhzZWMud29ya3NwYWNlLnRyYWZmaWMiLAogICJyZWxlYXNlcyI6IFsKICAgIHsKICAgICAgInJlbGVhc2VJZCI6ICJzaGEyNTYtYjkwOWQxNzE4MzY4NTU3ZmNjZGFiYWQ5OGQ1ZGQ5Y2ZiZWVlMGUxZWU5ZjkwYTQwMmYxYTc5NmYyMGJkOTJkYSIsCiAgICAgICJ2ZXJzaW9uIjogIjEuMi4wIiwKICAgICAgImVuZ2luZXMiOiB7CiAgICAgICAgInhzZWMiOiAiPj0wLjEuMCIsCiAgICAgICAgInBsdWdpbkFwaSI6ICJeMS4yLjAiCiAgICAgIH0sCiAgICAgICJhcnRpZmFjdHMiOiBbCiAgICAgICAgewogICAgICAgICAgIm9zIjogImFueSIsCiAgICAgICAgICAiYXJjaCI6ICJhbnkiLAogICAgICAgICAgInVybCI6ICJhcnRpZmFjdHMvY29tLnhzZWMud29ya3NwYWNlLnRyYWZmaWMtMS4yLjAtYW55LWFueS54c2VjLXBsdWdpbiIsCiAgICAgICAgICAic2hhMjU2IjogIjM4OTI1OGQ2NzhmODM0OTM0NDg2YTY0MmM3ZGM3OThhODE5Y2UwNWVjMzBjOTUwMjI4YmVhZjUwOTk3NmZkZTkiCiAgICAgICAgfQogICAgICBdCiAgICB9LAogICAgewogICAgICAicmVsZWFzZUlkIjogInNoYTI1Ni1kODdjMTgxYjIyZDVlNzUwY2VjNDM2NTc1MDQzMzVmNzAwODE3MGVkODcxZDVjNDBhYTExOGZhOWJmNWRhMjlhIiwKICAgICAgInZlcnNpb24iOiAiMS4yLjEiLAogICAgICAiZW5naW5lcyI6IHsKICAgICAgICAieHNlYyI6ICI+PTAuMS4wIiwKICAgICAgICAicGx1Z2luQXBpIjogIl4xLjIuMCIKICAgICAgfSwKICAgICAgImFydGlmYWN0cyI6IFsKICAgICAgICB7CiAgICAgICAgICAib3MiOiAiYW55IiwKICAgICAgICAgICJhcmNoIjogImFueSIsCiAgICAgICAgICAidXJsIjogImFydGlmYWN0cy9jb20ueHNlYy53b3Jrc3BhY2UudHJhZmZpYy0xLjIuMS1zaGEyNTYtZGJmMmRlMzQ4YmEwMzYxNC1hbnktYW55LnhzZWMtcGx1Z2luIiwKICAgICAgICAgICJzaGEyNTYiOiAiZGJmMmRlMzQ4YmEwMzYxNDQ4ZmQ1YmUwYmQzMzIxOGRhYWU4YmM4MGM4ZDU3MjY5OTE5NTg3OTA3YTViZjdlMiIKICAgICAgICB9CiAgICAgIF0KICAgIH0sCiAgICB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTY0MzYzNGZmZGU3ZTE4MzlmOWI3M2Y2MGFmNGVlN2VkZTRjOWQ2OWFmNmFhYzhmM2VjYzYwY2U1ODRiMzc2Y2IiLAogICAgICAidmVyc2lvbiI6ICIxLjIuMiIsCiAgICAgICJlbmdpbmVzIjogewogICAgICAgICJ4c2VjIjogIj49MC4xLjAiLAogICAgICAgICJwbHVnaW5BcGkiOiAiXjEuMi4wIgogICAgICB9LAogICAgICAiYXJ0aWZhY3RzIjogWwogICAgICAgIHsKICAgICAgICAgICJvcyI6ICJhbnkiLAogICAgICAgICAgImFyY2giOiAiYW55IiwKICAgICAgICAgICJ1cmwiOiAiYXJ0aWZhY3RzL2NvbS54c2VjLndvcmtzcGFjZS50cmFmZmljLTEuMi4yLXNoYTI1Ni0yNWRiMjYzM2E2YTFjYmQ0LWFueS1hbnkueHNlYy1wbHVnaW4iLAogICAgICAgICAgInNoYTI1NiI6ICIyNWRiMjYzM2E2YTFjYmQ0YTc3NzEzOTEzM2QzYWVjOGFlMDczOTlmZTllMGMwY2ExNDRkZjFjOTgzNDViMGE4IgogICAgICAgIH0KICAgICAgXQogICAgfQogIF0sCiAgImNoYW5uZWxzIjogewogICAgImJldGEiOiB7CiAgICAgICJyZWxlYXNlSWQiOiAic2hhMjU2LTY0MzYzNGZmZGU3ZTE4MzlmOWI3M2Y2MGFmNGVlN2VkZTRjOWQ2OWFmNmFhYzhmM2VjYzYwY2U1ODRiMzc2Y2IiCiAgICB9LAogICAgInN0YWJsZSI6IHsKICAgICAgInJlbGVhc2VJZCI6ICJzaGEyNTYtYjkwOWQxNzE4MzY4NTU3ZmNjZGFiYWQ5OGQ1ZGQ5Y2ZiZWVlMGUxZWU5ZjkwYTQwMmYxYTc5NmYyMGJkOTJkYSIKICAgIH0KICB9Cn0K",
+    "releaseIds": [
+      "sha256-b909d1718368557fccdabad98d5dd9cfbeee0e1ee9f90a402f1a796f20bd92da",
+      "sha256-d87c181b22d5e750cec43657504335f7008170ed871d5c40aa118fa9bf5da29a",
+      "sha256-643634ffde7e1839f9b73f60af4ee7ede4c9d69af6aac8f3ecc60ce584b376cb"
+    ],
+    "releaseRecords": [
+      {
+        "releaseId": "sha256-b909d1718368557fccdabad98d5dd9cfbeee0e1ee9f90a402f1a796f20bd92da",
+        "version": "1.2.0",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.traffic-1.2.0-any-any.xsec-plugin",
+            "sha256": "389258d678f834934486a642c7dc798a819ce05ec30c950228beaf509976fde9"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-d87c181b22d5e750cec43657504335f7008170ed871d5c40aa118fa9bf5da29a",
+        "version": "1.2.1",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.traffic-1.2.1-sha256-dbf2de348ba03614-any-any.xsec-plugin",
+            "sha256": "dbf2de348ba0361448fd5be0bd33218daae8bc80c8d57269919587907a5bf7e2"
+          }
+        ]
+      },
+      {
+        "releaseId": "sha256-643634ffde7e1839f9b73f60af4ee7ede4c9d69af6aac8f3ecc60ce584b376cb",
+        "version": "1.2.2",
+        "engines": {
+          "xsec": ">=0.1.0",
+          "pluginApi": "^1.2.0"
+        },
+        "artifacts": [
+          {
+            "os": "any",
+            "arch": "any",
+            "url": "artifacts/com.xsec.workspace.traffic-1.2.2-sha256-25db2633a6a1cbd4-any-any.xsec-plugin",
+            "sha256": "25db2633a6a1cbd4a777139133d3aec8ae07399fe9e0c0ca144df1c98345b0a8"
+          }
+        ]
+      }
+    ]
+  },
+  "channels": {
+    "beta": {
+      "releaseId": "sha256-643634ffde7e1839f9b73f60af4ee7ede4c9d69af6aac8f3ecc60ce584b376cb"
+    },
+    "stable": {
+      "releaseId": "sha256-b909d1718368557fccdabad98d5dd9cfbeee0e1ee9f90a402f1a796f20bd92da"
+    }
+  }
+}
