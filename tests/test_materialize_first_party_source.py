@@ -294,6 +294,27 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     )
             invoke.assert_not_called()
 
+    def test_push_rejects_remote_named_as_the_approved_url_before_remote_preflight(self) -> None:
+        target = "https://github.com/tzf1003/xsec-plugin-sub-agent.git"
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-remote-shadow-") as directory:
+            repository = Path(directory) / "candidate"
+            git(Path(directory), "init", "--quiet", "--initial-branch=main", str(repository))
+            # Git allows a remote name to be supplied anywhere that `push`
+            # accepts a repository.  If this name matches the literal trusted
+            # URL, its pushurl redirects the final credentialed write even
+            # though the isolated ls-remote preflight used the literal URL.
+            config = repository / ".git" / "config"
+            config.write_text(
+                config.read_text(encoding="utf-8")
+                + "\n[remote \"https://github.com/tzf1003/xsec-plugin-sub-agent.git\"]\n"
+                + "\tpushurl = https://github.com/tzf1003/xsec-plugin-approvals.git\n",
+                encoding="utf-8",
+            )
+            with patch.object(materializer, "run_git") as invoke:
+                with self.assertRaisesRegex(materializer.MaterializationError, "Git remote configuration"):
+                    materializer.push_candidate(repository, PLUGIN_ID, target, "manager")
+            invoke.assert_not_called()
+
     def test_push_rejects_local_http_proxy_ca_and_resolution_overrides_before_remote_preflight(self) -> None:
         overrides = {
             "http.proxy": "http://attacker.invalid:8080",

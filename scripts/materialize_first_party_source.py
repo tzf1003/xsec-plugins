@@ -464,6 +464,15 @@ def assert_no_local_url_rewrites(repository: Path) -> None:
             fail("materialized source repository must not enable Git worktree-specific configuration")
         if key == "core.fsmonitor":
             fail("materialized source repository must not contain Git fsmonitor configuration")
+        # ``git push <repository>`` accepts either a literal URL or a local
+        # remote name.  A remote whose name equals the approved URL can supply
+        # a different ``pushurl`` after this tool has preflighted the literal
+        # target.  Materialized candidates never need a remote at all: both
+        # branches are pushed by their explicit approved target below.  Reject
+        # every local remote section rather than attempting to parse its
+        # arbitrary subsection name or individual URL values.
+        if key.startswith("remote."):
+            fail("materialized source repository must not contain Git remote configuration")
         if key.startswith("url.") and key.endswith((".insteadof", ".pushinsteadof")):
             fail("materialized source repository must not contain Git URL rewrite configuration")
         # Git supports global and URL-scoped HTTP settings, for example
