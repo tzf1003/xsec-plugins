@@ -164,6 +164,23 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("(.main_source // empty)", dispatcher)
         self.assertIn("mainGateSha", dispatcher)
 
+    def test_finalizer_and_dispatcher_require_the_exact_pr_source_gate(self) -> None:
+        workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
+        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
+
+        # The candidate source gate runs on pull_request. Accepting a
+        # workflow_dispatch run would not prove that the exact PR content
+        # received the reviewed Factory gate.
+        for protected_workflow in (workflow, dispatcher):
+            self.assertIn(
+                "actions/workflows/validate.yml/runs?head_sha=${",
+                protected_workflow,
+            )
+            self.assertIn("&event=pull_request&per_page=100", protected_workflow)
+            self.assertNotIn("&event=workflow_dispatch&per_page=100", protected_workflow)
+            self.assertIn("--argjson pull_number", protected_workflow)
+            self.assertIn("any(.pull_requests[]?; .number == $pull_number)", protected_workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
