@@ -62,7 +62,7 @@ jobs:
           }
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
-          if [ "$kind" != "beta" ] && [ "$kind" != "stable" ]; then
+          if [ "$kind" != "beta" ] && [ "$kind" != "stable" ] && [ "$kind" != "beta-smoke-ready" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             echo "No generated Marketplace release transition is present."
             exit 0
@@ -82,8 +82,8 @@ jobs:
             exit 1
           }
           printf '%s\n' "$result" > "$RUNNER_TEMP/marketplace-publication.json"
-          sources="$(printf '%s' "$result" | jq -c '[.promotions[] | select(.source != null) | .source]')"
-          if [ "$kind" = "beta" ] && [ "$(printf '%s' "$sources" | jq -r length)" -gt 0 ]; then
+          sources="$(printf '%s' "$result" | jq -c '[.promotions[] | select(.source != null) | .source, (.main_source // empty)]')"
+          if { [ "$kind" = "beta" ] || [ "$kind" = "beta-smoke-ready" ]; } && [ "$(printf '%s' "$sources" | jq -r length)" -gt 0 ]; then
             # A source-main event may have rebuilt the selected immutable
             # Beta byte-for-byte, or it may be ahead/behind it.  The Beta PR
             # itself is reviewable in either case, but only the former gets a
@@ -107,6 +107,14 @@ jobs:
                 echo "Factory status is not bound to the reviewed Beta source/release tuple for ${plugin_id}." >&2
                 exit 1
               }
+              if [ "$kind" = "beta-smoke-ready" ]; then
+                main_sha="$(printf '%s' "$promotion" | jq -er .main_source.sha)"
+                status_main_sha="$(printf '%s' "$status" | jq -er .source.mainGateSha)"
+                [ "$status_main_sha" = "$main_sha" ] || {
+                  echo "Factory status is not bound to the reviewed registered-main source SHA for ${plugin_id}." >&2
+                  exit 1
+                }
+              fi
               status_state="$(printf '%s' "$status" | jq -er .publication.state)"
               case "$status_state" in
                 waiting_for_smoke) ;;
@@ -139,7 +147,9 @@ jobs:
             end
           ' )"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
-          echo "channel=$kind" >> "$GITHUB_OUTPUT"
+          desktop_channel="$kind"
+          [ "$desktop_channel" != "beta-smoke-ready" ] || desktop_channel="beta"
+          echo "channel=$desktop_channel" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "sources=$sources" >> "$GITHUB_OUTPUT"
           echo "source_app_required=$(printf '%s' "$source_scope" | jq -er .required)" >> "$GITHUB_OUTPUT"

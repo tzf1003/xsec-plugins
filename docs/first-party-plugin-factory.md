@@ -198,6 +198,12 @@ KMS/JWS 验签、source gate 与 Codex review；它不改变 release history 或
 唯一允许的 no-pointer 例外是当前 Stable 已选中当前 Beta 的 registered external Stable completion：
 它必须只包含严格形状的已签名 provenance/status 更新，重新校验外部 `main` ref 后才可合并，且不会
 再次触发 Desktop smoke。
+另一条独立的 no-pointer 形状是 `beta-smoke-ready`：仅当既有的 `waiting_for_beta` 的不可变
+Beta release/source SHA 未变、`main` 新近逐字节重建它时，才允许把状态精确转为
+`waiting_for_smoke`。它必须重签 Marketplace/release/provenance sidecar，并同时携带该次比较的
+精确 `mainGateSha`；release history、Beta/Stable 指针和 Beta evidence 均不得改变。finalizer 在
+protected merge 前用只读 Source App 同时复验记录的 `beta` 与 `main` 分支头，任一推进便拒绝该
+候选，因而旧的可重建决定绝不会触发 Desktop smoke。
 
 `enforce-factory-main-protection.yml` 是唯一的保护配置自动化，须在 protected `main` 的
 production 环境中手工运行，且需要仓库管理权限的
@@ -232,7 +238,7 @@ publish slot 中重新读取当前 Beta pointer，并证明 main 可达性与可
 
 `publish.yml` 会将前端状态写到
 `.xsec-factory/official-status/<plugin-id>.json`：schema 1，包含 `trustTier`、来源
-repository/path/refs/betaSha/stableSha、当前 Beta/Stable releaseId，以及
+repository/path/refs/betaSha/stableSha/mainGateSha、当前 Beta/Stable releaseId，以及
 `waiting_for_beta|building_beta|waiting_for_smoke|promoting_stable|published|failed` 状态、
 delivery、Factory/smoke run URL 和 Marketplace revision（如有）。已标记 `published` 的
 状态必须能回溯到 adoption 与不可变 publication evidence，且必须有 `stableReleaseId ==
@@ -245,6 +251,9 @@ revision 的普通 PR 因没有匹配的 KMS proof 而失败，adoption 也不�
 status 文件伪造一个 Desktop 可见的 in-flight 发布周期。两个 waiting 状态的 `stableSha`、smoke URL 和 Marketplace
 revision 必须为 `null`；`promoting_stable` 必须再带精确匹配 KMS Stable event 的 Stable releaseId/source
 SHA，并且其 Stable releaseId 必须等于当前 Beta releaseId，且仍不得声称 smoke/revision。
+`mainGateSha` 是最近一次决定 Beta 是否可进入 smoke 的受保护来源 `main` 精确头，不是 Stable
+promotion 证据；每个生成的 registered Beta PR 和 `beta-smoke-ready` PR 都会把它作为第二个 source
+proof，在最终 merge 时与 `betaSha` 一并重新读取。
 当 `reconcile-smoke` 接受 Desktop 的 Beta smoke 成功回调并触发可重建的 Stable
 推广时，会把该回调的精确 Factory revision 和 Desktop Actions URL 带入 Stable 生成
 PR；只有该 PR 的指针/证据校验通过后，状态才成为终态 `published`。重复 Beta delivery

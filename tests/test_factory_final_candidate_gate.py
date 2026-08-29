@@ -48,6 +48,8 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
     def test_final_gate_revalidates_narrow_adoption_and_sidecar_candidates(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("xsec-marketplace/refresh-retained-sidecar-*", workflow)
+        self.assertIn("beta-smoke-ready", workflow)
+        self.assertIn("Only external Beta branches may reopen a no-pointer Desktop smoke cycle", workflow)
         self.assertIn("--verify-first-party-adoption-candidate", workflow)
         self.assertIn("--verify-retained-sidecar-refresh-candidate", workflow)
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
@@ -115,6 +117,19 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("repositories: ${{ steps.publication.outputs.source_repositories }}", source_token)
         self.assertIn("permission-contents: read", source_token)
         self.assertNotIn("permission-contents: write", source_token)
+
+    def test_beta_smoke_gate_rechecks_both_registered_branch_heads(self) -> None:
+        workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
+        freshness = (ROOT / ".github" / "workflows" / "verify-generated-marketplace-publication.yml").read_text(encoding="utf-8")
+        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
+
+        # Beta provenance alone is insufficient: each generated Beta candidate
+        # binds the compared source-main head, and both unprotected early gate
+        # and protected finalizer read it as an independently exact source ref.
+        self.assertIn("(.main_source // empty)", workflow)
+        self.assertIn("(.main_source // empty)", freshness)
+        self.assertIn("(.main_source // empty)", dispatcher)
+        self.assertIn("mainGateSha", dispatcher)
 
 
 if __name__ == "__main__":

@@ -191,8 +191,14 @@ jobs:
                 *) echo "Only external Stable completion branches may use the no-pointer maintenance shape." >&2; exit 1 ;;
               esac
               python scripts/external_source_factory.py --root "$CANDIDATE" validate
+            elif [ "$kind" = "beta-smoke-ready" ]; then
+              case "$HEAD_REF" in
+                xsec-marketplace/external-beta-*) ;;
+                *) echo "Only external Beta branches may reopen a no-pointer Desktop smoke cycle." >&2; exit 1 ;;
+              esac
+              python scripts/external_source_factory.py --root "$CANDIDATE" validate
             elif [ "$kind" != "beta" ] && [ "$kind" != "stable" ]; then
-              echo "Final merge gate accepts only a signed Beta, Stable, or first-party adoption transition." >&2
+              echo "Final merge gate accepts only a signed Beta, Stable, Beta smoke-ready, or first-party adoption transition." >&2
               exit 1
             fi
             verification="$(python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-active-marketplace-signatures)"
@@ -201,7 +207,7 @@ jobs:
               echo "KMS source revision is not retained by the exact PR head." >&2
               exit 1
             }
-            sources="$(printf '%s' "$result" | jq -c '[.promotions[] | select(.source != null) | .source]')"
+            sources="$(printf '%s' "$result" | jq -c '[.promotions[] | select(.source != null) | .source, (.main_source // empty)]')"
           fi
           printf '%s\n' "$result" > "$RUNNER_TEMP/factory-publication.json"
           printf '%s\n' "$sources" > "$RUNNER_TEMP/factory-publication-sources.json"

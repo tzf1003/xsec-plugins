@@ -151,7 +151,7 @@ jobs:
           }
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
-          if [ "$kind" = "beta" ] || [ "$kind" = "stable" ]; then
+          if [ "$kind" = "beta" ] || [ "$kind" = "stable" ] || [ "$kind" = "beta-smoke-ready" ]; then
             python scripts/kms_marketplace_publisher.py --root . --verify-active-marketplace-signatures >/dev/null
             echo "generated=true" >> "$GITHUB_OUTPUT"
           elif [ "$kind" = "maintenance" ] || [ "$kind" = "stable-maintenance" ]; then
@@ -428,7 +428,16 @@ jobs:
         run: |
           # A differing main is an expected release-ordering state. The
           # helper only compares deterministic package identity and writes no
-          # release, provenance, or pointer data.
+          # release, provenance, or pointer data. Record the exact protected
+          # source-main head alongside that decision: the generated PR is
+          # reviewed asynchronously, so the finalizer must re-read this same
+          # ref before it is allowed to enter Desktop smoke.
+          main_gate_sha="$(git -C .xsec-factory-source rev-parse refs/remotes/xsec-factory-source/registered-main)"
+          [[ "$main_gate_sha" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Registered source main did not resolve to a canonical commit SHA." >&2
+            exit 1
+          }
+          echo "main_gate_sha=$main_gate_sha" >> "$GITHUB_OUTPUT"
           python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" check-main-rebuild \
             --plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source-main
       - name: Remove the isolated external source checkouts before signing
@@ -446,12 +455,13 @@ jobs:
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+          MAIN_GATE_SHA: ${{ steps.main-gate.outputs.main_gate_sha }}
           STATUS_STATE: ${{ steps.main-gate.outputs.state }}
           DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
           FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python scripts/external_source_factory.py record-status --plugin-id "$PLUGIN_ID" \
-            --beta-sha "$SOURCE_SHA" --state "$STATUS_STATE" --delivery-id "$DELIVERY_ID" \
+            --beta-sha "$SOURCE_SHA" --main-gate-sha "$MAIN_GATE_SHA" --state "$STATUS_STATE" --delivery-id "$DELIVERY_ID" \
             --factory-run-url "$FACTORY_RUN_URL"
       - name: Record terminal smoke-verified Factory state for Desktop status consumers
         # This runs even when channels.stable already points at the selected

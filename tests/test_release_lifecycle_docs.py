@@ -141,6 +141,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("PR head/base changed while final revalidation ran", final_merge)
         self.assertIn("factory-final-merge-gate", final_merge)
         self.assertIn("stable-maintenance", final_merge)
+        self.assertIn("beta-smoke-ready", final_merge)
         self.assertIn("external-stable-*", final_merge)
         self.assertIn("adopt-first-party-*", final_merge)
         self.assertIn("validate --baseline-root .", final_merge)

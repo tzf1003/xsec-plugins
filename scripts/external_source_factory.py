@@ -1753,6 +1753,7 @@ def status_document(
     *,
     beta_sha: str | None,
     stable_sha: str | None,
+    main_gate_sha: str | None,
     state: str,
     delivery_id: str,
     factory_run_url: str | None = None,
@@ -1781,6 +1782,11 @@ def status_document(
             "refs": {"beta": registration.beta_ref, "stable": registration.stable_ref},
             "betaSha": optional_sha(beta_sha, "official Factory status betaSha"),
             "stableSha": optional_sha(stable_sha, "official Factory status stableSha"),
+            # This is the exact registered ``main`` head whose deterministic
+            # package identity permitted the current Beta smoke cycle.  It is
+            # deliberately distinct from stableSha: waiting states must not
+            # claim that Stable was promoted or smoke-verified.
+            "mainGateSha": optional_sha(main_gate_sha, "official Factory status mainGateSha"),
         },
         "release": {
             "betaReleaseId": beta,
@@ -1802,6 +1808,7 @@ def record_status(
     *,
     beta_sha: str | None,
     stable_sha: str | None,
+    main_gate_sha: str | None = None,
     state: str,
     delivery_id: str,
     factory_run_url: str | None = None,
@@ -1823,11 +1830,21 @@ def record_status(
             existing_source = existing.get("source")
             if isinstance(existing_source, dict):
                 beta_sha = optional_sha(existing_source.get("betaSha"), "existing official Factory status betaSha")
+        # Stable completion and a late smoke callback must retain the last
+        # reviewed main-rebuild proof.  A Beta publication passes a new value
+        # explicitly, so it can never inherit a proof for a different cycle.
+        if main_gate_sha is None:
+            existing_source = existing.get("source")
+            if isinstance(existing_source, dict):
+                main_gate_sha = optional_sha(
+                    existing_source.get("mainGateSha"), "existing official Factory status mainGateSha"
+                )
     document = status_document(
         root,
         registration,
         beta_sha=beta_sha,
         stable_sha=stable_sha,
+        main_gate_sha=main_gate_sha,
         state=state,
         delivery_id=delivery_id,
         factory_run_url=factory_run_url,
@@ -1920,7 +1937,11 @@ def complete_smoke_status(
     ):
         fail("completed smoke status has an invalid identity")
     source = require_object(existing.get("source"), "completed smoke status source")
-    require_exact_keys(source, {"repository", "path", "refs", "betaSha", "stableSha"}, "completed smoke status source")
+    require_exact_keys(
+        source,
+        {"repository", "path", "refs", "betaSha", "stableSha", "mainGateSha"},
+        "completed smoke status source",
+    )
     refs = require_object(source.get("refs"), "completed smoke status source.refs")
     require_exact_keys(refs, {"beta", "stable"}, "completed smoke status source.refs")
     if (
@@ -1932,6 +1953,7 @@ def complete_smoke_status(
         fail("completed smoke status source does not match the official registry")
     beta_sha = optional_sha(source.get("betaSha"), "completed smoke status betaSha")
     prior_stable_sha = optional_sha(source.get("stableSha"), "completed smoke status stableSha")
+    prior_main_gate_sha = optional_sha(source.get("mainGateSha"), "completed smoke status mainGateSha")
     if beta_sha is None:
         fail("completed smoke status has no Beta source SHA")
     release = require_object(existing.get("release"), "completed smoke status release")
@@ -1986,6 +2008,7 @@ def complete_smoke_status(
         registration.plugin_id,
         beta_sha=signed_beta_sha,
         stable_sha=signed_stable_sha,
+        main_gate_sha=prior_main_gate_sha,
         state="published",
         delivery_id=delivery_id,
         factory_run_url=factory_run_url,
@@ -2008,13 +2031,18 @@ def validate_status(
     if status.get("schemaVersion") != 1 or status.get("pluginId") != registration.plugin_id or status.get("trustTier") != registration.trust_tier:
         fail("official Factory status has an invalid identity")
     source = require_object(status.get("source"), "official Factory status source")
-    require_exact_keys(source, {"repository", "path", "refs", "betaSha", "stableSha"}, "official Factory status source")
+    require_exact_keys(
+        source,
+        {"repository", "path", "refs", "betaSha", "stableSha", "mainGateSha"},
+        "official Factory status source",
+    )
     refs = require_object(source.get("refs"), "official Factory status source.refs")
     require_exact_keys(refs, {"beta", "stable"}, "official Factory status source.refs")
     if source.get("repository") != registration.repository or source.get("path") != registration.source_path.as_posix() or refs.get("beta") != registration.beta_ref or refs.get("stable") != registration.stable_ref:
         fail("official Factory status source does not match the official registry")
     beta_sha = optional_sha(source.get("betaSha"), "official Factory status betaSha")
     stable_sha = optional_sha(source.get("stableSha"), "official Factory status stableSha")
+    main_gate_sha = optional_sha(source.get("mainGateSha"), "official Factory status mainGateSha")
     release = require_object(status.get("release"), "official Factory status release")
     require_exact_keys(release, {"betaReleaseId", "stableReleaseId"}, "official Factory status release")
     beta_id = release.get("betaReleaseId")
@@ -3239,6 +3267,10 @@ def main() -> None:
     status_parser.add_argument("--plugin-id", required=True)
     status_parser.add_argument("--beta-sha")
     status_parser.add_argument("--stable-sha")
+    status_parser.add_argument(
+        "--main-gate-sha",
+        help="exact registered main head used for a Beta deterministic-rebuild gate",
+    )
     status_parser.add_argument("--state", required=True, choices=sorted(PUBLICATION_STATES))
     status_parser.add_argument("--delivery-id", required=True)
     status_parser.add_argument("--factory-run-url")
@@ -3323,6 +3355,7 @@ def main() -> None:
                 args.plugin_id,
                 beta_sha=args.beta_sha,
                 stable_sha=args.stable_sha,
+                main_gate_sha=args.main_gate_sha,
                 state=args.state,
                 delivery_id=args.delivery_id,
                 factory_run_url=args.factory_run_url,
