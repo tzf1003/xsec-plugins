@@ -792,12 +792,14 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("--allow-unsigned-official-status-plugin-id", reconcile)
         self.assertIn('gh workflow run validate.yml --ref "$branch"', reconcile)
         self.assertIn("@codex review", reconcile)
-        # Reconciliation must authenticate the live Beta tuple and classify
-        # only a generated candidate's own diff. The KMS source revision is
-        # retained as an ancestry assertion rather than misused as a PR base.
-        self.assertIn('--arg beta_sha "$beta_sha"', reconcile)
-        self.assertIn("$source.betaSha != $beta_sha", reconcile)
-        self.assertIn('candidate_base="$(git merge-base "$head_sha" HEAD)"', reconcile)
+        # Reconciliation authenticates each candidate's own Beta tuple first,
+        # then compares it with the live source head to supersede stale work.
+        # It refreshes protected Factory main before deriving the PR delta; the
+        # KMS source revision is an ancestry assertion, not a PR base.
+        self.assertIn('.source.sha == $source.betaSha', reconcile)
+        self.assertIn('[ "$candidate_beta_sha" = "$beta_sha" ]', reconcile)
+        self.assertIn('refs/heads/main:refs/remotes/origin/main', reconcile)
+        self.assertIn('candidate_base="$(git merge-base "$head_sha" origin/main)"', reconcile)
         self.assertIn('--before "$candidate_base" --after "$head_sha" --classify', reconcile)
         self.assertNotIn('and .[0].plugin_id | type == "string"', reconcile)
         self.assertIn('and (.[0].plugin_id | type) == "string"', reconcile)
@@ -817,6 +819,9 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('RECONCILE_DISPATCH_NONCE', reconcile)
         self.assertIn('and .dispatchNonce == $dispatch_nonce', reconcile)
         self.assertIn('and .factoryRevision == $factory_revision', reconcile)
+        self.assertIn("Publisher receipt Factory revision is not retained by protected main.", reconcile)
+        self.assertNotIn('factory_revision "$(printf \'%s\' "$publisher_run" | jq -er .head_sha)"', reconcile)
+        self.assertIn('if [ "$publisher_status" != "completed" ]; then', reconcile)
         self.assertIn('if [ "$receipt" = "no-op" ]; then', reconcile)
         self.assertIn("The publisher run that emitted the receipt did not complete successfully.", reconcile)
         self.assertIn("stable_requests", smoke)

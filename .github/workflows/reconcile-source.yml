@@ -191,7 +191,12 @@ jobs:
             }
             release_path="$candidate_root/plugins/${PLUGIN_ID}/.xsec-market/releases.json"
             evidence_path="$candidate_root/.xsec-factory/official-publications/${PLUGIN_ID}.json"
-            tuple="$(jq -cer --arg plugin_id "$PLUGIN_ID" --arg repository "$SOURCE_REPOSITORY" --arg beta_sha "$beta_sha" \
+            # Authenticate an in-flight candidate against its *recorded* Beta
+            # source and immutable publication event.  Do not require that
+            # value to equal the live Beta head here: the comparison below is
+            # what intentionally classifies an older generated PR as stale so
+            # it can be closed before its replacement is dispatched.
+            tuple="$(jq -cer --arg plugin_id "$PLUGIN_ID" --arg repository "$SOURCE_REPOSITORY" \
               --slurpfile release "$release_path" --slurpfile evidence "$evidence_path" '
                 $release[0].channels.beta.releaseId as $release_id
                 | if ($release_id | type) != "string" then error("candidate has no Beta release") else . end
@@ -202,7 +207,7 @@ jobs:
                     or $source.repository != $repository
                     or $source.path != ("plugins/" + $plugin_id)
                     or $source.refs != {beta:"refs/heads/beta",stable:"refs/heads/main"}
-                    or $source.betaSha != $beta_sha
+                    or ($source.betaSha | type) != "string"
                     or $source.stableSha != null
                     or ($source.mainGateSha | type) != "string"
                     or $release_status.betaReleaseId != $release_id
@@ -213,7 +218,7 @@ jobs:
                       and .source.repository == $repository
                       and .source.path == ("plugins/" + $plugin_id)
                       and .source.ref == "refs/heads/beta"
-                      and .source.sha == $beta_sha)
+                      and .source.sha == $source.betaSha)
                   ] | length != 1 then error("candidate lacks exact Beta provenance")
                   else {release_id:$release_id,beta_sha:$source.betaSha,main_gate_sha:$source.mainGateSha,state:$publication.state}
                   end
@@ -230,9 +235,13 @@ jobs:
               echo "Generated candidate #${number} KMS proof has an invalid Factory generation revision." >&2
               exit 1
             }
-            git fetch --no-tags origin "$generation_base"
+            # The publisher starts only after its own concurrency slot is
+            # acquired, so main can advance after this reconciler checked out
+            # its event SHA.  Refresh the protected tracking ref before
+            # deriving the generated PR's actual base.
+            git fetch --no-tags origin "$generation_base" "refs/heads/main:refs/remotes/origin/main"
             git cat-file -e "$generation_base^{commit}"
-            git merge-base --is-ancestor "$generation_base" HEAD || {
+            git merge-base --is-ancestor "$generation_base" origin/main || {
               echo "Generated candidate #${number} KMS generation revision is not retained by protected Factory main." >&2
               exit 1
             }
@@ -243,7 +252,7 @@ jobs:
             # Compare only the PR's actual delta. A candidate may be rebased
             # onto an intervening protected-main change; the KMS generation
             # revision remains an ancestry proof, not the candidate diff base.
-            candidate_base="$(git merge-base "$head_sha" HEAD)"
+            candidate_base="$(git merge-base "$head_sha" origin/main)"
             [[ "$candidate_base" =~ ^[a-f0-9]{40}$ ]] || {
               echo "Generated candidate #${number} has no canonical Factory merge base." >&2
               exit 1
@@ -397,13 +406,13 @@ jobs:
               verification="$(python scripts/kms_marketplace_publisher.py --root "$candidate_root" --verify-active-marketplace-signatures --allow-unsigned-official-status-plugin-id "$PLUGIN_ID")"
               generation_base="$(printf '%s' "$verification" | jq -er .source_revision)"
               [[ "$generation_base" =~ ^[a-f0-9]{40}$ ]] || { echo "Candidate #${number} has an invalid KMS generation revision." >&2; exit 1; }
-              git fetch --no-tags origin "$generation_base" refs/heads/main
+              git fetch --no-tags origin "$generation_base" "refs/heads/main:refs/remotes/origin/main"
               git cat-file -e "$generation_base^{commit}"
               git merge-base --is-ancestor "$generation_base" origin/main || { echo "Candidate #${number} generation is not retained by protected main." >&2; exit 1; }
               git merge-base --is-ancestor "$generation_base" "$head_sha" || { echo "Candidate #${number} does not descend from its KMS generation revision." >&2; exit 1; }
               # As above, leave the sidecar's protected generation revision as
               # an ancestry proof but classify only the candidate's own delta.
-              candidate_base="$(git merge-base "$head_sha" HEAD)"
+              candidate_base="$(git merge-base "$head_sha" origin/main)"
               [[ "$candidate_base" =~ ^[a-f0-9]{40}$ ]] || { echo "Candidate #${number} has no canonical Factory merge base." >&2; exit 1; }
               git diff --quiet "$candidate_base" "$head_sha" -- ".xsec-factory/official-status/${PLUGIN_ID}.json" && {
                 echo "Candidate #${number} did not actually change the requested Factory status." >&2
@@ -459,21 +468,43 @@ jobs:
                     echo "Publisher receipt artifact identity is malformed." >&2
                     exit 1
                   }
-                  publisher_run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${publisher_run_id}" | jq -cer '{event,head_branch,head_sha,status,conclusion}')"
+                  publisher_run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${publisher_run_id}" | jq -cer '{event,head_branch,status,conclusion}')"
                   [ "$(printf '%s' "$publisher_run" | jq -er .event)" = "workflow_dispatch" ] \
-                    && [ "$(printf '%s' "$publisher_run" | jq -er .head_branch)" = "main" ] \
-                    && [ "$(printf '%s' "$publisher_run" | jq -er .status)" = "completed" ] \
-                    && [ "$(printf '%s' "$publisher_run" | jq -er .conclusion)" = "success" ] || {
-                      echo "The publisher run that emitted the receipt did not complete successfully." >&2
+                    && [ "$(printf '%s' "$publisher_run" | jq -er .head_branch)" = "main" ] || {
+                      echo "The publisher receipt was not emitted by a protected-main manual publish run." >&2
                       exit 1
                     }
+                  publisher_status="$(printf '%s' "$publisher_run" | jq -er .status)"
+                  if [ "$publisher_status" != "completed" ]; then
+                    # Artifact upload can become visible before GitHub marks
+                    # its originating workflow completed.  This is a normal
+                    # poll state, not a failed no-op reconciliation.
+                    [ "$SECONDS" -lt "$deadline" ] || { echo "Timed out waiting for the publisher receipt run to complete." >&2; exit 1; }
+                    sleep 5
+                    continue
+                  fi
+                  [ "$(printf '%s' "$publisher_run" | jq -er .conclusion)" = "success" ] || {
+                    echo "The publisher run that emitted the receipt did not complete successfully." >&2
+                    exit 1
+                  }
                   receipt_root="$(mktemp -d "$RUNNER_TEMP/xsec-publisher-receipt.XXXXXX")"
                   cleanup_receipt() { rm -rf -- "$receipt_root"; }
                   gh run download "$publisher_run_id" --name "$receipt_name" --dir "$receipt_root"
                   receipt_path="$receipt_root/receipt.json"
+                  factory_revision="$(jq -er '.factoryRevision | strings | select(test("^[a-f0-9]{40}$"))' "$receipt_path")"
+                  # publish.yml checks out protected main after acquiring its
+                  # publication slot.  Its event head is deliberately not the
+                  # Factory revision used for the receipt.  Authenticate the
+                  # recorded checkout revision as retained protected history.
+                  git fetch --no-tags origin "$factory_revision" "refs/heads/main:refs/remotes/origin/main"
+                  git cat-file -e "$factory_revision^{commit}"
+                  git merge-base --is-ancestor "$factory_revision" origin/main || {
+                    echo "Publisher receipt Factory revision is not retained by protected main." >&2
+                    exit 1
+                  }
                   receipt="$(jq -cer \
                     --arg delivery_key "$DELIVERY_KEY" --arg dispatch_nonce "$RECONCILE_DISPATCH_NONCE" --arg plugin_id "$PLUGIN_ID" --arg source_sha "$beta_sha" --arg channel "beta" \
-                    --arg factory_revision "$(printf '%s' "$publisher_run" | jq -er .head_sha)" '
+                    --arg factory_revision "$factory_revision" '
                       if .schemaVersion == 1
                         and .deliveryKey == $delivery_key
                         and .dispatchNonce == $dispatch_nonce
@@ -719,14 +750,14 @@ jobs:
               verification="$(python scripts/kms_marketplace_publisher.py --root "$candidate_root" --verify-active-marketplace-signatures --allow-unsigned-official-status-plugin-id "$plugin_id")"
               generation_base="$(printf '%s' "$verification" | jq -er .source_revision)"
               [[ "$generation_base" =~ ^[a-f0-9]{40}$ ]] || { echo "Stable candidate #${number} has an invalid KMS generation revision." >&2; exit 1; }
-              git fetch --no-tags origin "$generation_base" refs/heads/main
+              git fetch --no-tags origin "$generation_base" "refs/heads/main:refs/remotes/origin/main"
               git merge-base --is-ancestor "$generation_base" origin/main || { echo "Stable candidate #${number} generation is not retained by protected main." >&2; exit 1; }
               git merge-base --is-ancestor "$generation_base" "$head_sha" || { echo "Stable candidate #${number} does not descend from its KMS generation revision." >&2; exit 1; }
               status_relative=".xsec-factory/official-status/${plugin_id}.json"
               # KMS provenance must descend from its protected generation
               # revision, but a rebased candidate is classified against its
               # actual delta instead of unrelated intervening main changes.
-              candidate_base="$(git merge-base "$head_sha" HEAD)"
+              candidate_base="$(git merge-base "$head_sha" origin/main)"
               [[ "$candidate_base" =~ ^[a-f0-9]{40}$ ]] || { echo "Stable candidate #${number} has no canonical Factory merge base." >&2; exit 1; }
               git diff --quiet "$candidate_base" "$head_sha" -- "$status_relative" && {
                 echo "Stable candidate #${number} did not actually change its terminal Factory status." >&2
