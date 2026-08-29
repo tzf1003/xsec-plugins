@@ -400,19 +400,59 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             adoption.write_bytes(b'{"schemaVersion":1,"pluginId":"com.xsec.workspace.sub-agent"}\n')
 
             documents = publisher.marketplace_documents(root)
-            provenance = next(
-                document for document in documents
-                if document.purpose == publisher.OFFICIAL_ADOPTION_PROVENANCE_PURPOSE
-            )
+            self.assertFalse(any(
+                document.purpose == publisher.OFFICIAL_ADOPTION_PROVENANCE_PURPOSE for document in documents
+            ))
+            provenance = publisher.official_adoption_provenance_document(root, "com.xsec.workspace.sub-agent")
             self.assertEqual(provenance.subject, ".xsec-factory/official-adoptions/com.xsec.workspace.sub-agent.json")
             self.assertEqual(
                 publisher.sidecar_path_for(provenance),
                 root / ".xsec-factory" / "official-adoption-proofs" / "com.xsec.workspace.sub-agent.json",
             )
 
+            written = publisher.publish_documents([provenance], REVISION, self.broker_response)
+            self.assertEqual(written, [publisher.sidecar_path_for(provenance)])
+            self.assertEqual(publisher.validate_documents([provenance], REVISION), written)
+
+    def test_pending_adoption_is_excluded_from_unrelated_publish_and_active_signature_sets(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-pending-adoption-isolation-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            adoption = root / ".xsec-factory" / "official-adoptions" / f"{plugin_id}.json"
+            adoption.parent.mkdir(parents=True)
+            adoption.write_bytes(b'{"schemaVersion":1,"pluginId":"com.xsec.workspace.sub-agent"}\n')
+            registry = root / ".xsec-factory" / "official-registry.json"
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_bytes(json.dumps({"plugins": [{
+                "pluginId": plugin_id,
+                "trustTier": "first-party",
+                "status": "pending-adoption",
+            }]}).encode("utf-8"))
+
+            ordinary = publisher.marketplace_documents(root)
+            self.assertFalse(any(document.subject == ".xsec-factory/official-adoptions/com.xsec.workspace.sub-agent.json" for document in ordinary))
+            self.assertFalse(any(
+                document.subject == ".xsec-factory/official-adoptions/com.xsec.workspace.sub-agent.json"
+                for document in publisher.documents_for_active_signature_verification(root)
+            ))
             written = publisher.publish_sidecars(root, REVISION, self.broker_response)
-            self.assertIn(publisher.sidecar_path_for(provenance), written)
-            self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+            self.assertNotIn(
+                root / ".xsec-factory" / "official-adoption-proofs" / f"{plugin_id}.json",
+                written,
+            )
+
+            adoption_document = publisher.official_adoption_provenance_document(root, plugin_id)
+            publisher.publish_documents([adoption_document], REVISION, self.broker_response)
+            registry.write_bytes(json.dumps({"plugins": [{
+                "pluginId": plugin_id,
+                "trustTier": "first-party",
+                "status": "active",
+            }]}).encode("utf-8"))
+            self.assertIn(
+                adoption_document,
+                publisher.documents_for_active_signature_verification(root),
+            )
 
     def test_publisher_signs_factory_status_in_its_own_fixed_proof_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-status-") as directory:

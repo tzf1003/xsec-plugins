@@ -259,9 +259,23 @@ jobs:
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }
+          review_request_at="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PULL_NUMBER}/comments?per_page=100" | jq -er '
+            [ .[][]
+              | select(.body | type == "string" and test("(^|[[:space:]])@codex[[:space:]]+review([[:space:]]|$)"; "i"))
+              | select(.created_at | type == "string")
+              | .created_at
+            ] | if length > 0 then max else error("no current @codex review request") end
+          ')"
           reviews="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}/reviews?per_page=100")"
-          printf '%s' "$reviews" | jq -e --arg head "$HEAD_SHA" 'any(.[][]; (.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") and .commit_id == $head)' >/dev/null || {
-            echo "The exact PR head has no completed Codex review." >&2
+          printf '%s' "$reviews" | jq -e --arg head "$HEAD_SHA" --arg requested_at "$review_request_at" '
+            any(.[][];
+              (.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector")
+              and .commit_id == $head
+              and (.state == "APPROVED" or .state == "COMMENTED")
+              and (.submitted_at | type == "string" and . >= $requested_at)
+            )
+          ' >/dev/null || {
+            echo "The exact PR head has no terminal Codex review after its latest @codex review request." >&2
             exit 1
           }
           cursor=""

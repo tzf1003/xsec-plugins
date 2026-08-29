@@ -113,7 +113,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "verify_merged_stable_promotion.py",
             "--verify-active-marketplace-signatures",
             "successful immutable Factory source gate",
-            "Codex review for its reviewed head",
+            "terminal Codex review after its latest @codex review request",
             "unresolved Codex review threads",
             "Revalidate each registered source branch at the reviewed merge boundary",
             'event_type:"xsec_official_marketplace_published"',
@@ -320,7 +320,9 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             with self.subTest(workflow=workflow_path.name):
                 self.assertIn('gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${', workflow)
                 self.assertIn('reviews?per_page=100")', workflow)
-                self.assertIn('any(.[][]; (.user.login == "chatgpt-codex-connector[bot]"', workflow)
+                self.assertIn('any(.[][];', workflow)
+                self.assertIn('.state == "APPROVED" or .state == "COMMENTED"', workflow)
+                self.assertIn('review_request_at=', workflow)
 
 
 if __name__ == "__main__":

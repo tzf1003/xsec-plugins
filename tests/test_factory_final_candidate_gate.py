@@ -62,7 +62,9 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("--verify-retained-sidecar-refresh-candidate", workflow)
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
         self.assertIn("exact PR head has no successful Factory source gate", workflow)
-        self.assertIn("exact PR head has no completed Codex review", workflow)
+        self.assertIn("latest @codex review request", workflow)
+        self.assertIn(".state == \"APPROVED\" or .state == \"COMMENTED\"", workflow)
+        self.assertIn("terminal Codex review", workflow)
         self.assertIn("unresolved Codex review thread", workflow)
 
     def test_final_gate_never_turns_the_arm_owned_candidate_status_green(self) -> None:
