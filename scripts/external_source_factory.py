@@ -1570,16 +1570,19 @@ def create_adoption(
     return {"plugin_id": registration.plugin_id, "trust_tier": registration.trust_tier, "adoption": "created"}
 
 
-def verify_staged_adoption(root: Path, plugin_id: str, beta_sha: str, stable_sha: str) -> dict[str, str]:
-    """Require the exact unsigned adoption record that a reviewed staging PR merged.
+def prepare_staged_adoption(root: Path, plugin_id: str) -> dict[str, str]:
+    """Read the exact unsigned adoption record that a reviewed staging PR merged.
 
     The Cloud KMS broker reads the record from protected ``main`` before it
-    signs it.  Keeping this check separate from :func:`create_adoption` means
-    the signing workflow can never introduce the bytes it asks KMS to attest.
+    signs it.  This accepts no caller-supplied source SHA: the source tuple is
+    exclusively the immutable tuple previously reviewed in the staged proof.
+    Keeping this separate from :func:`create_adoption` means the signing
+    workflow can never introduce the bytes it asks KMS to attest.
     """
 
-    request = prepare_adoption(root, plugin_id, beta_sha, stable_sha)
-    registration = registration_for(root, request["plugin_id"], active=False)
+    registration = registration_for(root, plugin_id, active=False)
+    if registration.trust_tier != "first-party" or registration.status != "pending-adoption":
+        fail("only a pending first-party registration can be adopted")
     proof_path = adoption_path(root, registration.plugin_id)
     sidecar_path = root / ADOPTION_PROOFS_RELATIVE_PATH / f"{registration.plugin_id}.json"
     if is_link(proof_path) or not proof_path.is_file():
@@ -1589,9 +1592,18 @@ def verify_staged_adoption(root: Path, plugin_id: str, beta_sha: str, stable_sha
     validate_adoption(root, registration, require_kms_proof=False)
     proof = read_json(proof_path, f"first-party adoption proof for {registration.plugin_id}")
     source = require_object(proof.get("source"), "first-party adoption proof source")
-    if source.get("betaSha") != request["beta_sha"] or source.get("stableSha") != request["stable_sha"]:
-        fail("staged first-party adoption proof source heads do not match the requested reviewed heads")
-    return {**request, "adoption": "staged"}
+    owner, repository = registration.repository.split("/", 1)
+    return {
+        "plugin_id": registration.plugin_id,
+        "source_repository": registration.repository,
+        "source_owner": owner,
+        "source_repo": repository,
+        "beta_ref": registration.beta_ref,
+        "stable_ref": registration.stable_ref,
+        "beta_sha": safe_sha(source.get("betaSha"), "staged first-party adoption beta SHA"),
+        "stable_sha": safe_sha(source.get("stableSha"), "staged first-party adoption stable SHA"),
+        "adoption": "staged",
+    }
 
 
 def activate_first_party(root: Path, plugin_id: str) -> dict[str, str]:
@@ -3355,10 +3367,8 @@ def main() -> None:
     adoption_prepare_parser.add_argument("--plugin-id", required=True)
     adoption_prepare_parser.add_argument("--beta-sha", required=True)
     adoption_prepare_parser.add_argument("--stable-sha", required=True)
-    staged_adoption_parser = commands.add_parser("verify-staged-adoption")
+    staged_adoption_parser = commands.add_parser("prepare-staged-adoption")
     staged_adoption_parser.add_argument("--plugin-id", required=True)
-    staged_adoption_parser.add_argument("--beta-sha", required=True)
-    staged_adoption_parser.add_argument("--stable-sha", required=True)
     smoke_reconcile_parser = commands.add_parser("prepare-reconcile-smoke")
     smoke_reconcile_parser.add_argument("--delivery-key", required=True)
     smoke_reconcile_parser.add_argument("--marketplace-revision", required=True)
@@ -3448,8 +3458,8 @@ def main() -> None:
             )
         elif args.command == "prepare-adoption":
             result = prepare_adoption(root, args.plugin_id, args.beta_sha, args.stable_sha)
-        elif args.command == "verify-staged-adoption":
-            result = verify_staged_adoption(root, args.plugin_id, args.beta_sha, args.stable_sha)
+        elif args.command == "prepare-staged-adoption":
+            result = prepare_staged_adoption(root, args.plugin_id)
         elif args.command == "prepare-reconcile-smoke":
             result = prepare_reconcile_smoke(
                 delivery_key=args.delivery_key,

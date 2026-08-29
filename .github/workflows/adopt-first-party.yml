@@ -7,14 +7,6 @@ on:
         description: Pending Registry v2 first-party plugin ID with a reviewed staged proof
         required: true
         type: string
-      beta_sha:
-        description: Exact current refs/heads/beta commit in the approved source repository
-        required: true
-        type: string
-      stable_sha:
-        description: Exact current refs/heads/main commit in the approved source repository
-        required: true
-        type: string
 
 permissions:
   actions: write
@@ -42,7 +34,8 @@ jobs:
           set -euo pipefail
           [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || { echo "First-party adoption requires protected Factory main." >&2; exit 1; }
           [ -n "$XSEC_MARKETPLACE_PUBLISH_TOKEN" ] || { echo "The protected Factory publisher token is required." >&2; exit 1; }
-      - uses: actions/checkout@v4
+      # actions/checkout v4.4.0, pinned after resolving the signed tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           ref: refs/heads/main
@@ -72,22 +65,22 @@ jobs:
             printf 'A generated Marketplace PR is still awaiting source/Codex review and protected merge:\n%s\n' "$pending" >&2
             exit 1
           fi
-      - uses: actions/setup-python@v5
+      # actions/setup-python v6.3.0, pinned after resolving the signed tag.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@v4
+      # actions/setup-node v4.4.0, pinned after resolving the signed tag.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24"
-      - name: Resolve only the pending reviewed Registry entry
+      - name: Read source heads exclusively from the reviewed staged adoption proof
         id: request
         env:
           PLUGIN_ID: ${{ inputs.plugin_id }}
-          BETA_SHA: ${{ inputs.beta_sha }}
-          STABLE_SHA: ${{ inputs.stable_sha }}
         run: |
-          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-adoption \
-            --plugin-id "$PLUGIN_ID" --beta-sha "$BETA_SHA" --stable-sha "$STABLE_SHA"
-      - name: Require both supplied source heads to remain the reviewed branch heads
+          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-staged-adoption \
+            --plugin-id "$PLUGIN_ID"
+      - name: Require both staged source heads to remain the reviewed branch heads
         env:
           SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
           BETA_REF: ${{ steps.request.outputs.beta_ref }}
@@ -101,15 +94,6 @@ jobs:
           stable_head="$(git -c credential.helper= -c http.followRedirects=false ls-remote "$remote" "$STABLE_REF" | awk 'NR == 1 { print $1 }')"
           [ "$beta_head" = "$BETA_SHA" ] || { echo "The source beta head changed before adoption." >&2; exit 1; }
           [ "$stable_head" = "$STABLE_SHA" ] || { echo "The source main head changed before adoption." >&2; exit 1; }
-      - name: Require the exact reviewed staged adoption proof on protected main
-        env:
-          PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
-          BETA_SHA: ${{ steps.request.outputs.beta_sha }}
-          STABLE_SHA: ${{ steps.request.outputs.stable_sha }}
-        run: |
-          set -euo pipefail
-          python scripts/external_source_factory.py verify-staged-adoption --plugin-id "$PLUGIN_ID" \
-            --beta-sha "$BETA_SHA" --stable-sha "$STABLE_SHA"
       - name: Validate retained artifacts and reviewed unsigned adoption before KMS
         run: |
           python scripts/validate_market.py source --source-root . --built-root .

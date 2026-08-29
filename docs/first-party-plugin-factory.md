@@ -60,16 +60,16 @@ digest、原始 release document bytes、完整有序 release records，以及�
 能用固定 KMS issuer 的 JWKS 验证。迁移不会生成 release、改变 SemVer、替换 artifact
 或移动频道指针。
 
-两阶段的受保护工作流调用（两次都要传入同一组、仍是远端当前头的 SHA）：
+两阶段的受保护工作流调用：第一阶段传入仍是远端当前头的来源 SHA；第二阶段**只传入
+`plugin_id`**，从已审查、已合入的 staging assertion 中读取来源 SHA，再重新核验远端分支头。
 
 ```text
 # 1. 创建 unsigned staging PR；它不会签名、激活、发布或移动 channel。
 stage-first-party-adoption.yml
 
-# 2. staging PR 合并后，签出 main 上的 exact assertion，创建 signed activation PR。
-python scripts/external_source_factory.py adopt-first-party \
-  --plugin-id com.xsec.workspace.sub-agent \
-  --beta-sha <40-hex> --stable-sha <40-hex> --factory-revision <40-hex>
+# 2. staging PR 合并后，仅指定插件；workflow 从 main 上的 exact assertion
+#    读取并复验 source beta/main SHA，再创建 signed activation PR。
+adopt-first-party.yml
 ```
 
 第二阶段随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。两个 PR 都必须经 source

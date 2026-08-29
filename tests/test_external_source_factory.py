@@ -304,10 +304,10 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             write_json(registry_path, registry)
             (root / factory.ADOPTION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
 
-            staged = factory.verify_staged_adoption(root, plugin_id, BETA_SHA, STABLE_SHA)
+            staged = factory.prepare_staged_adoption(root, plugin_id)
             self.assertEqual(staged["adoption"], "staged")
-            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "source heads do not match"):
-                factory.verify_staged_adoption(root, plugin_id, "d" * 40, STABLE_SHA)
+            self.assertEqual(staged["beta_sha"], BETA_SHA)
+            self.assertEqual(staged["stable_sha"], STABLE_SHA)
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS adoption proof is unavailable"):
                 factory.activate_first_party(root, plugin_id)
 
@@ -2115,7 +2115,9 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("smoke_marketplace_revision", smoke_workflow)
         self.assertIn("xSecDesktop/actions/runs/${SMOKE_RUN_ID}", smoke_workflow)
         adoption_workflow = (ROOT / ".github" / "workflows" / "adopt-first-party.yml").read_text(encoding="utf-8")
-        self.assertIn("prepare-adoption", adoption_workflow)
+        self.assertIn("prepare-staged-adoption", adoption_workflow)
+        self.assertNotIn("beta_sha:", adoption_workflow)
+        self.assertNotIn("stable_sha:", adoption_workflow)
         self.assertIn("adopt-first-party", adoption_workflow)
         self.assertIn("activate-first-party", adoption_workflow)
         self.assertIn("XSEC_MARKETPLACE_SOURCE_REVISION", adoption_workflow)

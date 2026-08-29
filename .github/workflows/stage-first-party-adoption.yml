@@ -44,7 +44,8 @@ jobs:
           set -euo pipefail
           [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || { echo "First-party adoption staging requires protected Factory main." >&2; exit 1; }
           [ -n "$XSEC_MARKETPLACE_PUBLISH_TOKEN" ] || { echo "The protected Factory publisher token is required." >&2; exit 1; }
-      - uses: actions/checkout@v4
+      # actions/checkout v4.4.0, pinned after resolving the signed tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           ref: refs/heads/main
@@ -74,7 +75,8 @@ jobs:
             printf 'A generated Marketplace PR is still awaiting source/Codex review and protected merge:\n%s\n' "$pending" >&2
             exit 1
           fi
-      - uses: actions/setup-python@v5
+      # actions/setup-python v6.3.0, pinned after resolving the signed tag.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13"
       - name: Resolve only the pending reviewed Registry entry
