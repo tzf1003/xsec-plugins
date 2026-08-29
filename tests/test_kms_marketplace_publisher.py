@@ -391,6 +391,39 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             self.assertIn(publisher.sidecar_path_for(provenance), written)
             self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
 
+    def test_publisher_signs_factory_status_in_its_own_fixed_proof_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-status-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            status = root / ".xsec-factory" / "official-status" / "com.example.alpha.json"
+            status.parent.mkdir(parents=True)
+            status.write_bytes(b'{"schemaVersion":1,"pluginId":"com.example.alpha"}\n')
+
+            documents = publisher.marketplace_documents(root)
+            status_document = next(
+                document for document in documents if document.purpose == publisher.OFFICIAL_STATUS_PURPOSE
+            )
+            self.assertEqual(status_document.subject, ".xsec-factory/official-status/com.example.alpha.json")
+            self.assertEqual(
+                publisher.sidecar_path_for(status_document),
+                root / ".xsec-factory" / "official-status-proofs" / "com.example.alpha.json",
+            )
+
+            written = publisher.publish_sidecars(root, REVISION, self.broker_response)
+            self.assertIn(publisher.sidecar_path_for(status_document), written)
+            self.assertEqual(publisher.validate_published_sidecars(root, REVISION), written)
+
+    def test_factory_status_proof_without_its_status_document_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-kms-orphan-status-proof-") as directory:
+            root = Path(directory)
+            self.make_marketplace(root)
+            proof = root / ".xsec-factory" / "official-status-proofs" / "com.example.alpha.json"
+            proof.parent.mkdir(parents=True)
+            proof.write_text("orphan\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(publisher.MarketplaceKmsPublisherError, "status proof directory"):
+                publisher.marketplace_documents(root)
+
     def test_official_factory_provenance_rejects_windows_device_plugin_ids(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-factory-provenance-id-") as directory:
             root = Path(directory)

@@ -224,6 +224,16 @@ a normal PR button: the trusted-base
 executing PR code. It posts **success / not applicable** for every ordinary
 main PR, so a Factory-only context cannot block product or documentation work.
 
+For a registered Beta, `.xsec-factory/official-status/<plugin-id>.json` is
+also a fixed-purpose KMS document. Its proof lives only at
+`.xsec-factory/official-status-proofs/<plugin-id>.json` and binds the exact
+`betaSha`, `mainGateSha`, release pointer and lifecycle state. The dispatcher
+therefore never treats an unsigned `waiting_for_smoke` UI/status edit as a
+Desktop smoke authorization. Deploy the paired `xsec-cloud` broker allowlist
+for `xsec.plugin-marketplace.official-status` and that exact status subject
+namespace before enabling this Factory change; until then the broker rejects
+the request fail-closed.
+
 After Codex review is completed and every Codex thread is resolved, a protected
 maintainer runs `final-merge-generated-marketplace-pr.yml` with that PR number.
 It re-reads the live PR head and base, revalidates the exact release diff,
@@ -289,6 +299,15 @@ signed against the same Factory base, then become stale or conflict when a
 reviewed PR merges. After merge, the diff/sidecar classifier makes that
 generated transition a no-op for `publish.yml`, independent of how GitHub or a
 reviewer chose the merge subject.
+
+If a registered source `main` event arrives after its same-plugin Beta PR was
+generated, the protected Cloud Dispatcher re-reads the exact Registry source,
+current Beta head/release/provenance, candidate branch identity and KMS-bound
+status tuple. Only when the candidate's `mainGateSha` is older does it add an
+auditable delivery comment, close that candidate, and request a replacement.
+The replacement is still a new source-gated PR requiring `@codex review` and a
+protected final merge; a matching current candidate is retained as an
+idempotent no-op and unrelated plugin candidates are never closed.
 
 When a run waited in that queue, it checks out the protected `main` tip after
 obtaining the slot; it does not rebuild the historical GitHub event SHA that

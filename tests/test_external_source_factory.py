@@ -2023,6 +2023,26 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("ls-remote", source_workflow)
         self.assertIn("Source delivery is stale", source_workflow)
         self.assertIn("publish.yml", source_workflow)
+        # A registered-main recheck must not strand an already accepted Beta
+        # behind its now-stale generated PR. The Dispatcher may close only a
+        # cryptographically authenticated candidate for the same Registry
+        # source/Beta tuple, then requests a fresh review-required candidate.
+        for rule in (
+            "pull-requests: write",
+            "Controlled supersede of an obsolete same-plugin Beta candidate",
+            "^xsec-marketplace/external-beta-[0-9]+-[0-9]+$",
+            "candidate Registry entry is ambiguous",
+            "candidate lacks exact Beta provenance",
+            "--verify-active-marketplace-signatures",
+            "KMS proof is not bound to its immutable Factory base",
+            "issues/${number}/comments",
+            '"repos/${GITHUB_REPOSITORY}/pulls/${number}"',
+            "Controlled supersede: trusted dispatcher delivery ${DELIVERY_KEY}",
+            "steps.supersede.outputs.dispatch == 'true'",
+        ):
+            with self.subTest(controlled_supersede_rule=rule):
+                self.assertIn(rule, source_workflow)
+        self.assertNotIn("gh pr merge", source_workflow)
         self.assertIn("prepare-reconcile-smoke", smoke_workflow)
         self.assertIn("merge-base --is-ancestor", smoke_workflow)
         self.assertIn("release_id=\"$current_beta\"", smoke_workflow)

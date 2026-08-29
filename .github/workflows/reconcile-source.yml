@@ -47,6 +47,7 @@ on:
 permissions:
   actions: write
   contents: read
+  pull-requests: write
 
 concurrency:
   group: xsec-marketplace-reconcile-source-${{ inputs.plugin_id || inputs.marketplace_revision }}
@@ -83,6 +84,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - name: Validate the complete Cloud source-event payload against protected Registry v2
         id: request
         env:
@@ -115,7 +119,142 @@ jobs:
           # redirect-hardened checkout/reachability proof before packaging.
           head_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_REF" | awk 'NR == 1 { print $1 }')"
           [ "$head_sha" = "$SOURCE_SHA" ] || { echo "Source delivery is stale; the registered branch head changed." >&2; exit 1; }
+      - name: Controlled supersede of an obsolete same-plugin Beta candidate
+        id: supersede
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ steps.request.outputs.channel }}
+          DELIVERY_KEY: ${{ inputs.delivery_key }}
+          PLUGIN_ID: ${{ steps.request.outputs.plugin_id }}
+          SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          SOURCE_BETA_REF: ${{ steps.request.outputs.beta_ref }}
+        run: |
+          set -euo pipefail
+          # Beta events never replace an in-review candidate. Only a current
+          # registered-main event may supersede a candidate that has become
+          # unmergeable because its KMS-bound mainGateSha is stale.
+          if [ "$CHANNEL" != "stable" ]; then
+            echo "dispatch=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          beta_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_BETA_REF" | awk 'NR == 1 { print $1 }')"
+          [[ "$beta_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Cannot resolve registered Beta source head." >&2; exit 1; }
+          registered="$(jq -cer --arg plugin_id "$PLUGIN_ID" '
+            .plugins | [ .[] | select(.pluginId == $plugin_id) ]
+            | if length == 1 then .[0] else error("expected exactly one active Registry entry") end
+          ' .xsec-factory/official-registry.json)"
+          candidates="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" | jq -cer --arg repository "$GITHUB_REPOSITORY" '
+            [ .[][]
+              | select(.head.repo.full_name == $repository)
+              | select(.head.ref | test("^xsec-marketplace/external-beta-[0-9]+-[0-9]+$"))
+            ]
+          ')"
+          current_candidates=()
+          stale_candidates=()
+          while IFS= read -r candidate; do
+            number="$(printf '%s' "$candidate" | jq -er .number)"
+            branch="$(printf '%s' "$candidate" | jq -er .head.ref)"
+            head_sha="$(printf '%s' "$candidate" | jq -er .head.sha)"
+            base_sha="$(printf '%s' "$candidate" | jq -er .base.sha)"
+            [[ "$head_sha" =~ ^[a-f0-9]{40}$ && "$base_sha" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "Generated candidate #${number} has malformed revisions." >&2
+              exit 1
+            }
+            candidate_root="$(mktemp -d "$RUNNER_TEMP/xsec-reconcile-candidate.XXXXXX")"
+            cleanup_candidate() { git worktree remove --force "$candidate_root" >/dev/null 2>&1 || true; rm -rf -- "$candidate_root"; }
+            git fetch --no-tags origin "$head_sha"
+            git cat-file -e "$head_sha^{commit}"
+            git worktree add --detach "$candidate_root" "$head_sha" >/dev/null
+            status_path="$candidate_root/.xsec-factory/official-status/${PLUGIN_ID}.json"
+            # A candidate for another plugin must remain in review. Its
+            # content is not parsed as authority and cannot be closed by this
+            # source-main delivery.
+            if [ ! -f "$status_path" ] || ! jq -e --arg id "$PLUGIN_ID" '.pluginId == $id' "$status_path" >/dev/null; then
+              cleanup_candidate
+              continue
+            fi
+            candidate_registered="$(jq -cer --arg plugin_id "$PLUGIN_ID" '
+              .plugins | [ .[] | select(.pluginId == $plugin_id) ]
+              | if length == 1 then .[0] else error("candidate Registry entry is ambiguous") end
+            ' "$candidate_root/.xsec-factory/official-registry.json)"
+            [ "$candidate_registered" = "$registered" ] || {
+              echo "Generated candidate #${number} changed the registered source identity and cannot be superseded." >&2
+              exit 1
+            }
+            release_path="$candidate_root/plugins/${PLUGIN_ID}/.xsec-market/releases.json"
+            evidence_path="$candidate_root/.xsec-factory/official-publications/${PLUGIN_ID}.json"
+            tuple="$(jq -cer --arg plugin_id "$PLUGIN_ID" --arg repository "$SOURCE_REPOSITORY" --arg beta_sha "$beta_sha" \
+              --slurpfile release "$release_path" --slurpfile evidence "$evidence_path" '
+                $release[0].channels.beta.releaseId as $release_id
+                | if ($release_id | type) != "string" then error("candidate has no Beta release") else . end
+                | .source as $source
+                | .release as $release_status
+                | .publication as $publication
+                | if .pluginId != $plugin_id
+                    or $source.repository != $repository
+                    or $source.path != ("plugins/" + $plugin_id)
+                    or $source.refs != {beta:"refs/heads/beta",stable:"refs/heads/main"}
+                    or $source.betaSha != $beta_sha
+                    or $source.stableSha != null
+                    or ($source.mainGateSha | type) != "string"
+                    or $release_status.betaReleaseId != $release_id
+                    or ($publication.state != "waiting_for_beta" and $publication.state != "waiting_for_smoke")
+                  then error("candidate status is not an in-flight registered Beta tuple")
+                  elif [ $evidence[0].events[]
+                    | select(.channel == "beta" and .releaseId == $release_id
+                      and .source.repository == $repository
+                      and .source.path == ("plugins/" + $plugin_id)
+                      and .source.ref == "refs/heads/beta"
+                      and .source.sha == $beta_sha)
+                  ] | length != 1 then error("candidate lacks exact Beta provenance")
+                  else {release_id:$release_id,main_gate_sha:$source.mainGateSha,state:$publication.state}
+                  end
+              ' "$status_path")"
+            # The KMS proof binds the candidate status, including mainGateSha,
+            # to a protected publisher run based on this PR's immutable base.
+            # It is the generated-candidate identity; a branch prefix or PR
+            # title alone is never sufficient to close a reviewed PR.
+            verification="$(python scripts/kms_marketplace_publisher.py --root "$candidate_root" --verify-active-marketplace-signatures)"
+            [ "$(printf '%s' "$verification" | jq -er .source_revision)" = "$base_sha" ] || {
+              echo "Generated candidate #${number} KMS proof is not bound to its immutable Factory base." >&2
+              exit 1
+            }
+            python scripts/external_source_factory.py --root "$candidate_root" validate
+            gate_sha="$(printf '%s' "$tuple" | jq -er .main_gate_sha)"
+            cleanup_candidate
+            if [ "$gate_sha" = "$SOURCE_SHA" ]; then
+              current_candidates+=("$number")
+            else
+              stale_candidates+=("$number")
+            fi
+          done < <(printf '%s' "$candidates" | jq -rc '.[]')
+          [ "${#current_candidates[@]}" -le 1 ] && [ "${#stale_candidates[@]}" -le 1 ] || {
+            echo "Multiple same-plugin generated Beta candidates exist; refusing an ambiguous supersede." >&2
+            exit 1
+          }
+          if [ "${#current_candidates[@]}" -eq 1 ]; then
+            [ "${#stale_candidates[@]}" -eq 0 ] || { echo "Current and stale same-plugin Beta candidates coexist; refusing supersede." >&2; exit 1; }
+            echo "dispatch=false" >> "$GITHUB_OUTPUT"
+            echo "current_pr=${current_candidates[0]}" >> "$GITHUB_OUTPUT"
+            echo "The immutable source-main delivery already has generated candidate #${current_candidates[0]}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "${#stale_candidates[@]}" -eq 1 ]; then
+            number="${stale_candidates[0]}"
+            audit="Controlled supersede: trusted dispatcher delivery ${DELIVERY_KEY} observed registered main ${SOURCE_SHA} while this same-plugin Beta candidate retained an older KMS-bound mainGateSha. It is closed before a new source-gated candidate is requested; the replacement still requires validate.yml, @codex review, and protected final merge."
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${number}/comments" -f body="$audit" >/dev/null
+            closure="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${number}" -f state=closed)"
+            [ "$(printf '%s' "$closure" | jq -er .state)" = "closed" ] || {
+              echo "GitHub did not confirm closure of stale generated candidate #${number}." >&2
+              exit 1
+            }
+            echo "superseded_pr=$number" >> "$GITHUB_OUTPUT"
+            echo "Superseded stale same-plugin generated candidate #${number}; a replacement dispatch follows." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "dispatch=true" >> "$GITHUB_OUTPUT"
       - name: Publish current Beta or recheck its main reproducibility gate
+        if: ${{ steps.supersede.outputs.dispatch == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ steps.request.outputs.channel }}

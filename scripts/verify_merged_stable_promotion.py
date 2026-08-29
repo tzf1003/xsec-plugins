@@ -31,6 +31,7 @@ PUBLICATION_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-publication-p
 ADOPTION_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-adoptions/({PLUGIN_ID_PATTERN})\.json$")
 ADOPTION_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-adoption-proofs/({PLUGIN_ID_PATTERN})\.json$")
 STATUS_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-status/({PLUGIN_ID_PATTERN})\.json$")
+STATUS_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-status-proofs/({PLUGIN_ID_PATTERN})\.json$")
 MARKETPLACE_INDEX = ".agents/plugins/marketplace.json"
 MARKETPLACE_SIDECAR = ".agents/plugins/marketplace.json.sig.jws.json"
 REGISTRY_PATH = ".xsec-factory/official-registry.json"
@@ -276,6 +277,9 @@ def allowed_paths(channel: str, paths: list[str], promoted_ids: set[str]) -> Non
             continue
         status_path = STATUS_PATH_PATTERN.fullmatch(path)
         if status_path and status_path.group(1) in promoted_ids:
+            continue
+        status_proof = STATUS_PROOF_PATTERN.fullmatch(path)
+        if status_proof and status_proof.group(1) in promoted_ids:
             continue
         fail(f"merged {channel} publication changed an unauthorized path: {path}")
 
@@ -572,9 +576,12 @@ def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str
     evidence_path = f".xsec-factory/official-publications/{plugin_id}.json"
     proof_path = f".xsec-factory/official-publication-proofs/{plugin_id}.json"
     status_path = f".xsec-factory/official-status/{plugin_id}.json"
-    required_paths = {MARKETPLACE_SIDECAR, release_sidecar, proof_path, status_path}
+    status_proof_path = f".xsec-factory/official-status-proofs/{plugin_id}.json"
+    required_paths = {MARKETPLACE_SIDECAR, release_sidecar, proof_path, status_path, status_proof_path}
     if not required_paths.issubset(paths):
         fail("no-pointer Beta smoke transition must refresh Marketplace, release, provenance, and status sidecars")
+    if not git_succeeds(root, ["cat-file", "-e", f"{after}:{status_proof_path}"]):
+        fail("no-pointer Beta smoke transition must retain its status KMS proof")
     marketplace = json_blob(root, after, MARKETPLACE_INDEX, "retained Marketplace index")
     entries = marketplace.get("plugins")
     if not isinstance(entries, list):
@@ -735,6 +742,7 @@ def classify_merged_change(root: Path, before: str, after: str) -> dict[str, obj
             or PUBLICATION_PATH_PATTERN.fullmatch(path)
             or PUBLICATION_PROOF_PATTERN.fullmatch(path)
             or STATUS_PATH_PATTERN.fullmatch(path)
+            or STATUS_PROOF_PATTERN.fullmatch(path)
             for path in paths
         ]
         if all(auxiliary) and MARKETPLACE_SIDECAR in paths and any(

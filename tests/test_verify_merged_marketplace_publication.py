@@ -130,6 +130,9 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 },
             },
         )
+        status_proof = root / f".xsec-factory/official-status-proofs/{PLUGIN_ID}.json"
+        status_proof.parent.mkdir(parents=True, exist_ok=True)
+        status_proof.write_text(f"status signature for {main_gate_sha}\n", encoding="utf-8")
 
     def test_classifies_beta_without_relying_on_the_merge_subject(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-") as directory:
@@ -339,6 +342,35 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                         ],
                     },
                 )
+
+    def test_rejects_no_pointer_beta_smoke_transition_without_a_status_proof_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-smoke-unsigned-status-") as directory:
+            root = Path(directory)
+            _, stable, beta = self.make_repository(root, registered=True)
+            self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
+            event = {
+                "channel": "beta",
+                "releaseId": beta["releaseId"],
+                "source": {"repository": "example/plugin", "path": f"plugins/{PLUGIN_ID}", "ref": "refs/heads/beta", "sha": "a" * 40},
+                "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+                "publisher": "factory",
+            }
+            write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
+            proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            proof.write_text("baseline evidence signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(root, beta, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=stable["releaseId"])
+            before = self.commit(root, "beta awaits a reproducible main")
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
+            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
+            proof.write_text("refreshed evidence signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"])
+            (root / f".xsec-factory/official-status-proofs/{PLUGIN_ID}.json").unlink()
+            after = self.commit(root, "unsigned waiting for smoke status")
+
+            with self.assertRaisesRegex(verifier.PromotionVerificationError, "status KMS proof"):
+                verifier.classify_merged_change(root, before, after)
 
     def test_rejects_no_pointer_beta_smoke_transition_with_legacy_marketplace_source_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-smoke-legacy-path-") as directory:

@@ -45,6 +45,7 @@ from kms_marketplace_publisher import (
     MarketplaceKmsPublisherError,
     OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH,
     OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH,
+    OFFICIAL_STATUS_PROOFS_RELATIVE_PATH,
     official_adoption_provenance_document,
     official_publication_provenance_document,
     sidecar_path_for,
@@ -57,6 +58,8 @@ PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publications"
 PUBLICATION_PROOFS_RELATIVE_PATH = OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH
 ADOPTIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoptions"
 ADOPTION_PROOFS_RELATIVE_PATH = OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH
+STATUSES_RELATIVE_PATH = Path(".xsec-factory") / "official-status"
+STATUS_PROOFS_RELATIVE_PATH = OFFICIAL_STATUS_PROOFS_RELATIVE_PATH
 PLUGIN_ROOT_RELATIVE_PATH = Path("plugins")
 GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 # Keep this in lockstep with Desktop's package/catalog validator: ASCII
@@ -3102,7 +3105,8 @@ def validate_registry_and_snapshots(
         for path in adoption_proof_root.iterdir():
             if is_link(path) or not path.is_file() or path.name not in allowed_proofs:
                 fail(f"official first-party adoption proof directory has an unregistered entry: {path.name}")
-    status_root = root / ".xsec-factory" / "official-status"
+    status_root = root / STATUSES_RELATIVE_PATH
+    status_names: set[str] = set()
     if status_root.exists():
         if is_link(status_root) or not status_root.is_dir():
             fail("official Factory status directory must be a regular directory")
@@ -3110,6 +3114,17 @@ def validate_registry_and_snapshots(
         for path in status_root.iterdir():
             if is_link(path) or not path.is_file() or path.name not in allowed_statuses:
                 fail(f"official Factory status directory has an unregistered entry: {path.name}")
+            status_names.add(path.name)
+    status_proof_root = root / STATUS_PROOFS_RELATIVE_PATH
+    if status_proof_root.exists():
+        if is_link(status_proof_root) or not status_proof_root.is_dir():
+            fail("official Factory status proof directory must be a regular directory")
+        allowed_status_proofs = {f"{item.plugin_id}.json" for item in registrations}
+        for path in status_proof_root.iterdir():
+            if is_link(path) or not path.is_file() or path.name not in allowed_status_proofs:
+                fail(f"official Factory status proof directory has an unregistered entry: {path.name}")
+            if path.name not in status_names:
+                fail(f"official Factory status proof has no matching status document: {path.name}")
     for registration in registrations:
         entry = entries_by_id.get(registration.plugin_id)
         snapshot = snapshot_directory(root, registration.plugin_id)
