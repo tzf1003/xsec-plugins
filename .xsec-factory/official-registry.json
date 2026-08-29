@@ -1,4 +1,23 @@
 {
   "schemaVersion": 2,
-  "plugins": []
+  "plugins": [
+    {
+      "pluginId": "com.xsec.workspace.sub-agent",
+      "trustTier": "first-party",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-sub-agent",
+        "path": "plugins/com.xsec.workspace.sub-agent",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "pending-adoption"
+    }
+  ]
 }
