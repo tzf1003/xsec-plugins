@@ -574,8 +574,23 @@ def verify_beta_smoke_ready(root: Path, before: str, after: str, paths: list[str
     required_paths = {MARKETPLACE_SIDECAR, release_sidecar, proof_path, status_path}
     if not required_paths.issubset(paths):
         fail("no-pointer Beta smoke transition must refresh Marketplace, release, provenance, and status sidecars")
+    marketplace = json_blob(root, after, MARKETPLACE_INDEX, "retained Marketplace index")
+    entries = marketplace.get("plugins")
+    if not isinstance(entries, list):
+        fail("no-pointer Beta smoke transition retained Marketplace index has invalid plugins")
+    active_release_sidecars: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("source"), dict):
+            fail("no-pointer Beta smoke transition retained Marketplace index has an invalid plugin source")
+        source_path = entry["source"].get("path")
+        if not isinstance(source_path, str):
+            fail("no-pointer Beta smoke transition retained Marketplace source path is invalid")
+        match = re.fullmatch(rf"plugins/({PLUGIN_ID_PATTERN})", source_path)
+        if match is None:
+            fail("no-pointer Beta smoke transition retained Marketplace source path is not canonical")
+        active_release_sidecars.add(f"plugins/{match.group(1)}/.xsec-market/releases.json.sig.jws.json")
     for path in paths:
-        if path in required_paths or RELEASE_SIDECAR_PATTERN.fullmatch(path):
+        if path in required_paths or path in active_release_sidecars:
             continue
         fail(f"no-pointer Beta smoke transition changed an unauthorized path: {path}")
     for path, label in ((MARKETPLACE_INDEX, "Marketplace index"), (release_path, "Beta release index"), (evidence_path, "Beta provenance")):

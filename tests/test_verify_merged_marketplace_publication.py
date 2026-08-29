@@ -277,7 +277,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 },
             )
 
-    def test_rejects_no_pointer_beta_smoke_transition_that_changes_release_metadata(self) -> None:
+    def test_rejects_no_pointer_beta_smoke_transition_that_refreshes_an_inactive_release_sidecar(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-smoke-ready-unsafe-") as directory:
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
@@ -303,10 +303,12 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.write_inflight_beta_status(
                 root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"]
             )
-            self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=beta["releaseId"])
-            after = self.commit(root, "unsafe release pointer change beside beta smoke")
+            unrelated = root / "plugins/com.example.disabled/.xsec-market/releases.json.sig.jws.json"
+            unrelated.parent.mkdir(parents=True, exist_ok=True)
+            unrelated.write_text("unrelated retained release signature\n", encoding="utf-8")
+            after = self.commit(root, "unsafe inactive release sidecar beside beta smoke")
 
-            with self.assertRaisesRegex(verifier.PromotionVerificationError, "release-index change is not a safe"):
+            with self.assertRaisesRegex(verifier.PromotionVerificationError, "no-pointer Factory change is not a safe"):
                 verifier.classify_merged_change(root, before, after)
 
     def test_rejects_release_delta_with_an_unrelated_workflow_edit(self) -> None:
