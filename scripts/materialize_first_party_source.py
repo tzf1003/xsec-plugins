@@ -44,9 +44,12 @@ ARTIFACT_DIGEST_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 # ``credential-cache`` is intentionally excluded. Its default socket is
 # selected from XDG_CACHE_HOME/HOME, so an inherited caller environment can
 # send an authenticated helper request to an attacker-owned Unix socket. The
-# materializer never needs to retain a credential itself; platform credential
-# stores are the only supported helpers.
-PUSH_CREDENTIAL_HELPERS = frozenset({"manager", "manager-core", "osxkeychain", "libsecret"})
+# materializer never needs to retain a credential itself. ``libsecret`` is
+# deliberately excluded too: its D-Bus session is selected through inherited
+# ``DBUS_SESSION_BUS_ADDRESS``, so this tool cannot prove that credential
+# requests remain on a trusted user-session bus. The remaining helpers are
+# resolved from the active Git installation and do not consume that address.
+PUSH_CREDENTIAL_HELPERS = frozenset({"manager", "manager-core", "osxkeychain"})
 FORBIDDEN_SOURCE_SUFFIXES = (".xsec-plugin", ".sig.jws.json")
 MIGRATION_AUTHOR_NAME = "XSEC Marketplace Migration"
 MIGRATION_AUTHOR_EMAIL = "xsec-marketplace-migration@users.noreply.github.com"
@@ -64,6 +67,10 @@ TRANSPORT_ENVIRONMENT_KEYS = (
     "GIT_TRACE_CURL",
     "GIT_TRACE_REDACT",
     "GIT_CURL_VERBOSE",
+    # Git Credential Manager tracing can independently retain helper request
+    # fields, regardless of Git/curl's trace-redaction settings.
+    "GCM_TRACE",
+    "GCM_TRACE_SECRETS",
     # libcurl honors this independently of Git trace settings. Leaving it
     # inherited would append TLS session secrets to a caller-selected file and
     # can expose an Authorization header to a traffic capture.
@@ -321,7 +328,6 @@ def resolve_approved_credential_helper(credential_helper: str) -> str:
             "git-credential-manager",
         ),
         "osxkeychain": ("git-credential-osxkeychain",),
-        "libsecret": ("git-credential-libsecret",),
     }[credential_helper]
     directories = [exec_path]
     # Git for Windows keeps the Credential Manager binary in ``mingw*/bin``
@@ -1200,7 +1206,7 @@ def parse_arguments() -> argparse.Namespace:
         "--credential-helper",
         choices=sorted(PUSH_CREDENTIAL_HELPERS),
         help=(
-            "optional manager/osxkeychain/libsecret helper resolved only from the trusted running Git installation "
+            "optional manager/manager-core/osxkeychain helper resolved only from the trusted running Git installation "
             "for the sealed push; disabled by default"
         ),
     )

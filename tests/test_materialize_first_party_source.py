@@ -245,11 +245,14 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
     def test_push_credential_helper_is_optional_bounded_and_dispatch_only(self) -> None:
         self.assertIn("manager", materializer.PUSH_CREDENTIAL_HELPERS)
         self.assertNotIn("cache", materializer.PUSH_CREDENTIAL_HELPERS)
+        self.assertNotIn("libsecret", materializer.PUSH_CREDENTIAL_HELPERS)
         self.assertNotIn("!arbitrary-command", materializer.PUSH_CREDENTIAL_HELPERS)
         with self.assertRaisesRegex(materializer.MaterializationError, "approved platform-provided helper"):
             materializer.sealed_transport_arguments(protocols=("https",), credential_helper="!arbitrary-command")
         with self.assertRaisesRegex(materializer.MaterializationError, "approved platform-provided helper"):
             materializer.sealed_transport_arguments(protocols=("https",), credential_helper="cache")
+        with self.assertRaisesRegex(materializer.MaterializationError, "approved platform-provided helper"):
+            materializer.sealed_transport_arguments(protocols=("https",), credential_helper="libsecret")
         with patch.object(
             sys,
             "argv",
@@ -509,6 +512,8 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     "HTTPS_PROXY": "https://attacker.invalid",
                     "GIT_TRACE_CURL": "1",
                     "GIT_TRACE_REDACT": "0",
+                    "GCM_TRACE": "C:/attacker-gcm-trace.log",
+                    "GCM_TRACE_SECRETS": "1",
                     "GIT_EXEC_PATH": "C:/attacker-git-exec-path",
                     "GIT_SSL_CAINFO": "C:/attacker-ca.pem",
                     "GIT_SSL_CAPATH": "C:/attacker-ca-directory",
@@ -542,6 +547,8 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 self.assertNotIn("HTTPS_PROXY", environment)
                 self.assertNotIn("GIT_TRACE_CURL", environment)
                 self.assertNotIn("GIT_TRACE_REDACT", environment)
+                self.assertNotIn("GCM_TRACE", environment)
+                self.assertNotIn("GCM_TRACE_SECRETS", environment)
                 self.assertNotIn("GIT_EXEC_PATH", environment)
                 self.assertNotIn("GIT_SSL_CAINFO", environment)
                 self.assertNotIn("GIT_SSL_CAPATH", environment)

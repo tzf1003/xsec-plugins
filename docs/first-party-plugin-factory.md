@@ -120,11 +120,12 @@ python scripts\materialize_first_party_source.py `
 ```
 
 若需要使用本机凭据，`--credential-helper` 只允许运行中 Git installation 所提供的
-`manager`、`manager-core`、`osxkeychain` 或 `libsecret`。materializer 会先验证 helper 的
+`manager`、`manager-core` 或 `osxkeychain`。materializer 会先验证 helper 的
 resolved target 仍在该可信 Git installation 中，但以其固定的绝对 helper 路径调用，从而保留 Git
 multi-call symlink 的 basename dispatch。它刻意不允许 `cache`：该 helper 的默认 socket 会由
-`XDG_CACHE_HOME` / `HOME` 选择，不能让调用者环境决定认证请求的接收端。无论是否使用 helper，sealed
-HTTPS transport 都清除 Git/curl trace、代理、CA override 及 `SSLKEYLOGFILE`，不会把认证头或 TLS
+`XDG_CACHE_HOME` / `HOME` 选择，不能让调用者环境决定认证请求的接收端；也不允许 `libsecret`，因为
+其 D-Bus session 由 `DBUS_SESSION_BUS_ADDRESS` 选择。无论是否使用 helper，sealed HTTPS transport
+都清除 Git/curl/GCM trace、代理、CA override 及 `SSLKEYLOGFILE`，不会把认证头或 TLS
 session key 写入调用者指定的位置。
 
 将 stdout 的 Registry 行作为受保护的单独 PR 加入本仓库，保持
