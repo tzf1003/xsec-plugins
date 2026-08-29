@@ -244,9 +244,12 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
 
     def test_push_credential_helper_is_optional_bounded_and_dispatch_only(self) -> None:
         self.assertIn("manager", materializer.PUSH_CREDENTIAL_HELPERS)
+        self.assertNotIn("cache", materializer.PUSH_CREDENTIAL_HELPERS)
         self.assertNotIn("!arbitrary-command", materializer.PUSH_CREDENTIAL_HELPERS)
         with self.assertRaisesRegex(materializer.MaterializationError, "approved platform-provided helper"):
             materializer.sealed_transport_arguments(protocols=("https",), credential_helper="!arbitrary-command")
+        with self.assertRaisesRegex(materializer.MaterializationError, "approved platform-provided helper"):
+            materializer.sealed_transport_arguments(protocols=("https",), credential_helper="cache")
         with patch.object(
             sys,
             "argv",
@@ -254,6 +257,26 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
         ):
             with redirect_stderr(StringIO()):
                 self.assertEqual(materializer.main(), 2)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symlink support")
+    def test_credential_helper_keeps_the_trusted_multicall_symlink_name(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-helper-symlink-") as directory:
+            git_core = Path(directory) / "git-core"
+            git_core.mkdir()
+            target = git_core / "git"
+            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            target.chmod(0o755)
+            helper = git_core / "git-credential-manager"
+            try:
+                helper.symlink_to("git")
+            except OSError as error:
+                self.skipTest(f"cannot create a test symlink: {error}")
+
+            with patch.object(materializer, "trusted_git_exec_path", return_value=git_core):
+                command = materializer.resolve_approved_credential_helper("manager")
+
+            self.assertEqual(command, "!" + materializer.shlex.quote(helper.as_posix()))
+            self.assertNotEqual(command, "!" + materializer.shlex.quote(target.as_posix()))
 
     def test_remote_factory_lookup_uses_an_isolated_sealed_transport(self) -> None:
         self.remote_main.stop()
@@ -489,6 +512,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                     "GIT_EXEC_PATH": "C:/attacker-git-exec-path",
                     "GIT_SSL_CAINFO": "C:/attacker-ca.pem",
                     "GIT_SSL_CAPATH": "C:/attacker-ca-directory",
+                    "SSLKEYLOGFILE": "C:/attacker-tls-session-keys.log",
                 },
             ):
                 with patch.object(materializer, "resolve_approved_credential_helper", return_value="!/trusted/git-credential-manager"):
@@ -521,6 +545,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 self.assertNotIn("GIT_EXEC_PATH", environment)
                 self.assertNotIn("GIT_SSL_CAINFO", environment)
                 self.assertNotIn("GIT_SSL_CAPATH", environment)
+                self.assertNotIn("SSLKEYLOGFILE", environment)
 
     def test_ssh_target_uses_a_safe_openssh_command_without_user_host_rewrites(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-sealed-ssh-") as directory:

@@ -41,7 +41,12 @@ from validate_market import validate_archive, validate_zip_member
 ROOT = Path(__file__).resolve().parents[1]
 GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 ARTIFACT_DIGEST_PATTERN = re.compile(r"^[a-f0-9]{64}$")
-PUSH_CREDENTIAL_HELPERS = frozenset({"manager", "manager-core", "osxkeychain", "libsecret", "cache"})
+# ``credential-cache`` is intentionally excluded. Its default socket is
+# selected from XDG_CACHE_HOME/HOME, so an inherited caller environment can
+# send an authenticated helper request to an attacker-owned Unix socket. The
+# materializer never needs to retain a credential itself; platform credential
+# stores are the only supported helpers.
+PUSH_CREDENTIAL_HELPERS = frozenset({"manager", "manager-core", "osxkeychain", "libsecret"})
 FORBIDDEN_SOURCE_SUFFIXES = (".xsec-plugin", ".sig.jws.json")
 MIGRATION_AUTHOR_NAME = "XSEC Marketplace Migration"
 MIGRATION_AUTHOR_EMAIL = "xsec-marketplace-migration@users.noreply.github.com"
@@ -59,6 +64,10 @@ TRANSPORT_ENVIRONMENT_KEYS = (
     "GIT_TRACE_CURL",
     "GIT_TRACE_REDACT",
     "GIT_CURL_VERBOSE",
+    # libcurl honors this independently of Git trace settings. Leaving it
+    # inherited would append TLS session secrets to a caller-selected file and
+    # can expose an Authorization header to a traffic capture.
+    "SSLKEYLOGFILE",
     "GIT_SSL_NO_VERIFY",
     "GIT_SSL_CAINFO",
     "GIT_SSL_CAPATH",
@@ -313,7 +322,6 @@ def resolve_approved_credential_helper(credential_helper: str) -> str:
         ),
         "osxkeychain": ("git-credential-osxkeychain",),
         "libsecret": ("git-credential-libsecret",),
-        "cache": ("git-credential-cache",),
     }[credential_helper]
     directories = [exec_path]
     # Git for Windows keeps the Credential Manager binary in ``mingw*/bin``
@@ -325,8 +333,17 @@ def resolve_approved_credential_helper(credential_helper: str) -> str:
         for name in names:
             candidate = directory / name
             try:
+                # Resolve only to prove that the candidate leads to an
+                # executable from this trusted Git installation. Invoke the
+                # symlink pathname below: Git helpers can be multi-call
+                # symlinks, where the basename selects the helper command.
                 executable = candidate.resolve(strict=True)
+                trusted_directory = directory.resolve(strict=True)
             except OSError:
+                continue
+            try:
+                executable.relative_to(trusted_directory)
+            except ValueError:
                 continue
             if not executable.is_file():
                 continue
@@ -335,7 +352,7 @@ def resolve_approved_credential_helper(credential_helper: str) -> str:
             # ``shlex.quote`` is required because Git executes an explicit
             # ``!`` helper through its shell.  The path is absolute and
             # entirely derived above, so no caller text can become shell code.
-            return "!" + shlex.quote(executable.as_posix())
+            return "!" + shlex.quote(candidate.as_posix())
     fail(f"approved Git credential helper '{credential_helper}' is unavailable in this Git installation")
 
 
@@ -1182,7 +1199,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--credential-helper",
         choices=sorted(PUSH_CREDENTIAL_HELPERS),
-        help="optional platform-provided Git credential helper for the sealed push; disabled by default",
+        help=(
+            "optional manager/osxkeychain/libsecret helper resolved only from the trusted running Git installation "
+            "for the sealed push; disabled by default"
+        ),
     )
     parser.add_argument("--filter-index", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
