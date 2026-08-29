@@ -41,6 +41,7 @@ from validate_market import validate_archive, validate_zip_member
 ROOT = Path(__file__).resolve().parents[1]
 GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 ARTIFACT_DIGEST_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+PUSH_CREDENTIAL_HELPERS = frozenset({"manager", "manager-core", "osxkeychain", "libsecret", "cache"})
 FORBIDDEN_SOURCE_SUFFIXES = (".xsec-plugin", ".sig.jws.json")
 MIGRATION_AUTHOR_NAME = "XSEC Marketplace Migration"
 MIGRATION_AUTHOR_EMAIL = "xsec-marketplace-migration@users.noreply.github.com"
@@ -242,11 +243,17 @@ def sealed_transport_environment(
     return environment
 
 
-def sealed_transport_arguments(*, protocols: tuple[str, ...]) -> list[str]:
+def sealed_transport_arguments(*, protocols: tuple[str, ...], credential_helper: str | None = None) -> list[str]:
     """Return Git options paired with :func:`sealed_transport_environment`."""
 
+    if credential_helper is not None and credential_helper not in PUSH_CREDENTIAL_HELPERS:
+        fail("credential helper is not an approved platform-provided helper")
     arguments = [
         "-c",
+        # Git credential helpers are multi-valued.  An empty entry clears
+        # every repository/global helper before a caller-selected helper is
+        # appended below, so a generated candidate cannot retain a local
+        # shell helper that would receive the approved credential.
         "credential.helper=",
         "-c",
         "http.sslVerify=true",
@@ -255,6 +262,8 @@ def sealed_transport_arguments(*, protocols: tuple[str, ...]) -> list[str]:
         "-c",
         "protocol.allow=never",
     ]
+    if credential_helper is not None:
+        arguments.extend(["-c", f"credential.helper={credential_helper}"])
     for protocol in protocols:
         arguments.extend(["-c", f"protocol.{protocol}.allow=always"])
     return arguments
@@ -955,7 +964,7 @@ def materialize_repository(factory_root: Path, plugin_id: str, repository: Path)
     }
 
 
-def push_candidate(repository: Path, plugin_id: str, target: str) -> None:
+def push_candidate(repository: Path, plugin_id: str, target: str, credential_helper: str | None = None) -> None:
     canonical_target = require_exact_target(plugin_id, target)
     protocols = ("https",) if canonical_target.startswith("https://") else ("ssh",)
     environment = sealed_transport_environment(protocols=protocols)
@@ -1001,7 +1010,7 @@ def push_candidate(repository: Path, plugin_id: str, target: str) -> None:
         [
             "-c",
             f"core.hooksPath={os.devnull}",
-            *sealed_transport_arguments(protocols=protocols),
+            *sealed_transport_arguments(protocols=protocols, credential_helper=credential_helper),
             "push",
             "--atomic",
             "--porcelain",
@@ -1021,6 +1030,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--plugin-id", required=True, help="one of the eleven approved first-party plugin IDs")
     parser.add_argument("--target", help="exact approved GitHub source repository URL; required with --push")
     parser.add_argument("--push", action="store_true", help="push new main/beta branches after an exact-target preflight")
+    parser.add_argument(
+        "--credential-helper",
+        choices=sorted(PUSH_CREDENTIAL_HELPERS),
+        help="optional platform-provided Git credential helper for the sealed push; disabled by default",
+    )
     parser.add_argument("--filter-index", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
@@ -1033,13 +1047,15 @@ def main() -> int:
             return filter_index_paths(plugin_id)
         if args.push and args.target is None:
             fail("--push requires --target with the exact approved public GitHub repository URL")
+        if args.credential_helper is not None and not args.push:
+            fail("--credential-helper is valid only with --push")
         if args.target is not None:
             require_exact_target(plugin_id, args.target)
         with tempfile.TemporaryDirectory(prefix=f"xsec-first-party-source-{plugin_id}-") as directory:
             result = materialize_repository(args.root, plugin_id, Path(directory) / "repository")
             if args.push:
                 assert args.target is not None
-                push_candidate(Path(directory) / "repository", plugin_id, args.target)
+                push_candidate(Path(directory) / "repository", plugin_id, args.target, args.credential_helper)
         # Keep stdout machine-readable and deliberately narrow: callers can
         # submit only this pending Registry row to the protected Factory PR.
         sys.stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True) + "\n")

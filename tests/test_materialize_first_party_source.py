@@ -240,6 +240,20 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             materializer.require_exact_target(PLUGIN_ID, "https://github.com/tzf1003/xsec-plugin-approvals.git")
         script = (SCRIPTS / "materialize_first_party_source.py").read_text(encoding="utf-8")
         self.assertIn('"--atomic"', script)
+        self.assertIn('"--credential-helper"', script)
+
+    def test_push_credential_helper_is_optional_bounded_and_dispatch_only(self) -> None:
+        self.assertIn("manager", materializer.PUSH_CREDENTIAL_HELPERS)
+        self.assertNotIn("!arbitrary-command", materializer.PUSH_CREDENTIAL_HELPERS)
+        with self.assertRaisesRegex(materializer.MaterializationError, "approved platform-provided helper"):
+            materializer.sealed_transport_arguments(protocols=("https",), credential_helper="!arbitrary-command")
+        with patch.object(
+            sys,
+            "argv",
+            [str(SCRIPTS / "materialize_first_party_source.py"), "--plugin-id", PLUGIN_ID, "--credential-helper", "manager"],
+        ):
+            with redirect_stderr(StringIO()):
+                self.assertEqual(materializer.main(), 2)
 
     def test_remote_factory_lookup_uses_an_isolated_sealed_transport(self) -> None:
         self.remote_main.stop()
@@ -276,6 +290,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                         repository,
                         PLUGIN_ID,
                         "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                        "manager",
                     )
             invoke.assert_not_called()
 
@@ -308,6 +323,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                         repository,
                         PLUGIN_ID,
                         "https://github.com/tzf1003/xsec-plugin-sub-agent.git",
+                        "manager",
                     )
             remote_calls = [(arguments, kwargs) for arguments, kwargs in calls if "ls-remote" in arguments or "push" in arguments]
             self.assertEqual(len(remote_calls), 2)
@@ -317,6 +333,8 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             self.assertNotEqual(preflight_kwargs["cwd"], repository)
             self.assertIn("push", push_arguments)
             self.assertEqual(push_kwargs["cwd"], repository)
+            self.assertIn("credential.helper=", preflight_arguments)
+            self.assertLess(push_arguments.index("credential.helper="), push_arguments.index("credential.helper=manager"))
             for _, kwargs in calls:
                 environment = kwargs["environment"]
                 assert isinstance(environment, dict)
