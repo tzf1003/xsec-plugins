@@ -17,7 +17,7 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Security",
-      "status": "pending-adoption"
+      "status": "active"
     }
   ]
 }
