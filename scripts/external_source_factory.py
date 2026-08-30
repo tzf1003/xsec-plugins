@@ -3474,7 +3474,11 @@ def main() -> None:
         help="only for the protected publisher's pre-KMS staging window after build_market --clean",
     )
     args = parser.parse_args()
-    if args.allow_unsigned_active_release_sidecars and not args.allow_unsigned_publication_proofs:
+    if (
+        args.command == "validate"
+        and args.allow_unsigned_active_release_sidecars
+        and not args.allow_unsigned_publication_proofs
+    ):
         parser.error("--allow-unsigned-active-release-sidecars requires --allow-unsigned-publication-proofs")
     root = args.root.resolve()
     try:

@@ -440,6 +440,28 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.make_factory(root, self.registry_entry())
             factory.validate_registry_and_snapshots(root)
 
+    def test_cli_non_validate_command_does_not_read_validate_only_options(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-external-cli-options-") as directory:
+            root = Path(directory)
+            self.make_factory(root, self.registry_entry())
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "external_source_factory.py",
+                    "--root",
+                    str(root),
+                    "prepare",
+                    "--plugin-id",
+                    PLUGIN_ID,
+                    "--channel",
+                    "beta",
+                    "--source-sha",
+                    BETA_SHA,
+                ],
+            ):
+                factory.main()
+
     def test_beta_snapshot_generates_discoverable_marketplace_entry_and_provenance(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-beta-") as directory:
             root = Path(directory)
