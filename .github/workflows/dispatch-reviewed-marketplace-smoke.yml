@@ -120,7 +120,9 @@ jobs:
           # callback. A source tuple alone is insufficient: guarded manual
           # external Stable recovery intentionally records promoting_stable,
           # while legacy built-ins can promote or roll back retained releases.
-          callback_bound_stable="$(printf '%s' "$result" | jq -cer '
+          # Do not use jq -e here: false is the expected result for every
+          # Beta and legacy/manual Stable transition, not a workflow failure.
+          callback_bound_stable="$(printf '%s' "$result" | jq -cr '
             if .kind != "stable" then false
             elif (.promotions | type) != "array" or (.promotions | length) != 1 then false
             elif (.promotions[0].source | type) != "object" then false

@@ -221,7 +221,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
 
     def test_dispatcher_skips_only_kms_authenticated_callback_bound_registered_stable_smoke(self) -> None:
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
-        callback_bound_stable = '''callback_bound_stable="$(printf '%s' "$result" | jq -cer '
+        callback_bound_stable = '''callback_bound_stable="$(printf '%s' "$result" | jq -cr '
             if .kind != "stable" then false
             elif (.promotions | type) != "array" or (.promotions | length) != 1 then false
             elif (.promotions[0].source | type) != "object" then false
@@ -234,6 +234,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
           ')"'''
 
         self.assertIn(callback_bound_stable, dispatcher)
+        self.assertIn("Do not use jq -e here: false is the expected result", dispatcher)
         self.assertIn('[ "$kind" != "beta" ] && [ "$kind" != "beta-smoke-ready" ] && [ "$kind" != "stable" ]', dispatcher)
         for required_status_binding in (
             'status_path=".xsec-factory/official-status/${plugin_id}.json"',
