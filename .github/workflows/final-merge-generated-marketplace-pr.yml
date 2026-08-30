@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       pull_number:
-        description: Open same-repository xsec-marketplace publication PR to revalidate and merge
+        description: Open same-repository Factory transition PR to revalidate and merge
         required: true
         type: string
 
@@ -79,10 +79,6 @@ jobs:
             echo "Final gate accepts only an open same-repository PR targeting main." >&2
             exit 1
           }
-          case "$head_ref" in
-            xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
-            *) echo "Final gate accepts only protected Factory publication branches." >&2; exit 1 ;;
-          esac
           [[ "$base_sha" =~ ^[a-f0-9]{40}$ && "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
             echo "Live PR contains malformed Git revisions." >&2
             exit 1
@@ -114,7 +110,13 @@ jobs:
           HEAD_REF: ${{ steps.pr.outputs.head_ref }}
         run: |
           set -euo pipefail
-          if [[ "$HEAD_REF" == xsec-marketplace/stage-first-party-adoption-* || "$HEAD_REF" == xsec-marketplace/adopt-first-party-* ]]; then
+          if [ -e "$CANDIDATE/.xsec-factory/layout-migration.json" ]; then
+            # The trusted main verifier treats the candidate only as data and
+            # proves it is the exact signed-history-to-snapshot transition.
+            python scripts/verify_factory_layout_migration.py --root "$CANDIDATE" --baseline-root . --before "$BEFORE" --after "$AFTER"
+            result='{"kind":"factory-layout-source-migration","sources":[]}'
+            sources='[]'
+          elif [[ "$HEAD_REF" == xsec-marketplace/stage-first-party-adoption-* || "$HEAD_REF" == xsec-marketplace/adopt-first-party-* ]]; then
             # Adoption is a two-step non-release transition. The reviewed
             # staging PR adds one unsigned assertion; the KMS-generated
             # activation PR later adds only the matching sidecar and changes
@@ -184,6 +186,10 @@ jobs:
             result="$(jq -cn --arg plugin_id "$plugin_id" '{kind:"retained-sidecar-refresh",plugin_id:$plugin_id,sources:[]}')"
             sources='[]'
           else
+            case "$HEAD_REF" in
+              xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*) ;;
+              *) echo "Final gate accepts only an exact pending layout migration or a protected Factory publication branch." >&2; exit 1 ;;
+            esac
             result="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" --before "$BEFORE" --after "$AFTER" --classify)"
             kind="$(printf '%s' "$result" | jq -er .kind)"
             if [ "$kind" = "stable-maintenance" ]; then

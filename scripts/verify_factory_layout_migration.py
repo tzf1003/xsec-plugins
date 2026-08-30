@@ -26,6 +26,18 @@ MARKER = {
     "layout": "git-subprojects-with-release-snapshots",
     "pendingKmsSidecars": True,
 }
+MIGRATION_SUPPORT_PATHS = frozenset((
+    ".agents/plugins/marketplace.json", ".agents/plugins/marketplace.json.sig.jws.json", ".gitmodules", ".xsec-factory/layout-migration.json",
+    ".github/workflows/arm-generated-marketplace-final-merge.yml", ".github/workflows/promote-stable.yml", ".github/workflows/publish.yml",
+    ".github/workflows/reconcile-smoke.yml", ".github/workflows/reconcile-source.yml", ".github/workflows/refresh-retained-sidecars.yml",
+    "README.md", "docs/first-party-plugin-factory.md", "docs/marketplace-factory-template.md", "docs/plugin-development-release-lifecycle.md",
+    "factory-template/.github/workflows/promote-stable.yml", "factory-template/.github/workflows/publish-beta.yml", "factory-template/README.md",
+    "factory-template/scripts/factory_core.py", "factory-template/scripts/factory_validate.py", "factory-template/tests/test_factory.py",
+    "scripts/bootstrap_plugins.py", "scripts/build_market.py", "scripts/external_source_factory.py", "scripts/frontend_contracts.test.mjs",
+    "scripts/kms_marketplace_publisher.py", "scripts/materialize_first_party_source.py", "scripts/promote_release.py", "scripts/validate_market.py",
+    "scripts/verify_merged_stable_promotion.py", "tests/test_external_source_factory.py", "tests/test_kms_marketplace_publisher.py",
+    "tests/test_market_validation.py", "tests/test_materialize_first_party_source.py", "tests/test_verify_merged_marketplace_publication.py",
+))
 
 
 class FactoryLayoutMigrationError(ValueError):
@@ -212,9 +224,31 @@ def verify_predecessor_signatures(baseline: Path, ids: tuple[str, ...]) -> None:
         )
 
 
-def verify(root: Path, baseline: Path) -> None:
+def expected_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...]) -> set[str]:
+    paths = set(MIGRATION_SUPPORT_PATHS)
+    for plugin_id in ids:
+        legacy = LEGACY_PLUGIN_ROOT / plugin_id
+        snapshot = SNAPSHOT_ROOT / plugin_id
+        paths.add(legacy.as_posix())
+        paths.update((legacy / path).as_posix() for path in regular_files(baseline / legacy))
+        paths.update((snapshot / path).as_posix() for path in regular_files(root / snapshot))
+    return paths
+
+
+def verify_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...], before: str, after: str) -> None:
+    actual = set(gitlines(root, ["diff", "--name-only", "--no-renames", before, after]))
+    expected = expected_transition_paths(root, baseline, ids)
+    if actual != expected:
+        unexpected = ", ".join(sorted(actual - expected)) or "<none>"
+        missing = ", ".join(sorted(expected - actual)) or "<none>"
+        fail(f"目录迁移变更路径不匹配: unexpected={unexpected}; missing={missing}")
+
+
+def verify(root: Path, baseline: Path, *, before: str | None = None, after: str | None = None) -> None:
     root = require_directory(root, "当前工厂目录")
     baseline = require_directory(baseline, "工厂基线目录")
+    if (before is None) != (after is None):
+        fail("目录迁移变更路径校验必须同时提供 before 和 after")
     if root == baseline:
         fail("工厂基线必须与当前目录不同")
     if read_json(root / MIGRATION_MARKER, "布局迁移标记") != MARKER:
@@ -238,15 +272,19 @@ def verify(root: Path, baseline: Path) -> None:
     verify_factory_metadata(root, baseline)
     verify_submodules(root, ids)
     verify_predecessor_signatures(baseline, ids)
+    if before is not None and after is not None:
+        verify_transition_paths(root, baseline, ids, before, after)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--baseline-root", type=Path, required=True)
+    parser.add_argument("--before")
+    parser.add_argument("--after")
     args = parser.parse_args()
     try:
-        verify(args.root, args.baseline_root)
+        verify(args.root, args.baseline_root, before=args.before, after=args.after)
     except (FactoryLayoutMigrationError, MarketplaceKmsPublisherError) as error:
         raise SystemExit(f"工厂布局迁移校验失败: {error}") from error
     print("工厂布局迁移基线和历史签名校验通过")

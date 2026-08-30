@@ -46,11 +46,17 @@ class FactoryLayoutMigrationTests(unittest.TestCase):
     def test_final_gate_keeps_layout_signature_candidates_pending_until_revalidated(self) -> None:
         arm = (ROOT / ".github/workflows/arm-generated-marketplace-final-merge.yml").read_text(encoding="utf-8")
         final = (ROOT / ".github/workflows/final-merge-generated-marketplace-pr.yml").read_text(encoding="utf-8")
+        verifier = (ROOT / "scripts/verify_factory_layout_migration.py").read_text(encoding="utf-8")
 
         self.assertIn("xsec-marketplace/layout-signatures-", arm)
         self.assertIn("xsec-marketplace/layout-signatures-*", final)
         self.assertIn('layout_migration="$(printf', arm)
-        self.assertIn('if [ "$layout_migration" = "true" ]', arm)
+        self.assertIn('if [ "$layout_migration" = "true" ] ||', arm)
+        self.assertIn('echo "factory_generated=true"', arm)
+        self.assertIn('if [ -e "$CANDIDATE/.xsec-factory/layout-migration.json" ]; then', final)
+        self.assertIn('verify_factory_layout_migration.py --root "$CANDIDATE" --baseline-root . --before "$BEFORE" --after "$AFTER"', final)
+        self.assertIn("MIGRATION_SUPPORT_PATHS", verifier)
+        self.assertIn('"diff", "--name-only", "--no-renames", before, after', verifier)
         self.assertIn("Factory layout sidecars are not bound", final)
         self.assertIn("--verify-active-marketplace-signatures", final)
 
