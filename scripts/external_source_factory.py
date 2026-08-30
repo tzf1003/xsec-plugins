@@ -1669,7 +1669,13 @@ def activate_first_party(root: Path, plugin_id: str) -> dict[str, str]:
     return {"plugin_id": registration.plugin_id, "status": "active"}
 
 
-def validate_adoption(root: Path, registration: Registration, *, require_kms_proof: bool = True) -> None:
+def validate_adoption(
+    root: Path,
+    registration: Registration,
+    *,
+    require_kms_proof: bool = True,
+    require_active_release_sidecar: bool = True,
+) -> None:
     if registration.trust_tier != "first-party":
         return
     path = adoption_path(root, registration.plugin_id)
@@ -1741,16 +1747,25 @@ def validate_adoption(root: Path, registration: Registration, *, require_kms_pro
         raise ExternalSourceFactoryError("first-party adoption proof release history bytes are invalid") from error
     validate_disabled_snapshot_artifacts(root, registration, snapshot_directory(root, registration.plugin_id), release_document, release_record(release_document, beta))
     release_sidecar = release_path(root, registration.plugin_id).with_name("releases.json.sig.jws.json")
-    if is_link(release_sidecar) or not release_sidecar.is_file():
+    if is_link(release_sidecar):
         fail(f"first-party plugin {registration.plugin_id} KMS release sidecar is unavailable")
-    release_subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
-    try:
-        verify_historical_sidecar_signature(
-            release_sidecar.read_bytes(),
-            MarketplaceDocument("xsec.plugin-marketplace.release", release_subject, release_path(root, registration.plugin_id)),
-        )
-    except (OSError, MarketplaceKmsPublisherError) as error:
-        raise ExternalSourceFactoryError(f"first-party plugin {registration.plugin_id} KMS release sidecar is invalid") from error
+    if not release_sidecar.is_file():
+        # ``build_market.py --clean`` deliberately removes active release
+        # sidecars before the protected publisher replaces them through Cloud
+        # KMS. Normal validation remains strict; this bounded pre-KMS staging
+        # exception is an explicit caller choice. A present malformed sidecar
+        # is never accepted.
+        if require_active_release_sidecar:
+            fail(f"first-party plugin {registration.plugin_id} KMS release sidecar is unavailable")
+    else:
+        release_subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
+        try:
+            verify_historical_sidecar_signature(
+                release_sidecar.read_bytes(),
+                MarketplaceDocument("xsec.plugin-marketplace.release", release_subject, release_path(root, registration.plugin_id)),
+            )
+        except (OSError, MarketplaceKmsPublisherError) as error:
+            raise ExternalSourceFactoryError(f"first-party plugin {registration.plugin_id} KMS release sidecar is invalid") from error
     if not require_kms_proof:
         return
     try:
@@ -2099,6 +2114,7 @@ def validate_status(
     registration: Registration,
     *,
     require_publication_proofs: bool = True,
+    require_active_release_sidecar: bool = True,
 ) -> None:
     path = status_path(root, registration.plugin_id)
     if not path.exists():
@@ -2158,7 +2174,12 @@ def validate_status(
         if not release_file.exists():
             fail("in-flight Factory status must match immutable Beta provenance")
         if registration.trust_tier == "first-party":
-            validate_adoption(root, registration, require_kms_proof=require_publication_proofs)
+            validate_adoption(
+                root,
+                registration,
+                require_kms_proof=require_publication_proofs,
+                require_active_release_sidecar=require_active_release_sidecar,
+            )
             adopted_ids = frozenset(adopted_release_ids(root, registration, state_label="in-flight Factory status"))
         else:
             adopted_ids = frozenset()
@@ -2218,7 +2239,7 @@ def validate_status(
         # it cannot on its own attest a later Desktop smoke run.
         adopted_ids = frozenset()
         if registration.trust_tier == "first-party":
-            validate_adoption(root, registration)
+            validate_adoption(root, registration, require_active_release_sidecar=require_active_release_sidecar)
             adopted_ids = frozenset(adopted_release_ids(root, registration, state_label="published Factory status"))
         evidence = validate_evidence(root, registration, releases, adopted_release_ids=adopted_ids)
         if require_publication_proofs:
@@ -2411,13 +2432,22 @@ def validate_publication_proof(root: Path, registration: Registration) -> None:
         ) from error
 
 
-def validate_disabled_release_sidecar(root: Path, registration: Registration) -> None:
+def validate_disabled_release_sidecar(
+    root: Path,
+    registration: Registration,
+    *,
+    require_release_sidecar: bool = True,
+) -> None:
     """Require the signed immutable release document retained by a withdrawal."""
 
     release = release_path(root, registration.plugin_id)
     sidecar = release.with_name(release.name + ".sig.jws.json")
-    if is_link(sidecar) or not sidecar.is_file():
+    if is_link(sidecar):
         fail(f"disabled external official plugin {registration.plugin_id} KMS release sidecar is unavailable")
+    if not sidecar.is_file():
+        if require_release_sidecar:
+            fail(f"disabled external official plugin {registration.plugin_id} KMS release sidecar is unavailable")
+        return
     subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
     document = MarketplaceDocument("xsec.plugin-marketplace.release", subject, release)
     try:
@@ -3098,6 +3128,7 @@ def validate_registry_and_snapshots(
     *,
     baseline_root: Path | None = None,
     require_publication_proofs: bool = True,
+    require_active_release_sidecars: bool = True,
 ) -> None:
     """Validate external records in addition to the existing generic market gate.
 
@@ -3228,7 +3259,12 @@ def validate_registry_and_snapshots(
                 # the status transition.
                 if not has_adoption or is_link(adoption) or not adoption.is_file() or has_adoption_sidecar:
                     fail(f"pending first-party plugin {registration.plugin_id} must retain only one unsigned staged adoption proof")
-                validate_adoption(root, registration, require_kms_proof=False)
+                validate_adoption(
+                    root,
+                    registration,
+                    require_kms_proof=False,
+                    require_active_release_sidecar=require_active_release_sidecars,
+                )
             manifest = source_manifest(snapshot, registration)
             try:
                 document = load_release_document(release_path(root, registration.plugin_id), registration.plugin_id)
@@ -3238,8 +3274,17 @@ def validate_registry_and_snapshots(
             if manifest.get("version") != beta.get("version"):
                 fail(f"pending first-party plugin {registration.plugin_id} snapshot does not match its Beta release")
             validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
-            validate_disabled_release_sidecar(root, registration)
-            validate_status(root, registration, require_publication_proofs=require_publication_proofs)
+            validate_disabled_release_sidecar(
+                root,
+                registration,
+                require_release_sidecar=require_active_release_sidecars,
+            )
+            validate_status(
+                root,
+                registration,
+                require_publication_proofs=require_publication_proofs,
+                require_active_release_sidecar=require_active_release_sidecars,
+            )
             continue
         if registration.status == "disabled":
             if entry is not None:
@@ -3291,7 +3336,12 @@ def validate_registry_and_snapshots(
             # A first-party entry starts from a signed adoption, preserving
             # its historical release record/artifacts and existing pointers.
             # It is not allowed to self-authorise by adding a registry row.
-            validate_adoption(root, registration, require_kms_proof=require_publication_proofs)
+            validate_adoption(
+                root,
+                registration,
+                require_kms_proof=require_publication_proofs,
+                require_active_release_sidecar=require_active_release_sidecars,
+            )
             # Once a split source records provenance, retain the same
             # append-only source evidence/proof used by external packages in
             # addition to (never instead of) its migration adoption. This
@@ -3314,7 +3364,12 @@ def validate_registry_and_snapshots(
         if registration.status == "disabled" and registration.trust_tier == "external":
             validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
             validate_disabled_release_sidecar(root, registration)
-        validate_status(root, registration, require_publication_proofs=require_publication_proofs)
+        validate_status(
+            root,
+            registration,
+            require_publication_proofs=require_publication_proofs,
+            require_active_release_sidecar=require_active_release_sidecars,
+        )
 
 
 def write_outputs(values: dict[str, str], output_path: Path | None) -> None:
@@ -3436,7 +3491,18 @@ def main() -> None:
         action="store_true",
         help="only for the protected publisher's pre-KMS staging window",
     )
+    validate_parser.add_argument(
+        "--allow-unsigned-active-release-sidecars",
+        action="store_true",
+        help="only for the protected publisher's pre-KMS staging window after build_market --clean",
+    )
     args = parser.parse_args()
+    if (
+        args.command == "validate"
+        and args.allow_unsigned_active_release_sidecars
+        and not args.allow_unsigned_publication_proofs
+    ):
+        parser.error("--allow-unsigned-active-release-sidecars requires --allow-unsigned-publication-proofs")
     root = args.root.resolve()
     try:
         if args.command == "prepare":
@@ -3526,6 +3592,7 @@ def main() -> None:
                 root,
                 baseline_root=baseline_root,
                 require_publication_proofs=not args.allow_unsigned_publication_proofs,
+                require_active_release_sidecars=not args.allow_unsigned_active_release_sidecars,
             )
             result = {"valid": "true"}
         write_outputs(result, args.github_output)
