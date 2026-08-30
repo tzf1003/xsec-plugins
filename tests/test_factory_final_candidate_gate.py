@@ -178,8 +178,22 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             )
             self.assertIn("&event=pull_request&per_page=100", protected_workflow)
             self.assertNotIn("&event=workflow_dispatch&per_page=100", protected_workflow)
-            self.assertIn("--argjson pull_number", protected_workflow)
-            self.assertIn("any(.pull_requests[]?; .number == $pull_number)", protected_workflow)
+
+        # The Finalizer runs while the candidate remains open, when GitHub
+        # returns its pull_requests association.
+        self.assertIn("--argjson pull_number", workflow)
+        self.assertIn("any(.pull_requests[]?; .number == $pull_number)", workflow)
+
+        # GitHub removes that association once a PR is merged. The post-merge
+        # dispatcher therefore binds a pull_request run to the unique reviewed
+        # generated branch and exact candidate head instead of accepting a
+        # manual validation run.
+        self.assertIn('head_ref="$(printf \'%s\' "$pr" | jq -er .head.ref)"', dispatcher)
+        self.assertIn('--arg head_sha "$head_sha" --arg head_ref "$head_ref"', dispatcher)
+        self.assertIn(".event == \"pull_request\"", dispatcher)
+        self.assertIn(".head_sha == $head_sha", dispatcher)
+        self.assertIn(".head_branch == $head_ref", dispatcher)
+        self.assertNotIn("any(.pull_requests[]?; .number == $pull_number)", dispatcher)
 
     def test_finalizer_and_dispatcher_accept_the_last_review_thread_page(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
