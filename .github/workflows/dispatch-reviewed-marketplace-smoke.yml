@@ -92,13 +92,23 @@ jobs:
           }
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
-          # Stable is promoted only after the exact Beta tuple already passed
-          # the four-platform Desktop smoke and the smoke callback completed.
-          # Re-dispatching that matrix after this pointer-only completion would
-          # consume quota without adding a release gate or changing status.
-          if [ "$kind" = "stable" ]; then
+          # A Registry-bound external Stable completion is created only by the
+          # exact Beta smoke callback. Re-dispatching that same matrix after
+          # the pointer-only completion would consume quota without adding a
+          # release gate or changing status. Legacy built-in Stable promotions
+          # deliberately have no registered source tuple: they can select or
+          # roll back any retained release and must still run their own smoke.
+          registered_stable="$(printf '%s' "$result" | jq -r '
+            .kind == "stable"
+            and (.promotions | type == "array" and length == 1)
+            and (.promotions[0].source | type == "object")
+            and (.promotions[0].source.repository | type == "string")
+            and (.promotions[0].source.ref == "refs/heads/main")
+            and (.promotions[0].source.sha | type == "string")
+          ')"
+          if [ "$registered_stable" = "true" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "Stable promotion is already bound to its accepted Beta Desktop smoke; no duplicate Desktop dispatch is needed."
+            echo "Registered Stable completion is already bound to its accepted Beta Desktop smoke; no duplicate Desktop dispatch is needed."
             exit 0
           fi
           if [ "$kind" != "beta" ] && [ "$kind" != "beta-smoke-ready" ]; then
@@ -403,7 +413,7 @@ jobs:
               exit 1
             }
           done < <(printf '%s' "$RECOVERY_TUPLES" | jq -rc '.[]')
-      - name: Dispatch the reviewed Beta revision to Desktop smoke
+      - name: Dispatch the reviewed Beta or Stable revision to Desktop smoke
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
           SOURCE_SHA: ${{ needs.verify-reviewed-publication.outputs.source_sha }}

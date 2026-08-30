@@ -219,21 +219,32 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)
 
-    def test_dispatcher_never_repeats_desktop_smoke_for_a_stable_completion(self) -> None:
+    def test_dispatcher_skips_only_callback_bound_registered_stable_smoke(self) -> None:
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
-        stable_skip = '''if [ "$kind" = "stable" ]; then
+        registered_stable = '''registered_stable="$(printf '%s' "$result" | jq -r '
+            .kind == "stable"
+            and (.promotions | type == "array" and length == 1)
+            and (.promotions[0].source | type == "object")
+            and (.promotions[0].source.repository | type == "string")
+            and (.promotions[0].source.ref == "refs/heads/main")
+            and (.promotions[0].source.sha | type == "string")
+          ')"
+          if [ "$registered_stable" = "true" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "Stable promotion is already bound to its accepted Beta Desktop smoke; no duplicate Desktop dispatch is needed."
+            echo "Registered Stable completion is already bound to its accepted Beta Desktop smoke; no duplicate Desktop dispatch is needed."
             exit 0
           fi'''
 
-        self.assertIn(stable_skip, dispatcher)
+        self.assertIn(registered_stable, dispatcher)
         self.assertNotIn('[ "$kind" != "beta" ] && [ "$kind" != "stable" ]', dispatcher)
-        self.assertIn("Dispatch the reviewed Beta revision to Desktop smoke", dispatcher)
-        self.assertNotIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
+        # A legacy pointer-only stable promotion has no registered source and
+        # remains eligible for the independent Stable smoke contract.
+        self.assertIn('and (.promotions[0].source | type == "object")', dispatcher)
+        self.assertIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
+        self.assertNotIn("Dispatch the reviewed Beta revision to Desktop smoke", dispatcher)
         # The no-op must happen before signatures, source-App tokens, and the
         # production Desktop-dispatch job can consume any quota.
-        self.assertLess(dispatcher.index(stable_skip), dispatcher.index("verification=\"$(python scripts/kms_marketplace_publisher.py"))
+        self.assertLess(dispatcher.index(registered_stable), dispatcher.index("verification=\"$(python scripts/kms_marketplace_publisher.py"))
 
     def test_finalizer_and_dispatcher_accept_the_last_review_thread_page(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")

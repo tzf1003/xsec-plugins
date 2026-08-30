@@ -83,8 +83,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("A duplicate source delivery", workflow)
         self.assertIn("separately audited smoke recovery path", workflow)
         self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
-        self.assertIn("Dispatch the reviewed Beta revision to Desktop smoke", dispatcher)
-        self.assertIn("Stable promotion is already bound to its accepted Beta Desktop smoke", dispatcher)
+        self.assertIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
+        self.assertIn("Registered Stable completion is already bound to its accepted Beta Desktop smoke", dispatcher)
 
     def test_status_smoke_gate_is_kms_bound_and_cloud_deployment_is_explicit(self) -> None:
         readme = README.read_text(encoding="utf-8")
