@@ -2007,6 +2007,29 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 ),
                 {"redispatch": "false"},
             )
+            # Workflow consumers parse redispatch as JSON. Preserve that
+            # contract instead of accidentally accepting the CLI's default
+            # human-readable key=value output.
+            output = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "external_source_factory.py",
+                    "--root",
+                    str(root),
+                    "--json",
+                    "needs-smoke-redispatch",
+                    "--plugin-id",
+                    PLUGIN_ID,
+                    "--beta-sha",
+                    next_sha,
+                    "--beta-release-id",
+                    next_release,
+                ],
+            ), redirect_stdout(output):
+                factory.main()
+            self.assertEqual(json.loads(output.getvalue()), {"redispatch": "true"})
             factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
     def test_first_party_beta_after_adoption_appends_history_without_rewriting_the_adopted_prefix(self) -> None:

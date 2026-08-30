@@ -212,6 +212,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             "recovery_tuples: ${{ steps.classify.outputs.recovery_tuples }}",
             "Revalidate current Factory recovery tuple immediately before dispatch",
             "--verify-active-marketplace-signatures",
+            "--json needs-smoke-redispatch",
             "--beta-release-id \"$beta_release_id\"",
             "MARKETPLACE_REVISION: ${{ needs.verify-reviewed-publication.outputs.marketplace_revision }}",
         ):

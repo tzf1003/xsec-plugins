@@ -388,7 +388,7 @@ jobs:
             plugin_id="$(printf '%s' "$tuple" | jq -er .plugin_id)"
             beta_sha="$(printf '%s' "$tuple" | jq -er .beta_sha)"
             beta_release_id="$(printf '%s' "$tuple" | jq -er .beta_release_id)"
-            redispatch="$(python "$current_root/scripts/external_source_factory.py" --root "$current_root" needs-smoke-redispatch --plugin-id "$plugin_id" --beta-sha "$beta_sha" --beta-release-id "$beta_release_id")"
+            redispatch="$(python "$current_root/scripts/external_source_factory.py" --root "$current_root" --json needs-smoke-redispatch --plugin-id "$plugin_id" --beta-sha "$beta_sha" --beta-release-id "$beta_release_id")"
             [ "$(printf '%s' "$redispatch" | jq -er .redispatch)" = "true" ] || {
               echo "Manual Desktop smoke recovery no longer matches the current signed waiting_for_smoke Beta tuple for ${plugin_id}." >&2
               exit 1
