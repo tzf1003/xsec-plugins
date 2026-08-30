@@ -730,7 +730,7 @@ jobs:
               plugin_id="$(jq -er .pluginId "$status_path")"
               [[ "$plugin_id" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]] || { echo "Stable candidate has an unsafe status plugin ID." >&2; exit 1; }
               registered="$(jq -cer --arg plugin_id "$plugin_id" '.plugins | [ .[] | select(.pluginId == $plugin_id) ] | if length == 1 then .[0] else error("expected one protected Registry row") end' .xsec-factory/official-registry.json)"
-              candidate_registered="$(jq -cer --arg plugin_id "$plugin_id" '.plugins | [ .[] | select(.pluginId == $plugin_id) ] | if length == 1 then .[0] else error("candidate Registry row is ambiguous") end' "$candidate_root/.xsec-factory/official-registry.json)"
+              candidate_registered="$(jq -cer --arg plugin_id "$plugin_id" '.plugins | [ .[] | select(.pluginId == $plugin_id) ] | if length == 1 then .[0] else error("candidate Registry row is ambiguous") end' "$candidate_root/.xsec-factory/official-registry.json")"
               [ "$registered" = "$candidate_registered" ] || { cleanup_candidate; continue; }
               tuple="$(jq -cer --arg plugin_id "$plugin_id" --arg smoke_url "$smoke_url" --arg marketplace_revision "$MARKETPLACE_REVISION" '
                 .source as $source | .release as $release | .publication as $publication
