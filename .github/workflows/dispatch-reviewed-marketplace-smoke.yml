@@ -35,6 +35,8 @@ jobs:
       source_app_required: ${{ steps.classify.outputs.source_app_required }}
       source_owner: ${{ steps.classify.outputs.source_owner }}
       source_repositories: ${{ steps.classify.outputs.source_repositories }}
+      manual_recovery: ${{ steps.classify.outputs.manual_recovery }}
+      recovery_tuples: ${{ steps.classify.outputs.recovery_tuples }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,6 +116,29 @@ jobs:
             exit 1
           }
           printf '%s\n' "$result" > "$RUNNER_TEMP/marketplace-publication.json"
+          manual_recovery=false
+          recovery_tuples='[]'
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # A manual retry must never manufacture a dispatch for a legacy
+            # built-in transition. Every reviewed promotion needs an exact
+            # registered source/release tuple that can later be revalidated
+            # against the current protected Factory state.
+            recovery_tuples="$(printf '%s' "$result" | jq -cer '
+              [ .promotions[]
+                | if (.source | type) == "object" then
+                    {
+                      plugin_id: .plugin_id,
+                      beta_sha: .source.sha,
+                      beta_release_id: .release_id
+                    }
+                  else
+                    error("manual Desktop smoke recovery requires every promotion to have a registered source")
+                  end
+              ]
+              | if length > 0 then . else error("manual Desktop smoke recovery requires at least one source-backed promotion") end
+            ')"
+            manual_recovery=true
+          fi
           sources="$(printf '%s' "$result" | jq -c '[.promotions[] | select(.source != null) | .source, (.main_source // empty)]')"
           if { [ "$kind" = "beta" ] || [ "$kind" = "beta-smoke-ready" ]; } && [ "$(printf '%s' "$sources" | jq -r length)" -gt 0 ]; then
             # A source-main event may have rebuilt the selected immutable
@@ -162,29 +187,6 @@ jobs:
               echo "Stable source does not yet deterministically rebuild Beta for: ${waiting_for_beta[*]}. Desktop smoke is intentionally deferred."
               exit 0
             fi
-            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-              # A recovered revision may be older than the current protected
-              # Factory head. Recheck the live status tree before replaying:
-              # a newer Beta or terminal smoke outcome must make recovery a
-              # no-op rather than redispatching stale artifacts.
-              current_root="$(mktemp -d "$RUNNER_TEMP/xsec-smoke-current.XXXXXX")"
-              cleanup_current_root() {
-                git worktree remove --force "$current_root" >/dev/null 2>&1 || true
-                rm -rf -- "$current_root"
-              }
-              git worktree add --detach "$current_root" origin/main >/dev/null
-              while IFS= read -r promotion; do
-                plugin_id="$(printf '%s' "$promotion" | jq -er .plugin_id)"
-                beta_sha="$(printf '%s' "$promotion" | jq -er .source.sha)"
-                redispatch="$(python scripts/external_source_factory.py --root "$current_root" needs-smoke-redispatch --plugin-id "$plugin_id" --beta-sha "$beta_sha")"
-                [ "$(printf '%s' "$redispatch" | jq -er .redispatch)" = "true" ] || {
-                  cleanup_current_root
-                  echo "Manual Desktop smoke recovery no longer matches the current waiting_for_smoke Beta for ${plugin_id}." >&2
-                  exit 1
-                }
-              done < <(printf '%s' "$result" | jq -rc '.promotions[] | select(.source != null)')
-              cleanup_current_root
-            fi
           fi
           # Use a single source-owner scope and an exact, deduplicated
           # repository list. A candidate that crosses owners fails closed;
@@ -211,6 +213,8 @@ jobs:
           echo "source_app_required=$(printf '%s' "$source_scope" | jq -er .required)" >> "$GITHUB_OUTPUT"
           echo "source_owner=$(printf '%s' "$source_scope" | jq -er .owner)" >> "$GITHUB_OUTPUT"
           echo "source_repositories=$(printf '%s' "$source_scope" | jq -er .repositories)" >> "$GITHUB_OUTPUT"
+          echo "manual_recovery=$manual_recovery" >> "$GITHUB_OUTPUT"
+          echo "recovery_tuples=$recovery_tuples" >> "$GITHUB_OUTPUT"
       - name: Require the merged generated PR, source gate, and completed Codex review
         if: ${{ steps.classify.outputs.eligible == 'true' }}
         env:
@@ -356,6 +360,40 @@ jobs:
             }
           done < <(printf '%s' "$SOURCES" | jq -rc '.[]')
           unset token_header
+      - name: Check out current protected Factory state for manual recovery
+        if: ${{ needs.verify-reviewed-publication.outputs.manual_recovery == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 1
+          path: .xsec-current-factory
+          persist-credentials: false
+      - name: Revalidate current Factory recovery tuple immediately before dispatch
+        if: ${{ needs.verify-reviewed-publication.outputs.manual_recovery == 'true' }}
+        env:
+          RECOVERY_TUPLES: ${{ needs.verify-reviewed-publication.outputs.recovery_tuples }}
+        run: |
+          set -euo pipefail
+          current_root=".xsec-current-factory"
+          [ -e "$current_root/.git" ] || {
+            echo "Current protected Factory checkout is unavailable for manual Desktop smoke recovery." >&2
+            exit 1
+          }
+          # The status sidecar is not trusted merely because it is readable.
+          # Authenticate the current KMS proof before accepting any current
+          # waiting-for-smoke tuple, then bind every tuple to its immutable
+          # Beta release ID and source SHA.
+          python "$current_root/scripts/kms_marketplace_publisher.py" --root "$current_root" --verify-active-marketplace-signatures >/dev/null
+          while IFS= read -r tuple; do
+            plugin_id="$(printf '%s' "$tuple" | jq -er .plugin_id)"
+            beta_sha="$(printf '%s' "$tuple" | jq -er .beta_sha)"
+            beta_release_id="$(printf '%s' "$tuple" | jq -er .beta_release_id)"
+            redispatch="$(python "$current_root/scripts/external_source_factory.py" --root "$current_root" needs-smoke-redispatch --plugin-id "$plugin_id" --beta-sha "$beta_sha" --beta-release-id "$beta_release_id")"
+            [ "$(printf '%s' "$redispatch" | jq -er .redispatch)" = "true" ] || {
+              echo "Manual Desktop smoke recovery no longer matches the current signed waiting_for_smoke Beta tuple for ${plugin_id}." >&2
+              exit 1
+            }
+          done < <(printf '%s' "$RECOVERY_TUPLES" | jq -rc '.[]')
       - name: Dispatch the reviewed Beta or Stable revision to Desktop smoke
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}

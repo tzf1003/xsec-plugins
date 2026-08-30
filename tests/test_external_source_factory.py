@@ -1980,8 +1980,33 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 delivery_id="next-beta",
             )
             write_publication_proof(root, PLUGIN_ID, source_revision=next_sha)
-            self.assertEqual(factory.needs_smoke_redispatch(root, PLUGIN_ID, beta_sha=next_sha), {"redispatch": "true"})
-            self.assertEqual(factory.needs_smoke_redispatch(root, PLUGIN_ID, beta_sha=BETA_SHA), {"redispatch": "false"})
+            self.assertEqual(
+                factory.needs_smoke_redispatch(
+                    root,
+                    PLUGIN_ID,
+                    beta_sha=next_sha,
+                    beta_release_id=next_release,
+                ),
+                {"redispatch": "true"},
+            )
+            self.assertEqual(
+                factory.needs_smoke_redispatch(
+                    root,
+                    PLUGIN_ID,
+                    beta_sha=BETA_SHA,
+                    beta_release_id=next_release,
+                ),
+                {"redispatch": "false"},
+            )
+            self.assertEqual(
+                factory.needs_smoke_redispatch(
+                    root,
+                    PLUGIN_ID,
+                    beta_sha=next_sha,
+                    beta_release_id=initial_release,
+                ),
+                {"redispatch": "false"},
+            )
             factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
     def test_first_party_beta_after_adoption_appends_history_without_rewriting_the_adopted_prefix(self) -> None:

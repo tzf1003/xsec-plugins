@@ -207,7 +207,12 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             "Manual Desktop smoke recovery requires an exact Factory revision SHA.",
             "git merge-base --is-ancestor \"$AFTER\" origin/main",
             "needs-smoke-redispatch",
-            "current waiting_for_smoke Beta",
+            "manual Desktop smoke recovery requires every promotion to have a registered source",
+            "manual_recovery: ${{ steps.classify.outputs.manual_recovery }}",
+            "recovery_tuples: ${{ steps.classify.outputs.recovery_tuples }}",
+            "Revalidate current Factory recovery tuple immediately before dispatch",
+            "--verify-active-marketplace-signatures",
+            "--beta-release-id \"$beta_release_id\"",
             "MARKETPLACE_REVISION: ${{ needs.verify-reviewed-publication.outputs.marketplace_revision }}",
         ):
             with self.subTest(rule=rule):
