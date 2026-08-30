@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.sub-agent",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-sub-agent",
+    "path": "plugins/com.xsec.workspace.sub-agent",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "1ee8644fe6f485d068239859ab58fd9bf37fec8e",
+    "stableSha": null,
+    "mainGateSha": "29149b3d2b2195fb74300772446d3f64e8fa1570"
+  },
+  "release": {
+    "betaReleaseId": "sha256-2060e10cc3be72cbb35c5ca70aa0e5592ba083b304272b068ceda0ce8cc52fd7",
+    "stableReleaseId": "sha256-5434205a0fcd650045f4d368ca2946b7c184808a8b4ae3fef5bfc80dedc44ea2"
+  },
+  "publication": {
+    "state": "waiting_for_beta",
+    "deliveryId": "33293039964.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33293039964",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
+  }
+}
