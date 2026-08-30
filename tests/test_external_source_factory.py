@@ -1432,6 +1432,32 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 factory.validate_registry_and_snapshots(root)
             self.assertTrue(release_id.startswith("sha256-"))
 
+    def test_pre_kms_staging_allows_only_missing_active_first_party_release_sidecars(self) -> None:
+        """The protected publisher may replace sidecars, but cannot mask a bad one."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-pre-kms-sidecars-") as directory:
+            root = Path(directory)
+            self.make_first_party_adoption(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            sidecar = factory.release_path(root, plugin_id).with_name("releases.json.sig.jws.json")
+            sidecar.unlink()
+
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS release sidecar is unavailable"):
+                factory.validate_registry_and_snapshots(root)
+            factory.validate_registry_and_snapshots(
+                root,
+                require_publication_proofs=False,
+                require_active_release_sidecars=False,
+            )
+
+            sidecar.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS release sidecar is invalid"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    require_publication_proofs=False,
+                    require_active_release_sidecars=False,
+                )
+
     def test_first_party_published_status_requires_signed_adoption_and_exact_release_pointers(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-status-") as directory:
             root = Path(directory)

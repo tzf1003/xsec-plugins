@@ -594,7 +594,10 @@ jobs:
         # ordinary source gate stays strict; only this production staging
         # window may opt out, and its generated PR is revalidated strictly
         # before it can merge.
-        run: python scripts/external_source_factory.py validate --allow-unsigned-publication-proofs
+        run: >-
+          python scripts/external_source_factory.py validate
+          --allow-unsigned-publication-proofs
+          --allow-unsigned-active-release-sidecars
       - name: Request KMS sidecars through the production Cloud broker
         if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
         env:

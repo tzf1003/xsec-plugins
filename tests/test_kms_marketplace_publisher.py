@@ -807,6 +807,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("--verify-active-marketplace-signatures", workflow)
         self.assertIn("Refuse to sign while any generated Factory PR awaits review", workflow)
         self.assertIn("Skip a no-op Factory publication without KMS or dispatch", workflow)
+        self.assertIn("--allow-unsigned-active-release-sidecars", workflow)
         self.assertIn('sidecar_paths=()', workflow)
         self.assertIn("only_cleaned_sidecars=true", workflow)
         self.assertIn('git diff --name-status -- .agents/plugins plugins .xsec-factory', workflow)
