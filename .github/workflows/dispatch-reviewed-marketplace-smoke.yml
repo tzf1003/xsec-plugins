@@ -3,6 +3,12 @@ name: Dispatch reviewed merged Marketplace revision to Desktop smoke
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      marketplace_revision:
+        description: Exact reviewed Factory Beta merge SHA to retry while its current status remains waiting_for_smoke
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -10,7 +16,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: xsec-marketplace-reviewed-smoke-${{ github.sha }}
+  group: xsec-marketplace-reviewed-smoke-${{ inputs.marketplace_revision || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -23,6 +29,7 @@ jobs:
     outputs:
       eligible: ${{ steps.classify.outputs.eligible }}
       channel: ${{ steps.classify.outputs.channel }}
+      marketplace_revision: ${{ steps.classify.outputs.marketplace_revision }}
       source_sha: ${{ steps.classify.outputs.source_sha }}
       sources: ${{ steps.classify.outputs.sources }}
       source_app_required: ${{ steps.classify.outputs.source_app_required }}
@@ -35,15 +42,16 @@ jobs:
           # A push runner may start after a newer main commit exists. Inspect
           # the immutable event revision, not the mutable branch ref, so a
           # reviewed publication cannot be stranded by unrelated later work.
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.marketplace_revision || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - name: Classify only a signed generated Beta or Stable merge
         id: classify
         env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          INPUT_MARKETPLACE_REVISION: ${{ inputs.marketplace_revision }}
           REF: ${{ github.ref }}
           REF_PROTECTED: ${{ github.ref_protected }}
         run: |
@@ -52,8 +60,28 @@ jobs:
             echo "Desktop smoke dispatch requires protected refs/heads/main." >&2
             exit 1
           }
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            [[ "$INPUT_MARKETPLACE_REVISION" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "Manual Desktop smoke recovery requires an exact Factory revision SHA." >&2
+              exit 1
+            }
+            AFTER="$INPUT_MARKETPLACE_REVISION"
+            git fetch --no-tags origin "$AFTER" "refs/heads/main:refs/remotes/origin/main"
+            git cat-file -e "$AFTER^{commit}"
+            git merge-base --is-ancestor "$AFTER" origin/main || {
+              echo "Manual Desktop smoke recovery revision is not retained by protected Factory main." >&2
+              exit 1
+            }
+            BEFORE="$(git rev-parse "$AFTER^")"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            BEFORE="$PUSH_BEFORE"
+            AFTER="$(git rev-parse HEAD)"
+          else
+            echo "Desktop smoke dispatch accepts only protected-main pushes or manual recovery." >&2
+            exit 1
+          fi
           [[ "$BEFORE" =~ ^[a-f0-9]{40}$ && "$AFTER" =~ ^[a-f0-9]{40}$ ]] || {
-            echo "Protected main push has invalid Git revision metadata." >&2
+            echo "Desktop smoke dispatch has invalid Factory revision metadata." >&2
             exit 1
           }
           [ "$AFTER" = "$(git rev-parse HEAD)" ] || {
@@ -66,6 +94,10 @@ jobs:
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             echo "No generated Marketplace release transition is present."
             exit 0
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$kind" != "beta" ] && [ "$kind" != "beta-smoke-ready" ]; then
+            echo "Manual Desktop smoke recovery accepts only an already reviewed Beta transition." >&2
+            exit 1
           fi
           # The diff verifier proves the allowed transition and the following
           # verifier authenticates every exact post-merge document byte with
@@ -130,6 +162,29 @@ jobs:
               echo "Stable source does not yet deterministically rebuild Beta for: ${waiting_for_beta[*]}. Desktop smoke is intentionally deferred."
               exit 0
             fi
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              # A recovered revision may be older than the current protected
+              # Factory head. Recheck the live status tree before replaying:
+              # a newer Beta or terminal smoke outcome must make recovery a
+              # no-op rather than redispatching stale artifacts.
+              current_root="$(mktemp -d "$RUNNER_TEMP/xsec-smoke-current.XXXXXX")"
+              cleanup_current_root() {
+                git worktree remove --force "$current_root" >/dev/null 2>&1 || true
+                rm -rf -- "$current_root"
+              }
+              git worktree add --detach "$current_root" origin/main >/dev/null
+              while IFS= read -r promotion; do
+                plugin_id="$(printf '%s' "$promotion" | jq -er .plugin_id)"
+                beta_sha="$(printf '%s' "$promotion" | jq -er .source.sha)"
+                redispatch="$(python scripts/external_source_factory.py --root "$current_root" needs-smoke-redispatch --plugin-id "$plugin_id" --beta-sha "$beta_sha")"
+                [ "$(printf '%s' "$redispatch" | jq -er .redispatch)" = "true" ] || {
+                  cleanup_current_root
+                  echo "Manual Desktop smoke recovery no longer matches the current waiting_for_smoke Beta for ${plugin_id}." >&2
+                  exit 1
+                }
+              done < <(printf '%s' "$result" | jq -rc '.promotions[] | select(.source != null)')
+              cleanup_current_root
+            fi
           fi
           # Use a single source-owner scope and an exact, deduplicated
           # repository list. A candidate that crosses owners fails closed;
@@ -150,6 +205,7 @@ jobs:
           desktop_channel="$kind"
           [ "$desktop_channel" != "beta-smoke-ready" ] || desktop_channel="beta"
           echo "channel=$desktop_channel" >> "$GITHUB_OUTPUT"
+          echo "marketplace_revision=$AFTER" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "sources=$sources" >> "$GITHUB_OUTPUT"
           echo "source_app_required=$(printf '%s' "$source_scope" | jq -er .required)" >> "$GITHUB_OUTPUT"
@@ -159,7 +215,7 @@ jobs:
         if: ${{ steps.classify.outputs.eligible == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          AFTER: ${{ github.sha }}
+          AFTER: ${{ steps.classify.outputs.marketplace_revision }}
         run: |
           set -euo pipefail
           # A protected-main commit can be associated with more than one page
@@ -304,7 +360,7 @@ jobs:
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
           SOURCE_SHA: ${{ needs.verify-reviewed-publication.outputs.source_sha }}
-          MARKETPLACE_REVISION: ${{ github.sha }}
+          MARKETPLACE_REVISION: ${{ needs.verify-reviewed-publication.outputs.marketplace_revision }}
           MARKETPLACE_CHANNEL: ${{ needs.verify-reviewed-publication.outputs.channel }}
         run: |
           set -euo pipefail
