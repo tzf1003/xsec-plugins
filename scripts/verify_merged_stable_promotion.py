@@ -586,6 +586,100 @@ def verify_stable_maintenance(root: Path, before: str, after: str, paths: list[s
     }
 
 
+def verify_source_only_beta(
+    root: Path,
+    before: str,
+    after: str,
+    paths: list[str],
+    *,
+    allow_unsigned_official_status_plugin_id: str | None = None,
+) -> dict[str, object]:
+    """Authenticate one source-only Beta cycle for an existing artifact.
+
+    A split source may add a new Beta commit that deterministically rebuilds an
+    existing releaseId. The Factory must still append and sign the exact source
+    provenance and expose the new Beta/main gate; treating this as ordinary
+    maintenance would silently drop the new source identity, while treating it
+    as a smoke recheck would incorrectly require the prior Beta SHA.
+    """
+
+    require_candidate_revisions(root, before, after)
+    publications = [
+        match.group(1)
+        for path in paths
+        if (match := PUBLICATION_PATH_PATTERN.fullmatch(path))
+    ]
+    statuses = [match.group(1) for path in paths if (match := STATUS_PATH_PATTERN.fullmatch(path))]
+    if len(publications) != 1 or len(statuses) != 1 or publications[0] != statuses[0]:
+        fail("source-only Beta must change one matching provenance and status document")
+    plugin_id = publications[0]
+    release_path = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    release_sidecar = f"{release_path}.sig.jws.json"
+    evidence_path = f".xsec-factory/official-publications/{plugin_id}.json"
+    evidence_proof_path = f".xsec-factory/official-publication-proofs/{plugin_id}.json"
+    status_path = f".xsec-factory/official-status/{plugin_id}.json"
+    status_proof_path = f".xsec-factory/official-status-proofs/{plugin_id}.json"
+    required_paths = {MARKETPLACE_SIDECAR, release_sidecar, evidence_path, evidence_proof_path, status_path}
+    if allow_unsigned_official_status_plugin_id is None:
+        required_paths.add(status_proof_path)
+    elif allow_unsigned_official_status_plugin_id != plugin_id:
+        fail("pending status authentication does not match the source-only Beta plugin")
+    if not required_paths.issubset(paths):
+        fail("source-only Beta must refresh Marketplace, release, provenance, and status sidecars")
+    if allow_unsigned_official_status_plugin_id is None and not git_succeeds(root, ["cat-file", "-e", f"{after}:{status_proof_path}"]):
+        fail("source-only Beta must retain its status KMS proof")
+    if not git_succeeds(root, ["cat-file", "-e", f"{before}:{MARKETPLACE_INDEX}"]) or not git_succeeds(
+        root, ["cat-file", "-e", f"{after}:{MARKETPLACE_INDEX}"]
+    ):
+        fail("source-only Beta must retain the Marketplace index")
+    if git_bytes(root, ["show", f"{before}:{MARKETPLACE_INDEX}"]) != git_bytes(root, ["show", f"{after}:{MARKETPLACE_INDEX}"]):
+        fail("source-only Beta may not rewrite the Marketplace index")
+    if not git_succeeds(root, ["cat-file", "-e", f"{before}:{release_path}"]) or not git_succeeds(
+        root, ["cat-file", "-e", f"{after}:{release_path}"]
+    ):
+        fail("source-only Beta has no retained release index")
+    before_release = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{before}:{release_path}"]))
+    after_release = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{after}:{release_path}"]))
+    if before_release != after_release:
+        fail("source-only Beta rewrote immutable release metadata")
+    beta_release = release_pointer(after_release, "beta")
+    if beta_release is None:
+        fail("source-only Beta requires a current Beta release")
+    source = registry_source_binding(
+        root,
+        before,
+        after,
+        plugin_id=plugin_id,
+        channel="beta",
+        release_id=beta_release,
+    )
+    if source is None:
+        fail("source-only Beta must belong to an active registered source")
+    main_source = beta_main_gate_binding(
+        root,
+        after,
+        plugin_id=plugin_id,
+        release_id=beta_release,
+        beta_source=source,
+    )
+    try:
+        root_resolved = root.resolve(strict=True)
+        active_kms_sidecars = {
+            sidecar_path_for(document).resolve(strict=False).relative_to(root_resolved).as_posix()
+            for document in marketplace_documents(root)
+        }
+    except (MarketplaceKmsPublisherError, OSError, ValueError) as error:
+        raise PromotionVerificationError("source-only Beta has an invalid active KMS document layout") from error
+    for path in paths:
+        if path in required_paths or path in active_kms_sidecars:
+            continue
+        fail(f"source-only Beta changed an unauthorized path: {path}")
+    return {
+        "kind": "beta",
+        "promotions": [{"plugin_id": plugin_id, "release_id": beta_release, "source": source, "main_source": main_source}],
+    }
+
+
 def verify_beta_smoke_ready(
     root: Path,
     before: str,
@@ -820,24 +914,35 @@ def classify_merged_change(
         ):
             # Legacy built-ins can have harmless signed maintenance without a
             # Registry v2 source. Registered Factory evidence is stricter: it
-            # must authenticate as the exact no-pointer Stable completion.
+            # must authenticate as one exact source-only Beta cycle, a
+            # main-gate smoke recheck, or a Stable completion.
             if git_succeeds(root, ["cat-file", "-e", f"{after}:{REGISTRY_PATH}"]):
                 try:
-                    return verify_beta_smoke_ready(
+                    return verify_source_only_beta(
                         root,
                         before,
                         after,
                         paths,
                         allow_unsigned_official_status_plugin_id=allow_unsigned_official_status_plugin_id,
                     )
-                except PromotionVerificationError as beta_error:
+                except PromotionVerificationError as source_beta_error:
                     try:
-                        return verify_stable_maintenance(root, before, after, paths)
-                    except PromotionVerificationError as stable_error:
-                        fail(
-                            "no-pointer Factory change is not a safe Beta smoke or Stable completion: "
-                            f"beta-smoke-ready: {beta_error}; stable-maintenance: {stable_error}"
+                        return verify_beta_smoke_ready(
+                            root,
+                            before,
+                            after,
+                            paths,
+                            allow_unsigned_official_status_plugin_id=allow_unsigned_official_status_plugin_id,
                         )
+                    except PromotionVerificationError as beta_error:
+                        try:
+                            return verify_stable_maintenance(root, before, after, paths)
+                        except PromotionVerificationError as stable_error:
+                            fail(
+                                "no-pointer Factory change is not a safe source-only Beta, Beta smoke, or Stable completion: "
+                                f"source-only-beta: {source_beta_error}; beta-smoke-ready: {beta_error}; "
+                                f"stable-maintenance: {stable_error}"
+                            )
             return {"kind": "maintenance"}
         return {"kind": "none"}
     candidates: list[dict[str, object]] = []
