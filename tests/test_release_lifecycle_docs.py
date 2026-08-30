@@ -123,7 +123,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertNotIn("head_commit.message", dispatcher)
         self.assertIn("reviewThreads(first:100,after:$cursor)", dispatcher)
         self.assertIn("pageInfo{hasNextPage endCursor}", dispatcher)
-        self.assertIn("ref: ${{ github.sha }}", dispatcher)
+        self.assertIn("ref: ${{ inputs.marketplace_revision || github.sha }}", dispatcher)
         self.assertIn("merge_group:", merge_guard)
         self.assertIn("Registered ${repository} ${ref} advanced", merge_guard)
         self.assertIn("Refuse to sign while any generated Factory PR awaits review", publisher)

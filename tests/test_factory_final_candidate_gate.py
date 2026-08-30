@@ -195,6 +195,29 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn(".head_branch == $head_ref", dispatcher)
         self.assertNotIn("any(.pull_requests[]?; .number == $pull_number)", dispatcher)
 
+    def test_dispatcher_manual_recovery_rechecks_current_waiting_beta(self) -> None:
+        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
+
+        # Retrying a lost Desktop dispatch must not turn an arbitrary old
+        # Factory revision into a release. The manual route accepts one exact
+        # protected-main ancestor and rechecks the live status tuple first.
+        for rule in (
+            "workflow_dispatch:",
+            "marketplace_revision:",
+            "Manual Desktop smoke recovery requires an exact Factory revision SHA.",
+            "git merge-base --is-ancestor \"$AFTER\" origin/main",
+            "needs-smoke-redispatch",
+            "manual Desktop smoke recovery requires every promotion to have a registered source",
+            "manual_recovery: ${{ steps.classify.outputs.manual_recovery }}",
+            "recovery_tuples: ${{ steps.classify.outputs.recovery_tuples }}",
+            "Revalidate current Factory recovery tuple immediately before dispatch",
+            "--verify-active-marketplace-signatures",
+            "--beta-release-id \"$beta_release_id\"",
+            "MARKETPLACE_REVISION: ${{ needs.verify-reviewed-publication.outputs.marketplace_revision }}",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, dispatcher)
+
     def test_finalizer_and_dispatcher_accept_the_last_review_thread_page(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")

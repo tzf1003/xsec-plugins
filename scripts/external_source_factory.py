@@ -2827,23 +2827,36 @@ def appended_beta_provenance_matches(
     return False
 
 
-def needs_smoke_redispatch(root: Path, plugin_id: str, *, beta_sha: str) -> dict[str, str]:
+def needs_smoke_redispatch(
+    root: Path,
+    plugin_id: str,
+    *,
+    beta_sha: str,
+    beta_release_id: str,
+) -> dict[str, str]:
     """Report whether an already-signed Beta needs its lost smoke dispatch replayed.
 
     This is intentionally narrow: it never changes a channel, sidecar or
     status.  The protected workflow calls it only after finding no Factory
     diff for a duplicate Beta delivery.  Re-dispatching is safe only while
-    that exact source SHA is still the current waiting-for-smoke Beta.
+    that exact immutable release/source tuple is still the current
+    waiting-for-smoke Beta.
     """
 
     registration = registration_for(root, plugin_id)
     expected_beta_sha = safe_sha(beta_sha, "smoke redispatch Beta source SHA")
+    if not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id):
+        fail("smoke redispatch Beta release ID must be canonical")
     validate_status(root, registration)
     identity = status_beta_identity(root, registration, state_label="current Factory")
     if identity is None:
         return {"redispatch": "false"}
-    state, beta_release_id, recorded_beta_sha = identity
-    if state != "waiting_for_smoke" or beta_release_id is None or recorded_beta_sha != expected_beta_sha:
+    state, recorded_beta_release_id, recorded_beta_sha = identity
+    if (
+        state != "waiting_for_smoke"
+        or recorded_beta_release_id != beta_release_id
+        or recorded_beta_sha != expected_beta_sha
+    ):
         return {"redispatch": "false"}
     return {"redispatch": "true"}
 
@@ -3451,6 +3464,7 @@ def main() -> None:
     redispatch_parser = commands.add_parser("needs-smoke-redispatch")
     redispatch_parser.add_argument("--plugin-id", required=True)
     redispatch_parser.add_argument("--beta-sha", required=True)
+    redispatch_parser.add_argument("--beta-release-id", required=True)
     source_reconcile_parser = commands.add_parser("prepare-reconcile-source")
     source_reconcile_parser.add_argument("--delivery-key", required=True)
     source_reconcile_parser.add_argument("--plugin-id", required=True)
@@ -3562,7 +3576,12 @@ def main() -> None:
                 marketplace_revision=args.marketplace_revision,
             )
         elif args.command == "needs-smoke-redispatch":
-            result = needs_smoke_redispatch(root, args.plugin_id, beta_sha=args.beta_sha)
+            result = needs_smoke_redispatch(
+                root,
+                args.plugin_id,
+                beta_sha=args.beta_sha,
+                beta_release_id=args.beta_release_id,
+            )
         elif args.command == "prepare-reconcile-source":
             result = prepare_reconcile_source(
                 root,
