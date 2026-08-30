@@ -1,4 +1,5 @@
 {
+  ".gitmodules": "dd1d5be5292636f40df2c37448b807ff0d310e4ed340afa89e91749a3be44f9b",
   ".github/workflows/arm-generated-marketplace-final-merge.yml": "1bdabf1fc207b5f3d5a8c5b537640e5e37273147387e0c71f2759a5ddeb0fbdc",
   ".github/workflows/promote-stable.yml": "ce6a888195c148082ce839803ec335c1c41f637dfb985b02e107bac44a5b1977",
   ".github/workflows/publish.yml": "a6609af8bfda57cdbc90a00b74bda10e5f727a52881d9937af04cd0dd71c28f1",

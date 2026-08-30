@@ -113,9 +113,11 @@ jobs:
           if [ -e "$CANDIDATE/.xsec-factory/layout-migration.json" ]; then
             # The trusted main verifier treats the candidate only as data and
             # proves it is the exact signed-history-to-snapshot transition.
-            python scripts/verify_factory_layout_migration.py --root "$CANDIDATE" --baseline-root . --before "$BEFORE" --after "$AFTER"
-            result='{"kind":"factory-layout-source-migration","sources":[]}'
-            sources='[]'
+            migration="$(python scripts/verify_factory_layout_migration.py --root "$CANDIDATE" --baseline-root . --before "$BEFORE" --after "$AFTER" --json)"
+            sources="$(printf '%s' "$migration" | jq -ce '
+              .sources | if type == "array" and length > 0 and all(.[]; (.repository | type == "string") and .ref == "refs/heads/beta" and (.sha | test("^[a-f0-9]{40}$"))) then . else error("invalid layout submodule source") end
+            ')"
+            result="$(jq -cn --argjson sources "$sources" '{kind:"factory-layout-source-migration",sources:$sources}')"
           elif [[ "$HEAD_REF" == xsec-marketplace/stage-first-party-adoption-* || "$HEAD_REF" == xsec-marketplace/adopt-first-party-* ]]; then
             # Adoption is a two-step non-release transition. The reviewed
             # staging PR adds one unsigned assertion; the KMS-generated
