@@ -401,7 +401,7 @@ jobs:
               candidate_registered="$(jq -cer --arg plugin_id "$PLUGIN_ID" '
                 .plugins | [ .[] | select(.pluginId == $plugin_id) ]
                 | if length == 1 then .[0] else error("candidate Registry entry is ambiguous") end
-              ' "$candidate_root/.xsec-factory/official-registry.json)"
+              ' "$candidate_root/.xsec-factory/official-registry.json")"
               [ "$candidate_registered" = "$registered" ] || { cleanup_candidate; continue; }
               verification="$(python scripts/kms_marketplace_publisher.py --root "$candidate_root" --verify-active-marketplace-signatures --allow-unsigned-official-status-plugin-id "$PLUGIN_ID")"
               generation_base="$(printf '%s' "$verification" | jq -er .source_revision)"
