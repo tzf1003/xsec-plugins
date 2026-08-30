@@ -888,6 +888,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         # A generated status is mutable until this production-only workflow
         # recomputes the exact protected main gate from a sealed source fetch.
         self.assertIn("check-main-rebuild", reconcile)
+        self.assertIn('--json check-main-rebuild', reconcile)
         self.assertIn("xsec-status-main.XXXXXX", reconcile)
         self.assertIn("Candidate status does not match the recomputed registered main gate.", reconcile)
         self.assertIn("SOURCE_STABLE_REF", reconcile)

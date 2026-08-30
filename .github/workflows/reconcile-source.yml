@@ -584,7 +584,7 @@ jobs:
                 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
                 git -C "$source_main_root" -c core.hooksPath=/dev/null -c core.autocrlf=false \
                   checkout --detach --quiet refs/remotes/xsec-reconcile/registered-main
-              rebuilt_gate="$(python scripts/external_source_factory.py --root "$candidate_root" check-main-rebuild \
+              rebuilt_gate="$(python scripts/external_source_factory.py --root "$candidate_root" --json check-main-rebuild \
                 --plugin-id "$PLUGIN_ID" --source-root "$source_main_root")"
               expected_state="$(printf '%s' "$rebuilt_gate" | jq -er .state)"
               expected_release="$(printf '%s' "$rebuilt_gate" | jq -er .beta_release_id)"
