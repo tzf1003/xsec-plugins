@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import hashlib
 import json
 import shutil
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -461,6 +463,34 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 ],
             ):
                 factory.main()
+
+    def test_cli_can_emit_a_canonical_json_main_rebuild_result(self) -> None:
+        """Workflow consumers must not parse the legacy human-readable output as JSON."""
+        with tempfile.TemporaryDirectory(prefix="xsec-external-cli-json-") as directory:
+            root = Path(directory)
+            source = self.make_source(root / "source")
+            self.make_factory(root, self.registry_entry())
+            self.stage_and_record_beta(root, source)
+            output = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "external_source_factory.py",
+                    "--root",
+                    str(root),
+                    "--json",
+                    "check-main-rebuild",
+                    "--plugin-id",
+                    PLUGIN_ID,
+                    "--source-root",
+                    str(source),
+                ],
+            ), redirect_stdout(output):
+                factory.main()
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["plugin_id"], PLUGIN_ID)
+            self.assertIn(result["state"], {"waiting_for_beta", "waiting_for_smoke"})
 
     def test_beta_snapshot_generates_discoverable_marketplace_entry_and_provenance(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-beta-") as directory:

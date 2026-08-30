@@ -3387,6 +3387,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the command result as one canonical JSON document",
+    )
+    parser.add_argument(
         "--github-output",
         type=Path,
         default=Path(os.environ["GITHUB_OUTPUT"]) if os.environ.get("GITHUB_OUTPUT") else None,
@@ -3598,7 +3603,10 @@ def main() -> None:
         write_outputs(result, args.github_output)
     except ExternalSourceFactoryError as error:
         raise SystemExit(f"official external source Factory failed: {error}") from error
-    print(" ".join(f"{key}={value}" for key, value in result.items()))
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    else:
+        print(" ".join(f"{key}={value}" for key, value in result.items()))
 
 
 if __name__ == "__main__":
