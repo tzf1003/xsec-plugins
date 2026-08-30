@@ -2432,13 +2432,22 @@ def validate_publication_proof(root: Path, registration: Registration) -> None:
         ) from error
 
 
-def validate_disabled_release_sidecar(root: Path, registration: Registration) -> None:
+def validate_disabled_release_sidecar(
+    root: Path,
+    registration: Registration,
+    *,
+    require_release_sidecar: bool = True,
+) -> None:
     """Require the signed immutable release document retained by a withdrawal."""
 
     release = release_path(root, registration.plugin_id)
     sidecar = release.with_name(release.name + ".sig.jws.json")
-    if is_link(sidecar) or not sidecar.is_file():
+    if is_link(sidecar):
         fail(f"disabled external official plugin {registration.plugin_id} KMS release sidecar is unavailable")
+    if not sidecar.is_file():
+        if require_release_sidecar:
+            fail(f"disabled external official plugin {registration.plugin_id} KMS release sidecar is unavailable")
+        return
     subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
     document = MarketplaceDocument("xsec.plugin-marketplace.release", subject, release)
     try:
@@ -3250,7 +3259,12 @@ def validate_registry_and_snapshots(
                 # the status transition.
                 if not has_adoption or is_link(adoption) or not adoption.is_file() or has_adoption_sidecar:
                     fail(f"pending first-party plugin {registration.plugin_id} must retain only one unsigned staged adoption proof")
-                validate_adoption(root, registration, require_kms_proof=False)
+                validate_adoption(
+                    root,
+                    registration,
+                    require_kms_proof=False,
+                    require_active_release_sidecar=require_active_release_sidecars,
+                )
             manifest = source_manifest(snapshot, registration)
             try:
                 document = load_release_document(release_path(root, registration.plugin_id), registration.plugin_id)
@@ -3260,8 +3274,17 @@ def validate_registry_and_snapshots(
             if manifest.get("version") != beta.get("version"):
                 fail(f"pending first-party plugin {registration.plugin_id} snapshot does not match its Beta release")
             validate_disabled_snapshot_artifacts(root, registration, snapshot, document, beta)
-            validate_disabled_release_sidecar(root, registration)
-            validate_status(root, registration, require_publication_proofs=require_publication_proofs)
+            validate_disabled_release_sidecar(
+                root,
+                registration,
+                require_release_sidecar=require_active_release_sidecars,
+            )
+            validate_status(
+                root,
+                registration,
+                require_publication_proofs=require_publication_proofs,
+                require_active_release_sidecar=require_active_release_sidecars,
+            )
             continue
         if registration.status == "disabled":
             if entry is not None:

@@ -1480,6 +1480,37 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                     require_active_release_sidecars=False,
                 )
 
+    def test_pre_kms_staging_allows_missing_pending_adoption_release_sidecar(self) -> None:
+        """A discoverable pending adoption uses the same bounded KMS window."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-pending-adoption-pre-kms-sidecars-") as directory:
+            root = Path(directory)
+            self.make_first_party_adoption(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            registry_path = root / ".xsec-factory" / "official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["status"] = "pending-adoption"
+            write_json(registry_path, registry)
+            (root / factory.ADOPTION_PROOFS_RELATIVE_PATH / f"{plugin_id}.json").unlink()
+            sidecar = factory.release_path(root, plugin_id).with_name("releases.json.sig.jws.json")
+            sidecar.unlink()
+
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS release sidecar is unavailable"):
+                factory.validate_registry_and_snapshots(root)
+            factory.validate_registry_and_snapshots(
+                root,
+                require_publication_proofs=False,
+                require_active_release_sidecars=False,
+            )
+
+            sidecar.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "KMS release sidecar is invalid"):
+                factory.validate_registry_and_snapshots(
+                    root,
+                    require_publication_proofs=False,
+                    require_active_release_sidecars=False,
+                )
+
     def test_first_party_published_status_requires_signed_adoption_and_exact_release_pointers(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-status-") as directory:
             root = Path(directory)
