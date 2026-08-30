@@ -92,7 +92,16 @@ jobs:
           }
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
-          if [ "$kind" != "beta" ] && [ "$kind" != "stable" ] && [ "$kind" != "beta-smoke-ready" ]; then
+          # Stable is promoted only after the exact Beta tuple already passed
+          # the four-platform Desktop smoke and the smoke callback completed.
+          # Re-dispatching that matrix after this pointer-only completion would
+          # consume quota without adding a release gate or changing status.
+          if [ "$kind" = "stable" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "Stable promotion is already bound to its accepted Beta Desktop smoke; no duplicate Desktop dispatch is needed."
+            exit 0
+          fi
+          if [ "$kind" != "beta" ] && [ "$kind" != "beta-smoke-ready" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             echo "No generated Marketplace release transition is present."
             exit 0
@@ -394,7 +403,7 @@ jobs:
               exit 1
             }
           done < <(printf '%s' "$RECOVERY_TUPLES" | jq -rc '.[]')
-      - name: Dispatch the reviewed Beta or Stable revision to Desktop smoke
+      - name: Dispatch the reviewed Beta revision to Desktop smoke
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
           SOURCE_SHA: ${{ needs.verify-reviewed-publication.outputs.source_sha }}

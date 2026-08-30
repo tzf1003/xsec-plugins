@@ -219,6 +219,22 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)
 
+    def test_dispatcher_never_repeats_desktop_smoke_for_a_stable_completion(self) -> None:
+        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
+        stable_skip = '''if [ "$kind" = "stable" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "Stable promotion is already bound to its accepted Beta Desktop smoke; no duplicate Desktop dispatch is needed."
+            exit 0
+          fi'''
+
+        self.assertIn(stable_skip, dispatcher)
+        self.assertNotIn('[ "$kind" != "beta" ] && [ "$kind" != "stable" ]', dispatcher)
+        self.assertIn("Dispatch the reviewed Beta revision to Desktop smoke", dispatcher)
+        self.assertNotIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
+        # The no-op must happen before signatures, source-App tokens, and the
+        # production Desktop-dispatch job can consume any quota.
+        self.assertLess(dispatcher.index(stable_skip), dispatcher.index("verification=\"$(python scripts/kms_marketplace_publisher.py"))
+
     def test_finalizer_and_dispatcher_accept_the_last_review_thread_page(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")

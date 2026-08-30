@@ -236,7 +236,8 @@ branch protection 收敛为严格的 `source-gate`、`enforce_admins` 和 conver
 token，并且只用它合入精确 PR。该 App 只有 `contents: write`，是唯一
 允许绕过持续 pending Factory gate 的 Ruleset 身份。缺失任一环境审批或 Finalizer 配置时的安全回退是
 PR 保持 pending 并修复/re-run gate，绝不临时降低保护或手工绕过。合并后的 protected-main dispatcher 再次验证相同 head、KMS
-sidecar、source gate、Codex review/已解决 threads（使用同一严格的官方 completed-summary 回退），才会向 Desktop 发送 Beta 或 Stable smoke。
+sidecar、source gate、Codex review/已解决 threads（使用同一严格的官方 completed-summary 回退），只会向 Desktop 发送 Beta smoke。
+Stable completion 已由其精确 Beta smoke callback 约束，因而在这个阶段明确不重复发送 Desktop 矩阵。
 它从 release diff 推导频道，不信任可编辑的 PR title 或 merge subject；任意普通 main push、
 adoption 或 sidecar-only repair 都不能触发 smoke。
 
