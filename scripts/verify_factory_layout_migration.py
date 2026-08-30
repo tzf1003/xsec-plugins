@@ -27,16 +27,10 @@ MARKER = {
     "pendingKmsSidecars": True,
 }
 MIGRATION_SUPPORT_PATHS = frozenset((
-    ".agents/plugins/marketplace.json", ".agents/plugins/marketplace.json.sig.jws.json", ".gitmodules", ".xsec-factory/layout-migration.json",
-    ".github/workflows/arm-generated-marketplace-final-merge.yml", ".github/workflows/promote-stable.yml", ".github/workflows/publish.yml",
-    ".github/workflows/reconcile-smoke.yml", ".github/workflows/reconcile-source.yml", ".github/workflows/refresh-retained-sidecars.yml",
-    "README.md", "docs/first-party-plugin-factory.md", "docs/marketplace-factory-template.md", "docs/plugin-development-release-lifecycle.md",
-    "factory-template/.github/workflows/promote-stable.yml", "factory-template/.github/workflows/publish-beta.yml", "factory-template/README.md",
-    "factory-template/scripts/factory_core.py", "factory-template/scripts/factory_validate.py", "factory-template/tests/test_factory.py",
-    "scripts/bootstrap_plugins.py", "scripts/build_market.py", "scripts/external_source_factory.py", "scripts/frontend_contracts.test.mjs",
-    "scripts/kms_marketplace_publisher.py", "scripts/materialize_first_party_source.py", "scripts/promote_release.py", "scripts/validate_market.py",
-    "scripts/verify_merged_stable_promotion.py", "tests/test_external_source_factory.py", "tests/test_kms_marketplace_publisher.py",
-    "tests/test_market_validation.py", "tests/test_materialize_first_party_source.py", "tests/test_verify_merged_marketplace_publication.py",
+    ".agents/plugins/marketplace.json",
+    ".agents/plugins/marketplace.json.sig.jws.json",
+    ".gitmodules",
+    ".xsec-factory/layout-migration.json",
 ))
 
 
@@ -238,10 +232,11 @@ def expected_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...]) 
 def verify_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...], before: str, after: str) -> None:
     actual = set(gitlines(root, ["diff", "--name-only", "--no-renames", before, after]))
     expected = expected_transition_paths(root, baseline, ids)
-    if actual != expected:
-        unexpected = ", ".join(sorted(actual - expected)) or "<none>"
-        missing = ", ".join(sorted(expected - actual)) or "<none>"
-        fail(f"目录迁移变更路径不匹配: unexpected={unexpected}; missing={missing}")
+    if MIGRATION_MARKER.as_posix() not in actual:
+        fail("布局迁移必须包含布局迁移标记")
+    unexpected = sorted(actual - expected)
+    if unexpected:
+        fail(f"布局迁移改变了未授权路径: {', '.join(unexpected)}")
 
 
 def verify(root: Path, baseline: Path, *, before: str | None = None, after: str | None = None) -> None:

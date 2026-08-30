@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
 import sys
@@ -7,7 +10,63 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from verify_factory_layout_migration import expected_snapshot_index, plugin_ids
+from verify_factory_layout_migration import (
+    FactoryLayoutMigrationError,
+    MIGRATION_SUPPORT_PATHS,
+    expected_snapshot_index,
+    plugin_ids,
+    verify_transition_paths,
+)
+
+
+PLUGIN_ID = "com.example.sample"
+
+
+def git(root: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", *arguments], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+    )
+    return completed.stdout.decode("utf-8").strip()
+
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def commit(root: Path, message: str) -> str:
+    git(root, "add", "--all")
+    git(root, "commit", "--quiet", "-m", message)
+    return git(root, "rev-parse", "HEAD")
+
+
+def write_layout_transition(root: Path) -> None:
+    write_json(
+        root / ".agents/plugins/marketplace.json",
+        {
+            "name": "XSEC",
+            "plugins": [
+                {
+                    "name": PLUGIN_ID,
+                    "source": {"source": "local", "path": f"./.xsec-factory/snapshots/{PLUGIN_ID}"},
+                }
+            ],
+        },
+    )
+    write_json(
+        root / ".xsec-factory/layout-migration.json",
+        {
+            "schemaVersion": 1,
+            "layout": "git-subprojects-with-release-snapshots",
+            "pendingKmsSidecars": True,
+        },
+    )
+    snapshot = root / f".xsec-factory/snapshots/{PLUGIN_ID}/plugin.json"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text('{"name": "sample"}\n', encoding="utf-8")
+    sidecar = root / ".agents/plugins/marketplace.json.sig.jws.json"
+    if sidecar.exists():
+        sidecar.unlink()
 
 
 class FactoryLayoutMigrationTests(unittest.TestCase):
@@ -71,6 +130,58 @@ class FactoryLayoutMigrationTests(unittest.TestCase):
 
         self.assertIn("Pending Factory layout migration cannot dispatch Desktop smoke.", workflow)
         self.assertIn('echo "eligible=false" >> "$GITHUB_OUTPUT"', workflow)
+
+    def test_layout_support_paths_exclude_privileged_workflows_and_scripts(self) -> None:
+        privileged = [path for path in MIGRATION_SUPPORT_PATHS if path.startswith((".github/", "scripts/", "factory-template/"))]
+        self.assertEqual(privileged, [])
+
+    def _baseline_repository(self, root: Path) -> str:
+        write_json(
+            root / ".agents/plugins/marketplace.json",
+            {
+                "name": "XSEC",
+                "plugins": [
+                    {
+                        "name": PLUGIN_ID,
+                        "source": {"source": "local", "path": f"./plugins/{PLUGIN_ID}"},
+                    }
+                ],
+            },
+        )
+        (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("{}\n", encoding="utf-8")
+        plugin = root / f"plugins/{PLUGIN_ID}/plugin.json"
+        plugin.parent.mkdir(parents=True, exist_ok=True)
+        plugin.write_text('{"name": "sample"}\n', encoding="utf-8")
+        git(root, "init", "--quiet", "--initial-branch=main")
+        git(root, "config", "user.name", "Layout Test")
+        git(root, "config", "user.email", "layout@example.invalid")
+        return commit(root, "baseline factory layout")
+
+    def test_layout_migration_rejects_an_unrelated_workflow_edit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-layout-extra-") as directory:
+            root = Path(directory)
+            before = self._baseline_repository(root)
+            write_layout_transition(root)
+            workflow = root / ".github/workflows/publish.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("name: backdoor\n", encoding="utf-8")
+            after = commit(root, "layout migration plus privileged workflow")
+            baseline = Path(directory) / "baseline"
+            git(root, "worktree", "add", "--detach", str(baseline), before)
+
+            with self.assertRaisesRegex(FactoryLayoutMigrationError, "未授权路径"):
+                verify_transition_paths(root, baseline, (PLUGIN_ID,), before, after)
+
+    def test_layout_migration_allows_only_the_layout_transition_paths(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-layout-exact-") as directory:
+            root = Path(directory)
+            before = self._baseline_repository(root)
+            write_layout_transition(root)
+            after = commit(root, "exact layout migration")
+            baseline = Path(directory) / "baseline"
+            git(root, "worktree", "add", "--detach", str(baseline), before)
+
+            verify_transition_paths(root, baseline, (PLUGIN_ID,), before, after)
 
 
 if __name__ == "__main__":
