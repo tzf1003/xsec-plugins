@@ -52,7 +52,7 @@ jobs:
           # status would reflect only the final page and an ordinary PR sharing
           # this SHA could overwrite a Factory candidate's pending status.
           main_prs="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls?state=all&base=main&per_page=100")"
-          factory_for_sha="$(printf '%s' "$main_prs" | jq -e --arg repo "$REPOSITORY" --arg sha "$PR_HEAD_SHA" 'any(.[][]; .head.sha == $sha and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-") or startswith("xsec-marketplace/stage-first-party-adoption-") or startswith("xsec-marketplace/adopt-first-party-") or startswith("xsec-marketplace/refresh-retained-sidecar-")))' >/dev/null && echo true || echo false)"
+          factory_for_sha="$(printf '%s' "$main_prs" | jq -e --arg repo "$REPOSITORY" --arg sha "$PR_HEAD_SHA" 'any(.[][]; .head.sha == $sha and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-") or startswith("xsec-marketplace/stage-first-party-adoption-") or startswith("xsec-marketplace/adopt-first-party-") or startswith("xsec-marketplace/refresh-retained-sidecar-") or startswith("xsec-marketplace/layout-signatures-")))' >/dev/null && echo true || echo false)"
           # A Factory release diff may be cherry-picked onto a normally named
           # branch, with a no-op commit making its SHA distinct from every
           # generated branch.  Classify that *content* as privileged too.
@@ -67,6 +67,7 @@ jobs:
           changed_file_count="$(printf '%s' "$pr_metadata" | jq -er '.changed_files | if type == "number" and floor == . and . >= 0 then . else error("invalid changed_files") end')"
           pr_files="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100")"
           returned_file_count="$(printf '%s' "$pr_files" | jq -er '[.[][]] | if all(.[]; type == "object" and (.filename | type == "string")) then length else error("invalid PR file response") end')"
+          layout_migration="$(printf '%s' "$pr_files" | jq -e 'any(.[][]; .filename == ".xsec-factory/layout-migration.json")' >/dev/null && echo true || echo false)"
           if [ "$returned_file_count" -ne "$changed_file_count" ]; then
             # GitHub bounds this endpoint for huge diffs. Its incomplete
             # content inventory must never produce a not-applicable success.
@@ -81,10 +82,15 @@ jobs:
             ' >/dev/null && echo true || echo false)"
           fi
           case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in
-            "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/stage-first-party-adoption-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*) event_factory=true ;;
+            "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/stage-first-party-adoption-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*|"$REPOSITORY":xsec-marketplace/layout-signatures-*) event_factory=true ;;
             *) event_factory=false ;;
           esac
-          if [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ]; then
+          if [ "$layout_migration" = "true" ]; then
+            # A layout marker is a one-time source migration, not a release
+            # candidate. The required source gate verifies its exact diff,
+            # prior signatures and Git subprojects before this can be merged.
+            echo "factory_generated=false" >> "$GITHUB_OUTPUT"
+          elif [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ]; then
             echo "factory_generated=true" >> "$GITHUB_OUTPUT"
           else
             # An external fork or any non-Factory same-base branch cannot

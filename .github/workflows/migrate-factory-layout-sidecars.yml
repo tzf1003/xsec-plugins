@@ -1,0 +1,174 @@
+name: Re-sign migrated plugin factory layout
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: xsec-marketplace-publish-main
+  cancel-in-progress: false
+
+jobs:
+  enforce-migration-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a protected main manual dispatch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "Factory layout migration is manual only." >&2; exit 1; }
+          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
+            echo "Factory layout migration requires protected refs/heads/main." >&2
+            exit 1
+          }
+  sign-and-open-pr:
+    needs: enforce-migration-ref
+    if: ${{ needs.enforce-migration-ref.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Require the protected marketplace publication token before checkout or KMS
+        env:
+          XSEC_MARKETPLACE_PUBLISH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+        run: |
+          [ -n "$XSEC_MARKETPLACE_PUBLISH_TOKEN" ] || {
+            echo "The protected marketplace publication token is required before Factory layout re-signing." >&2
+            exit 1
+          }
+      - name: Check out current protected main after acquiring the publication slot
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/heads/main
+          token: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+      - name: Record the current protected source revision and require a clean checkout
+        id: current-main
+        run: |
+          set -euo pipefail
+          source_revision="$(git rev-parse HEAD)"
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not protected main." >&2; exit 1; }
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)" || {
+            echo "The protected checkout is unexpectedly dirty before Factory layout re-signing." >&2
+            exit 1
+          }
+          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
+      - name: Require the pending layout migration state
+        run: |
+          set -euo pipefail
+          jq -e '
+            . == {
+              schemaVersion: 1,
+              layout: "git-subprojects-with-release-snapshots",
+              pendingKmsSidecars: true
+            }
+          ' .xsec-factory/layout-migration.json >/dev/null
+          test ! -e .agents/plugins/marketplace.json.sig.jws.json
+      - name: Refuse to sign while any generated Factory PR awaits review
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          pending="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" |
+              jq -r --arg repository "$GITHUB_REPOSITORY" '
+                .[] |
+                select(.head.repo.full_name == $repository) |
+                .head.ref |
+                select(startswith("xsec-marketplace/"))
+              '
+          )"
+          if [ -n "$pending" ]; then
+            printf 'A generated Marketplace PR is still awaiting source/Codex review and protected merge:\n%s\n' "$pending" >&2
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Verify the unsigned migration state before KMS
+        run: |
+          set -euo pipefail
+          python scripts/build_market.py --clean --output-root "$RUNNER_TEMP/xsec-marketplace-build"
+          python scripts/validate_market.py source --source-root . --built-root "$RUNNER_TEMP/xsec-marketplace-build"
+          python scripts/external_source_factory.py validate \
+            --allow-unsigned-publication-proofs \
+            --allow-unsigned-active-release-sidecars
+      - name: Request replacement Marketplace sidecars through the production Cloud broker
+        env:
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
+        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status
+      - name: Verify the replacement sidecars before opening a pull request
+        env:
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+          python scripts/kms_marketplace_publisher.py --root . --validate-only --exclude-official-status
+          python scripts/kms_marketplace_publisher.py --root . --verify-active-marketplace-signatures
+          python scripts/external_source_factory.py validate
+          rm .xsec-factory/layout-migration.json
+      - name: Require the exact sidecar and marker transition
+        run: |
+          set -euo pipefail
+          mapfile -t expected < <(
+            {
+              echo .xsec-factory/layout-migration.json
+              PYTHONPATH=scripts python - <<'PY'
+          from pathlib import Path
+          from kms_marketplace_publisher import marketplace_documents, sidecar_path_for, without_official_status_documents
+
+          root = Path.cwd().resolve()
+          for document in without_official_status_documents(marketplace_documents(root)):
+              print(sidecar_path_for(document).relative_to(root).as_posix())
+          PY
+            } | LC_ALL=C sort -u
+          )
+          mapfile -t changed < <(
+            { git diff --name-only --no-renames HEAD; git ls-files --others --exclude-standard; } | LC_ALL=C sort -u
+          )
+          [ "${#changed[@]}" -eq "${#expected[@]}" ] || {
+            printf 'Unexpected Factory layout migration paths:\n%s\n' "${changed[*]:-<none>}" >&2
+            exit 1
+          }
+          for index in "${!expected[@]}"; do
+            [ "${changed[$index]}" = "${expected[$index]}" ] || {
+              printf 'Unexpected Factory layout migration paths:\n%s\n' "${changed[*]:-<none>}" >&2
+              exit 1
+            }
+          done
+      - name: Open the signed Factory layout pull request for independent review
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          git add -A .agents/plugins .xsec-factory
+          git diff --cached --quiet && { echo "Factory layout migration did not produce a signed transition." >&2; exit 1; }
+          git config user.name "xsec-marketplace[bot]"
+          git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
+          git commit -m "chore: re-sign migrated factory layout"
+          generated_revision="$(git rev-parse HEAD)"
+          branch="xsec-marketplace/layout-signatures-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch"
+          git push --set-upstream origin "$branch"
+          pull_url="$(gh pr create --base main --head "$branch" --title "chore: re-sign migrated factory layout" --body "Generated by protected Factory migration workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It removes the reviewed pending-layout marker and adds only KMS sidecars for the existing immutable index, release histories and Factory provenance. It does not publish a new plugin version or move a channel pointer.")"
+          pull_number="$(gh pr view "$pull_url" --json number --jq .number)"
+          gh workflow run validate.yml --ref "$branch"
+          review_body="@codex review"$'\n\n'"This PR was generated by protected Factory layout migration ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It re-signs existing immutable records at their new canonical paths and removes the one-time pending marker. Do not merge automatically."
+          gh pr comment "$pull_number" --body "$review_body"
+          {
+            echo "## Factory layout signature migration PR"
+            echo
+            echo "$pull_url"
+            echo
+            echo "The workflow intentionally does **not** merge this PR. It requires Codex review and a protected-branch merge."
+          } >> "$GITHUB_STEP_SUMMARY"

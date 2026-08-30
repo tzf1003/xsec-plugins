@@ -80,7 +80,7 @@ jobs:
             exit 1
           }
           case "$head_ref" in
-            xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*) ;;
+            xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
             *) echo "Final gate accepts only protected Factory publication branches." >&2; exit 1 ;;
           esac
           [[ "$base_sha" =~ ^[a-f0-9]{40}$ && "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
@@ -136,6 +136,43 @@ jobs:
               | if all(.[]; (.repository | type == "string") and (.ref == "refs/heads/beta" or .ref == "refs/heads/main") and (.sha | test("^[a-f0-9]{40}$"))) then . else error("invalid adoption source heads") end
             ' "$CANDIDATE/$adoption_path")"
             result="$(jq -cn --arg plugin_id "$plugin_id" --argjson sources "$sources" '{kind:"adoption",plugin_id:$plugin_id,sources:$sources}')"
+          elif [[ "$HEAD_REF" == xsec-marketplace/layout-signatures-* ]]; then
+            test -f .xsec-factory/layout-migration.json || {
+              echo "Protected main no longer contains the pending Factory layout marker." >&2
+              exit 1
+            }
+            test ! -e "$CANDIDATE/.xsec-factory/layout-migration.json" || {
+              echo "Factory layout signature candidate must remove the pending marker." >&2
+              exit 1
+            }
+            mapfile -t expected < <(
+              {
+                echo .xsec-factory/layout-migration.json
+                PYTHONPATH=scripts python - <<'PY'
+          import os
+          from pathlib import Path
+          from kms_marketplace_publisher import marketplace_documents, sidecar_path_for, without_official_status_documents
+
+          root = Path(os.environ["CANDIDATE"]).resolve()
+          for document in without_official_status_documents(marketplace_documents(root)):
+              print(sidecar_path_for(document).relative_to(root).as_posix())
+          PY
+              } | LC_ALL=C sort -u
+            )
+            mapfile -t changed < <(git -C "$CANDIDATE" diff --name-only --no-renames "$BEFORE" "$AFTER" | LC_ALL=C sort -u)
+            [ "${#changed[@]}" -eq "${#expected[@]}" ] || { printf 'Unexpected Factory layout signature paths:\n%s\n' "${changed[*]:-<none>}" >&2; exit 1; }
+            for index in "${!expected[@]}"; do
+              [ "${changed[$index]}" = "${expected[$index]}" ] || { printf 'Unexpected Factory layout signature paths:\n%s\n' "${changed[*]:-<none>}" >&2; exit 1; }
+            done
+            verification="$(python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-active-marketplace-signatures)"
+            source_sha="$(printf '%s' "$verification" | jq -er .source_revision)"
+            git -C "$CANDIDATE" merge-base --is-ancestor "$source_sha" "$AFTER" || {
+              echo "Factory layout sidecars are not bound to a retained protected revision." >&2
+              exit 1
+            }
+            python scripts/external_source_factory.py --root "$CANDIDATE" validate
+            result='{"kind":"factory-layout-sidecar-migration","sources":[]}'
+            sources='[]'
           elif [[ "$HEAD_REF" == xsec-marketplace/refresh-retained-sidecar-* ]]; then
             # A sidecar repair is a privileged Factory candidate even though
             # it does not move a channel pointer. It must remain pending until

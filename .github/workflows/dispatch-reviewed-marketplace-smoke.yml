@@ -90,6 +90,11 @@ jobs:
             echo "Checkout does not match the pushed protected-main revision." >&2
             exit 1
           }
+          if [ -f .xsec-factory/layout-migration.json ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "Pending Factory layout migration cannot dispatch Desktop smoke."
+            exit 0
+          fi
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
           if [ "$kind" != "beta" ] && [ "$kind" != "beta-smoke-ready" ] && [ "$kind" != "stable" ]; then
