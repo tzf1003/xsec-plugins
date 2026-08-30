@@ -415,7 +415,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             )
             self.assertEqual(
                 publisher.sidecar_path_for(provenance),
-                root / ".xsec-factory" / "official-publication-proofs" / "com.example.alpha.json",
+                root.resolve() / ".xsec-factory" / "official-publication-proofs" / "com.example.alpha.json",
             )
 
             written = publisher.publish_sidecars(root, REVISION, self.broker_response)
@@ -438,7 +438,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             self.assertEqual(provenance.subject, ".xsec-factory/official-adoptions/com.xsec.workspace.sub-agent.json")
             self.assertEqual(
                 publisher.sidecar_path_for(provenance),
-                root / ".xsec-factory" / "official-adoption-proofs" / "com.xsec.workspace.sub-agent.json",
+                root.resolve() / ".xsec-factory" / "official-adoption-proofs" / "com.xsec.workspace.sub-agent.json",
             )
 
             written = publisher.publish_documents([provenance], REVISION, self.broker_response)
@@ -510,7 +510,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             self.assertEqual(status_document.subject, ".xsec-factory/official-status/com.example.alpha.json")
             self.assertEqual(
                 publisher.sidecar_path_for(status_document),
-                root / ".xsec-factory" / "official-status-proofs" / "com.example.alpha.json",
+                root.resolve() / ".xsec-factory" / "official-status-proofs" / "com.example.alpha.json",
             )
 
             written = publisher.publish_sidecars(root, REVISION, self.broker_response)

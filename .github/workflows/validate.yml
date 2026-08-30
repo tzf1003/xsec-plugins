@@ -57,6 +57,17 @@ jobs:
           BASELINE_ROOT: ${{ steps.baseline.outputs.root }}
         run: |
           set -euo pipefail
+          if [ -e .xsec-factory/layout-migration.json ]; then
+            [ "$BASELINE_AVAILABLE" = "true" ] || {
+              echo "Factory layout migration requires a trusted pre-migration baseline." >&2
+              exit 1
+            }
+            python scripts/verify_factory_layout_migration.py --root . --baseline-root "$BASELINE_ROOT"
+            python scripts/external_source_factory.py validate \
+              --allow-unsigned-publication-proofs \
+              --allow-unsigned-active-release-sidecars
+            exit 0
+          fi
           args=()
           if [ "$BASELINE_AVAILABLE" = "true" ]; then
             args=(--baseline-root "$BASELINE_ROOT")
