@@ -23,6 +23,7 @@ class ReconcileSourceWorkflowTests(unittest.TestCase):
         for name in (
             "Controlled supersede of an obsolete same-plugin Beta candidate",
             "Authenticate, sign, and source-gate the exact generated Beta candidate",
+            "Authenticate, sign, and source-gate every exact smoke completion candidate",
         ):
             with self.subTest(name=name):
                 step = f"      - name: {name}\n"
@@ -31,6 +32,7 @@ class ReconcileSourceWorkflowTests(unittest.TestCase):
                 boundaries = [
                     source.find("\n      - name:", run),
                     source.find("\n  reconcile-smoke:", run),
+                    len(source),
                 ]
                 end = min(boundary for boundary in boundaries if boundary >= 0)
                 script = "\n".join(

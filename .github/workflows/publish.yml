@@ -511,6 +511,25 @@ jobs:
               --stable-sha "$SOURCE_SHA" --state promoting_stable --delivery-id "$DELIVERY_ID" \
               --factory-run-url "$FACTORY_RUN_URL"
           fi
+      - name: Remove KMS sidecars made stale by an immutable Factory update
+        # A Stable promotion changes a retained releases.json without running
+        # build_market --clean. Its previous KMS sidecar therefore cannot be
+        # validated in the short pre-KMS staging window. Delete only a sidecar
+        # whose own document has an unstaged Factory change; the next protected
+        # step replaces it through Cloud KMS and the generated PR is strict.
+        run: |
+          set -euo pipefail
+          documents=(.agents/plugins/marketplace.json plugins/*/.xsec-market/releases.json)
+          for document in "${documents[@]}"; do
+            [ -f "$document" ] || continue
+            git diff --quiet -- "$document" && continue
+            sidecar="${document}.sig.jws.json"
+            [ ! -L "$sidecar" ] || {
+              echo "Refusing to remove a symbolic-link Marketplace KMS sidecar: $sidecar" >&2
+              exit 1
+            }
+            rm -f -- "$sidecar"
+          done
       - name: Skip a no-op Factory publication without KMS or dispatch
         id: publication-decision
         env:

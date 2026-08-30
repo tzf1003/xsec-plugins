@@ -768,6 +768,50 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 self.assertFalse(release.with_name(release.name + suffix).exists())
             self.assertTrue(release.exists())
 
+    def test_publish_pre_kms_cleanup_removes_only_sidecars_for_changed_documents(self) -> None:
+        """Stable promotion must stage unsigned replacements, not stale JWS files."""
+
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is unavailable")
+
+        workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        step = "      - name: Remove KMS sidecars made stale by an immutable Factory update\n"
+        start = workflow.index(step)
+        run = workflow.index("        run: |\n", start) + len("        run: |\n")
+        end = workflow.index("\n      - name:", run)
+        script = "\n".join(
+            line[10:] if line.startswith("          ") else line
+            for line in workflow[run:end].splitlines()
+        )
+
+        with tempfile.TemporaryDirectory(prefix="xsec-publish-pre-kms-") as directory:
+            root = Path(directory)
+            changed = root / "plugins" / "com.example.changed" / ".xsec-market" / "releases.json"
+            unchanged = root / "plugins" / "com.example.unchanged" / ".xsec-market" / "releases.json"
+            for document in (changed, unchanged):
+                document.parent.mkdir(parents=True, exist_ok=True)
+                document.write_text('{"channels":{"stable":null}}\n', encoding="utf-8")
+                document.with_name(document.name + ".sig.jws.json").write_text("signed\n", encoding="utf-8")
+            subprocess.run(["git", "init", "--quiet"], check=True, cwd=root)
+            subprocess.run(["git", "config", "core.autocrlf", "false"], check=True, cwd=root)
+            subprocess.run(["git", "add", "-f", "."], check=True, cwd=root)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "baseline"],
+                check=True,
+                cwd=root,
+            )
+            changed.write_text('{"channels":{"stable":{"releaseId":"sha256-test"}}}\n', encoding="utf-8")
+            script_file = root / "workflow-step.sh"
+            script_file.write_text(script, encoding="utf-8", newline="\n")
+            result = subprocess.run([bash, "./workflow-step.sh"], capture_output=True, check=False, cwd=root)
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+            self.assertFalse(changed.with_name(changed.name + ".sig.jws.json").exists())
+            self.assertTrue(
+                unchanged.with_name(unchanged.name + ".sig.jws.json").is_file(),
+                result.stderr.decode("utf-8", errors="replace"),
+            )
+
     def test_publish_workflow_requires_protected_main_oidc_and_desktop_smoke_dispatch(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
         validation_workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
@@ -808,6 +852,11 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("Refuse to sign while any generated Factory PR awaits review", workflow)
         self.assertIn("Skip a no-op Factory publication without KMS or dispatch", workflow)
         self.assertIn("--allow-unsigned-active-release-sidecars", workflow)
+        self.assertIn("Remove KMS sidecars made stale by an immutable Factory update", workflow)
+        self.assertIn('documents=(.agents/plugins/marketplace.json plugins/*/.xsec-market/releases.json)', workflow)
+        self.assertIn('git diff --quiet -- "$document" && continue', workflow)
+        self.assertIn('sidecar="${document}.sig.jws.json"', workflow)
+        self.assertIn("Refusing to remove a symbolic-link Marketplace KMS sidecar", workflow)
         self.assertIn('sidecar_paths=()', workflow)
         self.assertIn("only_cleaned_sidecars=true", workflow)
         self.assertIn('git diff --name-status -- .agents/plugins plugins .xsec-factory', workflow)
