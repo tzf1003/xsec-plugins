@@ -184,7 +184,7 @@ jobs:
             candidate_registered="$(jq -cer --arg plugin_id "$PLUGIN_ID" '
               .plugins | [ .[] | select(.pluginId == $plugin_id) ]
               | if length == 1 then .[0] else error("candidate Registry entry is ambiguous") end
-            ' "$candidate_root/.xsec-factory/official-registry.json)"
+            ' "$candidate_root/.xsec-factory/official-registry.json")"
             [ "$candidate_registered" = "$registered" ] || {
               echo "Generated candidate #${number} changed the registered source identity and cannot be superseded." >&2
               exit 1
