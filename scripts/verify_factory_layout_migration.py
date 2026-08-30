@@ -4,16 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 from pathlib import Path, PurePosixPath
 
-from kms_marketplace_publisher import (
-    MarketplaceDocument,
-    MarketplaceKmsPublisherError,
-    download_pinned_issuer_jwks,
-    verify_historical_sidecar_signature,
-)
+from kms_marketplace_publisher import MarketplaceDocument, MarketplaceKmsPublisherError, download_pinned_issuer_jwks, verify_historical_sidecar_signature
 
 
 MARKETPLACE_PATH = Path(".agents/plugins/marketplace.json")
@@ -21,17 +17,9 @@ LEGACY_PLUGIN_ROOT = Path("plugins")
 SNAPSHOT_ROOT = Path(".xsec-factory/snapshots")
 MIGRATION_MARKER = Path(".xsec-factory/layout-migration.json")
 RELEASE_SIDECAR = Path(".xsec-market/releases.json.sig.jws.json")
-MARKER = {
-    "schemaVersion": 1,
-    "layout": "git-subprojects-with-release-snapshots",
-    "pendingKmsSidecars": True,
-}
-MIGRATION_SUPPORT_PATHS = frozenset((
-    ".agents/plugins/marketplace.json",
-    ".agents/plugins/marketplace.json.sig.jws.json",
-    ".gitmodules",
-    ".xsec-factory/layout-migration.json",
-))
+MARKER = {"schemaVersion": 1, "layout": "git-subprojects-with-release-snapshots", "pendingKmsSidecars": True}
+MIGRATION_SUPPORT_PATHS = frozenset((".agents/plugins/marketplace.json", ".agents/plugins/marketplace.json.sig.jws.json", ".gitmodules", ".xsec-factory/layout-migration.json"))
+MIGRATION_SUPPORT_PLAN = Path(__file__).with_name("factory_layout_migration_plan.json")
 
 
 class FactoryLayoutMigrationError(ValueError):
@@ -218,8 +206,20 @@ def verify_predecessor_signatures(baseline: Path, ids: tuple[str, ...]) -> None:
         )
 
 
-def expected_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...]) -> set[str]:
-    paths = set(MIGRATION_SUPPORT_PATHS)
+def migration_support_hashes() -> dict[str, str]:
+    plan = read_json(MIGRATION_SUPPORT_PLAN, "布局迁移计划")
+    valid = all(
+        isinstance(relative, str) and not relative.startswith("/") and ".." not in PurePosixPath(relative).parts
+        and isinstance(digest, str) and len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+        for relative, digest in plan.items()
+    )
+    if not plan or not valid:
+        fail("布局迁移计划无效")
+    return {relative: digest for relative, digest in plan.items()}
+
+
+def expected_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...], support: dict[str, str]) -> set[str]:
+    paths = set(MIGRATION_SUPPORT_PATHS) | set(support)
     for plugin_id in ids:
         legacy = LEGACY_PLUGIN_ROOT / plugin_id
         snapshot = SNAPSHOT_ROOT / plugin_id
@@ -229,14 +229,22 @@ def expected_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...]) 
     return paths
 
 
+def verify_support_hashes(root: Path, support: dict[str, str]) -> None:
+    for relative, digest in support.items():
+        path = root / relative
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            fail(f"布局迁移支持文件哈希不匹配: {relative}")
+
+
 def verify_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...], before: str, after: str) -> None:
+    support = migration_support_hashes()
     actual = set(gitlines(root, ["diff", "--name-only", "--no-renames", before, after]))
-    expected = expected_transition_paths(root, baseline, ids)
-    if MIGRATION_MARKER.as_posix() not in actual:
-        fail("布局迁移必须包含布局迁移标记")
-    unexpected = sorted(actual - expected)
-    if unexpected:
-        fail(f"布局迁移改变了未授权路径: {', '.join(unexpected)}")
+    expected = expected_transition_paths(root, baseline, ids, support)
+    if actual != expected:
+        unexpected = ", ".join(sorted(actual - expected)) or "<none>"
+        missing = ", ".join(sorted(expected - actual)) or "<none>"
+        fail(f"目录迁移变更路径不匹配: unexpected={unexpected}; missing={missing}")
+    verify_support_hashes(root, support)
 
 
 def verify(root: Path, baseline: Path, *, before: str | None = None, after: str | None = None) -> None:
