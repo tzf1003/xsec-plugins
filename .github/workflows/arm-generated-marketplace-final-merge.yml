@@ -67,7 +67,7 @@ jobs:
           changed_file_count="$(printf '%s' "$pr_metadata" | jq -er '.changed_files | if type == "number" and floor == . and . >= 0 then . else error("invalid changed_files") end')"
           pr_files="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100")"
           returned_file_count="$(printf '%s' "$pr_files" | jq -er '[.[][]] | if all(.[]; type == "object" and (.filename | type == "string")) then length else error("invalid PR file response") end')"
-          layout_migration="$(printf '%s' "$pr_files" | jq -e 'any(.[][]; .filename == ".xsec-factory/layout-migration.json")' >/dev/null && echo true || echo false)"
+          layout_migration="$(printf '%s' "$pr_files" | jq -e 'any(.[][]; .filename == ".xsec-factory/layout-migration.json" and .status != "removed")' >/dev/null && echo true || echo false)"
           if [ "$returned_file_count" -ne "$changed_file_count" ]; then
             # GitHub bounds this endpoint for huge diffs. Its incomplete
             # content inventory must never produce a not-applicable success.
