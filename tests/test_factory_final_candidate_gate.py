@@ -219,32 +219,46 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)
 
-    def test_dispatcher_skips_only_callback_bound_registered_stable_smoke(self) -> None:
+    def test_dispatcher_skips_only_kms_authenticated_callback_bound_registered_stable_smoke(self) -> None:
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
-        registered_stable = '''registered_stable="$(printf '%s' "$result" | jq -r '
-            .kind == "stable"
-            and (.promotions | type == "array" and length == 1)
-            and (.promotions[0].source | type == "object")
-            and (.promotions[0].source.repository | type == "string")
-            and (.promotions[0].source.ref == "refs/heads/main")
-            and (.promotions[0].source.sha | type == "string")
-          ')"
-          if [ "$registered_stable" = "true" ]; then
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "Registered Stable completion is already bound to its accepted Beta Desktop smoke; no duplicate Desktop dispatch is needed."
-            exit 0
-          fi'''
+        callback_bound_stable = '''callback_bound_stable="$(printf '%s' "$result" | jq -cer '
+            if .kind != "stable" then false
+            elif (.promotions | type) != "array" or (.promotions | length) != 1 then false
+            elif (.promotions[0].source | type) != "object" then false
+            elif (.promotions[0].source.repository | type) != "string" then false
+            elif .promotions[0].source.ref != "refs/heads/main" then false
+            elif (.promotions[0].source.sha | type) != "string" then false
+            elif (.promotions[0].release_id | type) != "string" then false
+            else true
+            end
+          ')"'''
 
-        self.assertIn(registered_stable, dispatcher)
-        self.assertNotIn('[ "$kind" != "beta" ] && [ "$kind" != "stable" ]', dispatcher)
+        self.assertIn(callback_bound_stable, dispatcher)
+        self.assertIn('[ "$kind" != "beta" ] && [ "$kind" != "beta-smoke-ready" ] && [ "$kind" != "stable" ]', dispatcher)
+        for required_status_binding in (
+            'status_path=".xsec-factory/official-status/${plugin_id}.json"',
+            '.publication.state == "published"',
+            '.source.stableSha == $stable_sha',
+            '.release.betaReleaseId == $release_id',
+            '.release.stableReleaseId == $release_id',
+            '.publication.smokeRunUrl | type == "string"',
+            '.publication.marketplaceRevision | type == "string"',
+            'Registered Stable completion is bound to its KMS-authenticated Beta Desktop smoke callback',
+        ):
+            with self.subTest(required_status_binding=required_status_binding):
+                self.assertIn(required_status_binding, dispatcher)
+
+        stable_skip = 'if [ "$callback_bound_stable" = "true" ]; then'
+        self.assertIn(stable_skip, dispatcher)
         # A legacy pointer-only stable promotion has no registered source and
-        # remains eligible for the independent Stable smoke contract.
-        self.assertIn('and (.promotions[0].source | type == "object")', dispatcher)
+        # a manual external Stable recovery has no terminal smoke status, so
+        # both remain eligible for the independent Stable smoke contract.
         self.assertIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
         self.assertNotIn("Dispatch the reviewed Beta revision to Desktop smoke", dispatcher)
-        # The no-op must happen before signatures, source-App tokens, and the
-        # production Desktop-dispatch job can consume any quota.
-        self.assertLess(dispatcher.index(registered_stable), dispatcher.index("verification=\"$(python scripts/kms_marketplace_publisher.py"))
+        # KMS verification must precede the callback-status no-op, while the
+        # no-op still occurs before source tokens and Desktop dispatch quota.
+        self.assertLess(dispatcher.index("verification=\"$(python scripts/kms_marketplace_publisher.py"), dispatcher.index(callback_bound_stable))
+        self.assertLess(dispatcher.index(stable_skip), dispatcher.index("source_scope=\"$(printf '%s' \"$sources\""))
 
     def test_finalizer_and_dispatcher_accept_the_last_review_thread_page(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
