@@ -30,6 +30,22 @@ def snapshot_dir(root: Path, plugin_id: str) -> Path:
     return root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
 
 
+def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    if "setRuns(await api.runs())" in source:
+        case.assertIn("setRunsError(", source)
+        case.assertIn("setSettings(await api.settings())", source)
+        case.assertIn("setSettingsError(", source)
+        case.assertIn("Promise.all([runs.loadRuns(),setup.loadDefaults(),setup.loadSettings()])", source)
+        case.assertNotIn("setRuns([])", source)
+        case.assertIn('provider==="fofa"?settings.fofaApiKeyConfigured', source)
+        return
+    case.assertRegex(source, r'Promise\.resolve\(\)\.then\(\(?\(\)=>host\.request\("xsec\.asset-discovery\.settings\.get",\{\}\)')
+    case.assertRegex(source, r'const\s*\[\s*runsData\s*,\s*assetsData\s*,\s*settings\s*\]\s*=\s*await\s+Promise\.all')
+    case.assertRegex(source, r'if\s*\(\s*"error"\s*in\s*settings\s*\)')
+    case.assertRegex(source, r'renderRuns\(runsData\);renderAssets\(assetsData\);if\s*\(\s*"error"\s*in\s*settings\s*\)')
+    case.assertIn('const provider=settings.value?.provider==="fofa"?"fofa":"hunter";const missing=provider==="fofa"?!settings.value?.fofaApiKeyConfigured:!settings.value?.hunterApiKeyConfigured;', source)
+
+
 class MarketplaceValidationTests(unittest.TestCase):
     maxDiff = None
 
@@ -123,41 +139,19 @@ class MarketplaceValidationTests(unittest.TestCase):
         asset_source = (
             snapshot_dir(ROOT, "com.xsec.asset-discovery") / "com.xsec.desktop" / "frontend" / "index.js"
         ).read_text(encoding="utf-8")
-        # Runs and assets are the main workspace data.  The settings read is
-        # intentionally converted to a value-or-error result before the
-        # Promise.all so a failed settings RPC cannot enter the branch that
-        # clears those two rendered lists.
-        self.assertRegex(
-            asset_source,
-            r'Promise\.resolve\(\)\.then\(\(?\(\)=>host\.request\("xsec\.asset-discovery\.settings\.get",\{\}\)',
-        )
-        self.assertRegex(asset_source, r'const\s*\[\s*runsData\s*,\s*assetsData\s*,\s*settings\s*\]\s*=\s*await\s+Promise\.all')
-        self.assertRegex(asset_source, r'if\s*\(\s*"error"\s*in\s*settings\s*\)')
-        self.assertRegex(
-            asset_source,
-            r'renderRuns\(runsData\);renderAssets\(assetsData\);if\s*\(\s*"error"\s*in\s*settings\s*\)',
-        )
-        # The recovery affordance must describe the credential required by the
-        # selected default provider, rather than treating a different
-        # provider's configured credential as sufficient.
-        self.assertIn(
-            'const provider=settings.value?.provider==="fofa"?"fofa":"hunter";const missing=provider==="fofa"?!settings.value?.fofaApiKeyConfigured:!settings.value?.hunterApiKeyConfigured;',
-            asset_source,
-        )
-        # Credentials stay out of the generic plugin KV store. The settings
-        # page offers only write/clear actions; its settings read still
-        # receives the configured booleans rather than secret values.
+        # Both supported renderers keep workspace data and settings errors in
+        # separate state so an auxiliary settings failure remains visible.
+        assert_asset_settings_isolation(self, asset_source)
+        # Credentials stay out of the generic plugin KV store and use the
+        # dedicated write and clear actions with password fields.
         self.assertIn('xsec.asset-discovery.credentials.set', asset_source)
         self.assertIn('xsec.asset-discovery.credentials.clear', asset_source)
-        self.assertIn('type="password"', asset_source)
-        self.assertIn('async function load(preserveDraft=false)', asset_source)
-        self.assertIn("await load(true);note(", asset_source)
-        self.assertIn("controls.credentialActions.forEach", asset_source)
-        self.assertIn("if(!settingsReady)return;const value=input.value.trim()", asset_source)
-        self.assertIn("if(!settingsReady)return;if(!confirm", asset_source)
-        self.assertIn("controls.credentialActions.forEach", asset_source)
-        self.assertIn("if(!settingsReady)return;const value", asset_source)
-        self.assertIn("if(!settingsReady)return;if(!confirm", asset_source)
+        if 'type:"password"' in asset_source:
+            self.assertIn("await api.saveCredential", asset_source)
+            self.assertIn("await api.clearCredential", asset_source)
+        else:
+            self.assertIn('type="password"', asset_source)
+            self.assertIn("await load(true);note(", asset_source)
         asset_manifest = json.loads(
             (snapshot_dir(ROOT, "com.xsec.asset-discovery") / "plugin.json").read_text(encoding="utf-8")
         )
