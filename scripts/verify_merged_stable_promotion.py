@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 from build_market import SNAPSHOT_ROOT_RELATIVE_PATH, load_release_document
-from kms_marketplace_publisher import MarketplaceKmsPublisherError, marketplace_documents, sidecar_path_for
+from kms_marketplace_publisher import OFFICIAL_STATUS_PURPOSE, MarketplaceKmsPublisherError, marketplace_documents, sidecar_path_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -287,12 +287,13 @@ def allowed_paths(
     paths: list[str],
     promoted_ids: set[str],
     *,
+    renewable_sidecars: set[str],
     first_party_gitlink_ids: set[str] | None = None,
 ) -> None:
     """Permit only the generated Factory surfaces for a signed release PR."""
 
     for path in paths:
-        if path == MARKETPLACE_SIDECAR or RELEASE_SIDECAR_PATTERN.fullmatch(path) or RELEASE_PATH_PATTERN.fullmatch(path):
+        if path in renewable_sidecars or RELEASE_PATH_PATTERN.fullmatch(path):
             continue
         if channel == "beta" and path == MARKETPLACE_INDEX:
             continue
@@ -323,6 +324,22 @@ def allowed_paths(
         if status_proof and status_proof.group(1) in promoted_ids:
             continue
         fail(f"merged {channel} publication changed an unauthorized path: {path}")
+
+
+def renewable_sidecars(root: Path, promoted_ids: set[str]) -> set[str]:
+    """Allow only the current immutable KMS batch and promoted releases."""
+
+    try:
+        root_path = root.resolve(strict=True)
+        active = {
+            sidecar_path_for(document).resolve(strict=False).relative_to(root_path).as_posix()
+            for document in marketplace_documents(root)
+            if document.purpose != OFFICIAL_STATUS_PURPOSE
+        }
+    except (MarketplaceKmsPublisherError, OSError, ValueError) as error:
+        raise PromotionVerificationError("publication has an invalid active KMS document layout") from error
+    active.update(f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json" for plugin_id in promoted_ids)
+    return active
 
 
 def active_registered_source(
@@ -543,7 +560,13 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         if (identity := active_registered_source(root, after, plugin_id=plugin_id)) is not None
         and identity["trust_tier"] == "first-party"
     }
-    allowed_paths(channel, paths, promoted_ids, first_party_gitlink_ids=first_party_gitlink_ids)
+    allowed_paths(
+        channel,
+        paths,
+        promoted_ids,
+        renewable_sidecars=renewable_sidecars(root, promoted_ids),
+        first_party_gitlink_ids=first_party_gitlink_ids,
+    )
     for plugin_id, release_path in release_paths:
         sidecar = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json"
         if sidecar not in paths:

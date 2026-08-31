@@ -25,6 +25,10 @@ def snapshot_path(plugin_id: str) -> str:
     return f"{SNAPSHOT_ROOT}/{plugin_id}"
 
 
+def marketplace_index(plugin_id: str) -> dict[str, object]:
+    return {"plugins": [{"source": {"path": f"./{snapshot_path(plugin_id)}"}}]}
+
+
 def git(root: Path, *arguments: str) -> str:
     completed = subprocess.run(["git", *arguments], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
     return completed.stdout.decode("utf-8").strip()
@@ -49,7 +53,8 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
         beta = release("1.1.0", "beta")
         if with_release_history:
             self.write_release(root, [stable], beta=stable["releaseId"], stable=stable["releaseId"])
-        paths = [".agents/plugins/marketplace.json", ".agents/plugins/marketplace.json.sig.jws.json"]
+            write_json(root / ".agents/plugins/marketplace.json", marketplace_index(PLUGIN_ID))
+        paths = [".agents/plugins/marketplace.json.sig.jws.json"]
         if with_release_history:
             paths.append(f"{snapshot_path(PLUGIN_ID)}/.xsec-market/releases.json.sig.jws.json")
         for path in paths:
@@ -160,12 +165,22 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.assertEqual(result["kind"], "beta")
             self.assertEqual(result["promotions"], [{"plugin_id": PLUGIN_ID, "release_id": beta["releaseId"]}])
 
+    def test_beta_allows_only_active_immutable_sidecar_renewals(self) -> None:
+        release_path = f"{snapshot_path(PLUGIN_ID)}/.xsec-market/releases.json"
+        proof_path = ".xsec-factory/official-publication-proofs/com.example.other.json"
+        verifier.allowed_paths(
+            "beta",
+            [verifier.MARKETPLACE_SIDECAR, release_path, f"{release_path}.sig.jws.json", proof_path],
+            {PLUGIN_ID},
+            renewable_sidecars={verifier.MARKETPLACE_SIDECAR, f"{release_path}.sig.jws.json", proof_path},
+        )
+
     def test_classifies_first_beta_when_the_baseline_has_no_release_index(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-first-beta-") as directory:
             root = Path(directory)
             before, _, beta = self.make_repository(root, registered=True, with_release_history=False)
             self.write_release(root, [beta], beta=beta["releaseId"], stable=None)
-            (root / ".agents/plugins/marketplace.json").write_text("new beta index\n", encoding="utf-8")
+            write_json(root / ".agents/plugins/marketplace.json", marketplace_index(PLUGIN_ID))
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("signed beta index\n", encoding="utf-8")
             (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
             (root / snapshot_path(PLUGIN_ID) / "frontend.js").write_text("export {}\n", encoding="utf-8")
@@ -204,6 +219,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             stable = release("1.0.0", "stable")
             beta = release("1.1.0", "beta")
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            write_json(root / ".agents/plugins/marketplace.json", marketplace_index(PLUGIN_ID))
             for path in (".agents/plugins/marketplace.json.sig.jws.json", f"{snapshot_path(PLUGIN_ID)}/.xsec-market/releases.json.sig.jws.json"):
                 target = root / path
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -679,12 +695,14 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 f".xsec-factory/official-adoption-proofs/{PLUGIN_ID}.json",
             ],
             {PLUGIN_ID},
+            renewable_sidecars=set(),
         )
         with self.assertRaisesRegex(verifier.PromotionVerificationError, "unauthorized path"):
             verifier.allowed_paths(
                 "beta",
                 [f".xsec-factory/official-publications/{PLUGIN_ID}.json.sig.jws.json"],
                 {PLUGIN_ID},
+                renewable_sidecars=set(),
             )
 
     def test_classifies_signed_stable_completion_without_a_pointer_move_as_maintenance(self) -> None:
