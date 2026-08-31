@@ -1,6 +1,6 @@
 # Official plugin bridge
 
-This package owns the signed plugin manifest, permissions and release lifecycle. XSEC Desktop currently binds its compatible built-in renderer only after this package is installed and enabled. The bridge is intentionally explicit so package state, rather than the application installer, is the source of truth.
+This package owns the signed plugin manifest, permissions, release lifecycle and isolated frontend. XSEC Desktop mounts the package frontend only after the package is installed and enabled, so the package state remains the source of truth for the complete asset-discovery surface.
 
 ## 设置审查
 
