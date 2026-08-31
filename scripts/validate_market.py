@@ -1188,7 +1188,7 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
 
 
 def validate_frontend_host_requests(methods: dict[str, object], source: str, label: str) -> None:
-    requested = set(re.findall(r"\bhost\s*\.\s*request\s*\(\s*[\"'](xsec\.[A-Za-z0-9_.-]+)[\"']", source))
+    requested = set(re.findall(r"\bhost\s*\.\s*request\s*\(\s*[\"'`](xsec\.[A-Za-z0-9_.-]+)[\"'`]", source))
     undeclared = requested - set(methods)
     if undeclared:
         fail(f"{label} calls undeclared host RPC methods: {sorted(undeclared)}")
