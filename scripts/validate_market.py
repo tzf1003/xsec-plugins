@@ -153,7 +153,14 @@ FORBIDDEN_OFFICIAL_FRONTEND_MARKERS = (
 # The browser-side approvals frontend is explicitly reviewed and pinned.  The
 # hash includes its isolated settings surface, so any source change still
 # requires an intentional validation update in the same review.
-APPROVALS_FRONTEND_SOURCE_SHA256 = "5508a16c22e704d9a366abe60112edf20e7f0a9478d44e9d0048973501fcf00b"
+# Every released approvals frontend remains pinned to its exact reviewed
+# source.  The Factory validates retained snapshots as well as a candidate
+# source checkout, so a new candidate must not invalidate an earlier immutable
+# release during the same validation pass.
+APPROVALS_FRONTEND_SOURCE_SHA256_BY_VERSION = {
+    "1.2.2": "5508a16c22e704d9a366abe60112edf20e7f0a9478d44e9d0048973501fcf00b",
+    "1.3.0": "fd299c217c71d0b9989475e05e9717e91052e4adb400f4090b3821f6c2aaa76d",
+}
 
 
 class MarketplaceValidationError(ValueError):
@@ -1063,6 +1070,12 @@ def has_only_approvals_host_usage(tokens: list[tuple[str, str]]) -> bool:
             ("identifier", "context"),
         ]:
             continue
+        if len(suffix) >= 3 and suffix[:3] == [
+            ("punctuation", "."),
+            ("identifier", "onTheme"),
+            ("punctuation", "("),
+        ]:
+            continue
         if len(suffix) >= 4 and suffix[:3] == [
             ("punctuation", "."),
             ("identifier", "request"),
@@ -1159,7 +1172,11 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
     if not has_only_approvals_host_usage(body):
         fail(f"{label} must use only the approvals host broker contract")
     normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
-    if hashlib.sha256(normalized_source.encode("utf-8")).hexdigest() != APPROVALS_FRONTEND_SOURCE_SHA256:
+    version = manifest.get("version")
+    expected_source_sha256 = APPROVALS_FRONTEND_SOURCE_SHA256_BY_VERSION.get(version)
+    if expected_source_sha256 is None:
+        fail(f"{label} uses an approvals version without an approved frontend source digest")
+    if hashlib.sha256(normalized_source.encode("utf-8")).hexdigest() != expected_source_sha256:
         fail(f"{label} must match the approved official approvals frontend structure")
 
 
