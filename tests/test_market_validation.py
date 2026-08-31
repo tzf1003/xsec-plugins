@@ -117,6 +117,14 @@ class MarketplaceValidationTests(unittest.TestCase):
             },
         )
 
+    def test_terminal_settings_navigation_is_validated_when_declared(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        manifest = json.loads((snapshot_dir(ROOT, plugin_id) / "plugin.json").read_text(encoding="utf-8"))
+        methods = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
+        methods["xsec.plugin.settings.open"] = {"capability": "terminal.shell", "binding": "session"}
+        with self.assertRaisesRegex(MarketplaceValidationError, "canonical plugin settings permission"):
+            validate_market.validate_official_settings_contract(manifest, plugin_id)
+
     def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
         source = (
             snapshot_dir(ROOT, "com.xsec.system-terminal") / "com.xsec.desktop" / "frontend" / "index.js"

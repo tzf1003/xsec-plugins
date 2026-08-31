@@ -114,6 +114,9 @@ OFFICIAL_PLUGIN_SETTINGS_CONTRACT: dict[str, dict[str, object]] = {
             "xsec.terminal.settings.get": ("pluginData.read", "plugin"),
             "xsec.terminal.settings.set": ("pluginData.write", "plugin"),
         },
+        "optionalMethods": {
+            "xsec.plugin.settings.open": ("pluginData.read", "plugin"),
+        },
     },
     "com.xsec.workspace.approvals": {
         "page": "approvals",
@@ -1266,6 +1269,17 @@ def validate_official_settings_contract(manifest: dict[str, object], label: str)
         capability, binding = descriptor_contract
         descriptor = methods.get(method)
         if not isinstance(descriptor, dict) or descriptor.get("capability") != capability or descriptor.get("binding") != binding:
+            fail(f"{label} must bind {method} to the canonical plugin settings permission")
+    optional_methods = contract.get("optionalMethods", {})
+    if not isinstance(optional_methods, dict):
+        fail(f"{label} has invalid optional settings RPC declarations")
+    for method, (capability, binding) in optional_methods.items():
+        descriptor = methods.get(method)
+        if descriptor is not None and (
+            not isinstance(descriptor, dict)
+            or descriptor.get("capability") != capability
+            or descriptor.get("binding") != binding
+        ):
             fail(f"{label} must bind {method} to the canonical plugin settings permission")
 
 
