@@ -113,7 +113,6 @@ OFFICIAL_PLUGIN_SETTINGS_CONTRACT: dict[str, dict[str, object]] = {
         "methods": {
             "xsec.terminal.settings.get": ("pluginData.read", "plugin"),
             "xsec.terminal.settings.set": ("pluginData.write", "plugin"),
-            "xsec.plugin.settings.open": ("pluginData.read", "plugin"),
         },
     },
     "com.xsec.workspace.approvals": {

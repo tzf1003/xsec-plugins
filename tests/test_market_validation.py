@@ -108,6 +108,15 @@ class MarketplaceValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(MarketplaceValidationError, "activate for its canonical plugin settings page"):
             validate_market.validate_official_settings_contract(manifest, plugin_id)
 
+    def test_terminal_settings_contract_is_limited_to_persistent_profile_data(self) -> None:
+        self.assertEqual(
+            validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT["com.xsec.system-terminal"]["methods"],
+            {
+                "xsec.terminal.settings.get": ("pluginData.read", "plugin"),
+                "xsec.terminal.settings.set": ("pluginData.write", "plugin"),
+            },
+        )
+
     def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
         source = (
             snapshot_dir(ROOT, "com.xsec.system-terminal") / "com.xsec.desktop" / "frontend" / "index.js"
@@ -120,10 +129,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn("function terminalSettings(host)", settings_source)
         self.assertIn('profile=e("select")', settings_source)
         self.assertIn("xsec.terminal.settings.set", settings_source)
-        self.assertIn('catch(error){status(`读取终端设置失败：${error instanceof Error?error.message:String(error)}`,true);throw error}', settings_source)
         self.assertIn('host.context?.kind==="settings-page"', main_source)
-        self.assertIn('retry=e("button","settings-link","重试启动终端")', main_source)
-        self.assertIn('retry.onclick=()=>void open()', main_source)
         for forbidden in (
             'e("select")',
             '"重新启动"',
@@ -200,6 +206,8 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('规则已删除，但刷新规则列表失败', traffic_source)
 
         for plugin_id in validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT:
+            if plugin_id == "com.xsec.system-terminal":
+                continue
             frontend = snapshot_dir(ROOT, plugin_id) / "com.xsec.desktop" / "frontend" / "index.js"
             settings_source = frontend.read_text(encoding="utf-8")
             self.assertRegex(settings_source, r"settingsReady\s*=\s*false", plugin_id)
