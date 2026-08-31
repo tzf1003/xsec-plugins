@@ -8,12 +8,8 @@ import json
 import subprocess
 from pathlib import Path, PurePosixPath
 
-from kms_marketplace_publisher import (
-    MarketplaceDocument,
-    MarketplaceKmsPublisherError,
-    download_pinned_issuer_jwks,
-    verify_historical_sidecar_signature,
-)
+from kms_marketplace_publisher import MarketplaceDocument, MarketplaceKmsPublisherError, download_pinned_issuer_jwks, verify_historical_sidecar_signature
+from factory_layout_migration_plan import support_hashes, verify_support_hashes
 
 
 MARKETPLACE_PATH = Path(".agents/plugins/marketplace.json")
@@ -21,11 +17,8 @@ LEGACY_PLUGIN_ROOT = Path("plugins")
 SNAPSHOT_ROOT = Path(".xsec-factory/snapshots")
 MIGRATION_MARKER = Path(".xsec-factory/layout-migration.json")
 RELEASE_SIDECAR = Path(".xsec-market/releases.json.sig.jws.json")
-MARKER = {
-    "schemaVersion": 1,
-    "layout": "git-subprojects-with-release-snapshots",
-    "pendingKmsSidecars": True,
-}
+MARKER = {"schemaVersion": 1, "layout": "git-subprojects-with-release-snapshots", "pendingKmsSidecars": True}
+MIGRATION_SUPPORT_PATHS = frozenset((".agents/plugins/marketplace.json", ".agents/plugins/marketplace.json.sig.jws.json", ".gitmodules", ".xsec-factory/layout-migration.json"))
 
 
 class FactoryLayoutMigrationError(ValueError):
@@ -127,18 +120,20 @@ def gitlines(root: Path, args: list[str]) -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
-def gitlink_paths(root: Path) -> set[str]:
-    paths: set[str] = set()
+def gitlink_revisions(root: Path) -> dict[str, str]:
+    revisions: dict[str, str] = {}
     for line in gitlines(root, ["ls-files", "--stage", "--", "plugins"]):
         try:
             header, path = line.split("\t", 1)
-            mode, _object_id, stage = header.split(" ")
+            mode, object_id, stage = header.split(" ")
         except ValueError as error:
             raise FactoryLayoutMigrationError("工厂 Git 索引格式无效") from error
-        if mode != "160000" or stage != "0" or not path.startswith("plugins/"):
+        if mode != "160000" or stage != "0" or not path.startswith("plugins/") or len(object_id) != 40 or any(char not in "0123456789abcdef" for char in object_id):
             fail("工厂插件目录必须只包含 Git 子项目")
-        paths.add(path)
-    return paths
+        if path in revisions:
+            fail("工厂 Git 子项目不能重复")
+        revisions[path] = object_id
+    return revisions
 
 
 def submodule_settings(root: Path) -> dict[str, dict[str, str]]:
@@ -150,7 +145,10 @@ def submodule_settings(root: Path) -> dict[str, dict[str, str]]:
             name = prefix.removeprefix("submodule.")
         except ValueError as error:
             raise FactoryLayoutMigrationError(".gitmodules 格式无效") from error
-        values.setdefault(name, {})[field] = value
+        item = values.setdefault(name, {})
+        if field in item:
+            fail(".gitmodules 不能包含重复字段")
+        item[field] = value
     return values
 
 
@@ -171,19 +169,23 @@ def registry_repositories(root: Path) -> dict[str, str]:
     return repositories
 
 
-def verify_submodules(root: Path, ids: tuple[str, ...]) -> None:
+def verify_submodules(root: Path, ids: tuple[str, ...]) -> list[dict[str, str]]:
     expected_paths = {f"plugins/{plugin_id}" for plugin_id in ids}
-    if gitlink_paths(root) != expected_paths:
+    revisions = gitlink_revisions(root)
+    if set(revisions) != expected_paths:
         fail("工厂 Git 子项目与市场插件不一致")
     repositories = registry_repositories(root)
     if set(repositories) != set(ids):
         fail("工厂注册表与市场插件不一致")
     settings = submodule_settings(root)
+    if set(settings) != expected_paths:
+        fail(".gitmodules 子项目与市场插件不一致")
     for plugin_id in ids:
         path = f"plugins/{plugin_id}"
         item = settings.get(path)
         if item != {"path": path, "url": f"https://github.com/{repositories[plugin_id]}.git", "branch": "beta"}:
             fail(f"插件 {plugin_id} 的 Git 子项目来源无效")
+    return [{"repository": repositories[plugin_id], "ref": "refs/heads/beta", "sha": revisions[f"plugins/{plugin_id}"]} for plugin_id in ids]
 
 
 def verify_factory_metadata(root: Path, baseline: Path) -> None:
@@ -212,9 +214,39 @@ def verify_predecessor_signatures(baseline: Path, ids: tuple[str, ...]) -> None:
         )
 
 
-def verify(root: Path, baseline: Path) -> None:
+def expected_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...], support: dict[str, str]) -> set[str]:
+    paths = set(MIGRATION_SUPPORT_PATHS) | set(support)
+    for plugin_id in ids:
+        legacy = LEGACY_PLUGIN_ROOT / plugin_id
+        snapshot = SNAPSHOT_ROOT / plugin_id
+        paths.add(legacy.as_posix())
+        paths.update((legacy / path).as_posix() for path in regular_files(baseline / legacy))
+        paths.update((snapshot / path).as_posix() for path in regular_files(root / snapshot))
+    return paths
+
+
+def verify_transition_paths(root: Path, baseline: Path, ids: tuple[str, ...], before: str, after: str) -> None:
+    try:
+        support = support_hashes()
+    except ValueError as error:
+        fail(str(error))
+    actual = set(gitlines(root, ["diff", "--name-only", "--no-renames", before, after]))
+    expected = expected_transition_paths(root, baseline, ids, support)
+    if actual != expected:
+        unexpected = ", ".join(sorted(actual - expected)) or "<none>"
+        missing = ", ".join(sorted(expected - actual)) or "<none>"
+        fail(f"目录迁移变更路径不匹配: unexpected={unexpected}; missing={missing}")
+    try:
+        verify_support_hashes(root, support)
+    except ValueError as error:
+        fail(str(error))
+
+
+def verify(root: Path, baseline: Path, *, before: str | None = None, after: str | None = None) -> list[dict[str, str]]:
     root = require_directory(root, "当前工厂目录")
     baseline = require_directory(baseline, "工厂基线目录")
+    if (before is None) != (after is None):
+        fail("目录迁移变更路径校验必须同时提供 before 和 after")
     if root == baseline:
         fail("工厂基线必须与当前目录不同")
     if read_json(root / MIGRATION_MARKER, "布局迁移标记") != MARKER:
@@ -236,20 +268,26 @@ def verify(root: Path, baseline: Path) -> None:
             fail(f"插件 {plugin_id} 的发布快照不能随目录迁移改变")
         require_missing(current / RELEASE_SIDECAR, f"插件 {plugin_id} 的发布签名")
     verify_factory_metadata(root, baseline)
-    verify_submodules(root, ids)
+    sources = verify_submodules(root, ids)
     verify_predecessor_signatures(baseline, ids)
+    if before is not None and after is not None:
+        verify_transition_paths(root, baseline, ids, before, after)
+    return sources
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--baseline-root", type=Path, required=True)
+    parser.add_argument("--before")
+    parser.add_argument("--after")
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     try:
-        verify(args.root, args.baseline_root)
+        sources = verify(args.root, args.baseline_root, before=args.before, after=args.after)
     except (FactoryLayoutMigrationError, MarketplaceKmsPublisherError) as error:
         raise SystemExit(f"工厂布局迁移校验失败: {error}") from error
-    print("工厂布局迁移基线和历史签名校验通过")
+    print(json.dumps({"sources": sources}, separators=(",", ":")) if args.json else "工厂布局迁移基线和历史签名校验通过")
 
 
 if __name__ == "__main__":

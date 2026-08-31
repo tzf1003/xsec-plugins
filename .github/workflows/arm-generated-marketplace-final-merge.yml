@@ -85,12 +85,9 @@ jobs:
             "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/stage-first-party-adoption-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*|"$REPOSITORY":xsec-marketplace/layout-signatures-*) event_factory=true ;;
             *) event_factory=false ;;
           esac
-          if [ "$layout_migration" = "true" ]; then
-            # A layout marker is a one-time source migration, not a release
-            # candidate. The required source gate verifies its exact diff,
-            # prior signatures and Git subprojects before this can be merged.
-            echo "factory_generated=false" >> "$GITHUB_OUTPUT"
-          elif [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ]; then
+          if [ "$layout_migration" = "true" ] || [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ]; then
+            # A pending layout marker is privileged Factory content. Its exact
+            # transition must remain pending for protected revalidation.
             echo "factory_generated=true" >> "$GITHUB_OUTPUT"
           else
             # An external fork or any non-Factory same-base branch cannot
