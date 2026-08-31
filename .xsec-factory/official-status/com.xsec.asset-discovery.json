@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.asset-discovery",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-asset-discovery",
+    "path": "plugins/com.xsec.asset-discovery",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "515efda10c02cbb658c026f77285042b7fc1a97b",
+    "stableSha": null,
+    "mainGateSha": "5e4d7e7129b1f64ae57bd070d700880dfe1129cc"
+  },
+  "release": {
+    "betaReleaseId": "sha256-becb893ddedd24d4c43ac927286831c5b43a89306d6a314051da881d4d268f87",
+    "stableReleaseId": "sha256-4b70cc21e20c4fed2566a44213decd60310aa7966038968c1b1b4a818cca6aa8"
+  },
+  "publication": {
+    "state": "waiting_for_beta",
+    "deliveryId": "33409614295.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33409614295",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
+  }
+}
