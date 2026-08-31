@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.conversation-tree",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-conversation-tree",
+    "path": "plugins/com.xsec.workspace.conversation-tree",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "f2ef6e4fe34bc0fd323c89a4c33b84cb7ed1438b",
+    "stableSha": null,
+    "mainGateSha": "d9e1fdb09dbd05e7d5a321ba9cc6a961df4c57aa"
+  },
+  "release": {
+    "betaReleaseId": "sha256-9a5dda80c05e9b188db08f2213c342bee9dde1f9e989a44753a43fd65f3d8b6a",
+    "stableReleaseId": "sha256-f415fea76c75c66e556a6067c0131ac7bb87c7d7b73655f0ac342c86d0cb92cb"
+  },
+  "publication": {
+    "state": "waiting_for_beta",
+    "deliveryId": "33431787747.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33431787747",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
+  }
+}
