@@ -442,6 +442,56 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 },
             )
 
+    def test_classifies_no_pointer_first_party_beta_smoke_ready_with_its_advanced_gitlink(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-merged-first-party-beta-smoke-ready-") as directory:
+            root = Path(directory)
+            _, stable, beta = self.make_repository(root, registered=True)
+            registry_path = root / ".xsec-factory/official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["trustTier"] = "first-party"
+            write_json(registry_path, registry)
+            self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}}]})
+            event = {
+                "channel": "beta",
+                "releaseId": beta["releaseId"],
+                "source": {"repository": "example/plugin", "path": f"plugins/{PLUGIN_ID}", "ref": "refs/heads/beta", "sha": "a" * 40},
+                "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+                "publisher": "factory",
+            }
+            write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
+            proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            proof.write_text("baseline evidence signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(
+                root, beta, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=stable["releaseId"]
+            )
+            before = self.commit_with_gitlink(root, "first-party beta awaits a reproducible main", "b" * 40)
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text(
+                "refreshed release signature\n", encoding="utf-8"
+            )
+            proof.write_text("refreshed evidence signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(
+                root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"]
+            )
+            after = self.commit_with_gitlink(root, "first-party main rebuild advances stale gitlink", "a" * 40)
+
+            self.assertEqual(
+                verifier.classify_merged_change(root, before, after),
+                {
+                    "kind": "beta-smoke-ready",
+                    "promotions": [
+                        {
+                            "plugin_id": PLUGIN_ID,
+                            "release_id": beta["releaseId"],
+                            "source": {"repository": "example/plugin", "ref": "refs/heads/beta", "sha": "a" * 40},
+                            "main_source": {"repository": "example/plugin", "ref": "refs/heads/main", "sha": "d" * 40},
+                        }
+                    ],
+                },
+            )
+
     def test_classifies_no_pointer_beta_main_gate_rebinds_and_downgrades(self) -> None:
         # A later main event may leave an existing Beta reproducible, leave it
         # non-reproducible, or change either result.  Each outcome must retain

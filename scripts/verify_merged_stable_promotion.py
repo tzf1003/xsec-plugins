@@ -761,6 +761,8 @@ def verify_beta_smoke_ready(
     generic maintenance: it is the only shape that may reopen Desktop smoke,
     and binds both exact source branch heads so the finalizer can reject a
     decision that became stale while the generated PR waited for review.
+    A first-party recheck may also catch up a stale development Gitlink to
+    that retained Beta SHA.
     """
 
     require_candidate_revisions(root, before, after)
@@ -818,8 +820,9 @@ def verify_beta_smoke_ready(
         raise PromotionVerificationError("no-pointer Beta smoke transition has an invalid active KMS document layout") from error
     if not active_release_sidecars.issubset(active_kms_sidecars):
         fail("no-pointer Beta smoke transition active release sidecar allowlist is incomplete")
+    gitlink_path = f"plugins/{plugin_id}" if f"plugins/{plugin_id}" in paths else None
     for path in paths:
-        if path in required_paths or path in active_kms_sidecars:
+        if path in required_paths or path in active_kms_sidecars or path == gitlink_path:
             continue
         fail(f"no-pointer Beta smoke transition changed an unauthorized path: {path}")
     for path, label in ((MARKETPLACE_INDEX, "Marketplace index"), (release_path, "Beta release index"), (evidence_path, "Beta provenance")):
@@ -875,6 +878,14 @@ def verify_beta_smoke_ready(
         fail("no-pointer Beta smoke transition may not change its immutable Beta source SHA")
     if before_source["mainGateSha"] == after_source["mainGateSha"]:
         fail("no-pointer Beta smoke transition must record a newly compared registered main SHA")
+    if gitlink_path is not None and require_first_party_gitlink(
+        root,
+        before,
+        after,
+        plugin_id=plugin_id,
+        source={"sha": after_source["betaSha"]},
+    ) != gitlink_path:
+        fail("no-pointer Beta smoke transition may not change a first-party Gitlink")
 
     expected_release = {"betaReleaseId": beta_release, "stableReleaseId": stable_release}
     if before_status["release"] != expected_release or after_status["release"] != expected_release:
