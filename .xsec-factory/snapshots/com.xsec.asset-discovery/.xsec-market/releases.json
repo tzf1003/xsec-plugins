@@ -65,11 +65,27 @@
           "sha256": "a10c3d82790b30f3c2c9ecd7740d68e3a6c4b938819dbc1760c26564d7a4e7cb"
         }
       ]
+    },
+    {
+      "releaseId": "sha256-496aa2d626444b437664cc173e49cea6a0796385e88ca861ac5fcec9cd7ffb12",
+      "version": "1.3.5",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.2.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.asset-discovery-1.3.5-sha256-2342f304d99dee4d-any-any.xsec-plugin",
+          "sha256": "2342f304d99dee4d8e68f858ad351dd10e933d1a0b74e7446b82fc5d84a3e553"
+        }
+      ]
     }
   ],
   "channels": {
     "beta": {
-      "releaseId": "sha256-978b73b4f264d4a4e6e470f6f14e9518cd6f48b30993dda833e478b7e445d67d"
+      "releaseId": "sha256-496aa2d626444b437664cc173e49cea6a0796385e88ca861ac5fcec9cd7ffb12"
     },
     "stable": {
       "releaseId": "sha256-4b70cc21e20c4fed2566a44213decd60310aa7966038968c1b1b4a818cca6aa8"
