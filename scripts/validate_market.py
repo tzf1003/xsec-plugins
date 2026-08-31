@@ -81,6 +81,11 @@ JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
 APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
 OFFICIAL_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE = "^1.3.0"
+WORKSPACE_COMPOSER_PLUGIN_API_RANGE = "^1.4.0"
+WORKSPACE_COMPOSER_METHODS = frozenset({
+    "xsec.workspace.composer.line-comment.add",
+    "xsec.workspace.composer.path.add",
+})
 OFFICIAL_FRONTEND_MIN_BYTES = 1_000
 OFFICIAL_PLUGIN_SETTINGS_CONTRACT: dict[str, dict[str, object]] = {
     "com.xsec.asset-discovery": {
@@ -1193,6 +1198,7 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
     if not isinstance(engines, dict) or engines.get("pluginApi") not in {
         OFFICIAL_FRONTEND_PLUGIN_API_RANGE,
         WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE,
+        WORKSPACE_COMPOSER_PLUGIN_API_RANGE,
     }:
         fail(f"{label} must require plugin API 1.2")
     frontend_api = desktop.get("frontendApi")
@@ -1203,6 +1209,8 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
         fail(f"{label} must declare at least one host RPC method")
     if "xsec.workspace.tool.open" in methods and engines.get("pluginApi") != WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.3 for workspace tool navigation")
+    if set(methods) & WORKSPACE_COMPOSER_METHODS and engines.get("pluginApi") != WORKSPACE_COMPOSER_PLUGIN_API_RANGE:
+        fail(f"{label} must require plugin API 1.4 for workspace Composer writes")
     lowered = source.lower()
     for marker in FORBIDDEN_OFFICIAL_FRONTEND_MARKERS:
         if marker.lower() in lowered:
