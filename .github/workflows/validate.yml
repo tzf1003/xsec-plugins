@@ -59,11 +59,18 @@ jobs:
           set -euo pipefail
           if [ -e .xsec-factory/layout-migration.json ]; then
             [ "$BASELINE_AVAILABLE" = "true" ] || {
-              echo "Factory layout migration requires a trusted pre-migration baseline." >&2
+              echo "Factory layout validation requires a trusted baseline." >&2
               exit 1
             }
-            python scripts/verify_factory_layout_migration.py --root . --baseline-root "$BASELINE_ROOT"
-            python scripts/external_source_factory.py validate \
+            if [ ! -e "$BASELINE_ROOT/.xsec-factory/layout-migration.json" ]; then
+              python scripts/verify_factory_layout_migration.py --root . --baseline-root "$BASELINE_ROOT"
+            else
+              cmp -- .xsec-factory/layout-migration.json "$BASELINE_ROOT/.xsec-factory/layout-migration.json" || {
+                echo "Factory layout marker may only change in the first layout transition." >&2
+                exit 1
+              }
+            fi
+            python scripts/external_source_factory.py validate --baseline-root "$BASELINE_ROOT" \
               --allow-unsigned-publication-proofs \
               --allow-unsigned-active-release-sidecars
             exit 0
