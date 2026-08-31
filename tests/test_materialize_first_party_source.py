@@ -23,6 +23,10 @@ import materialize_first_party_source as materializer  # noqa: E402
 PLUGIN_ID = "com.xsec.workspace.sub-agent"
 
 
+def snapshot_dir(root: Path, plugin_id: str) -> Path:
+    return root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
+
+
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
@@ -91,7 +95,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
         }
 
     def make_factory(self, root: Path, *, traversal: bool = False) -> tuple[dict[str, object], dict[str, object]]:
-        plugin = root / "plugins" / PLUGIN_ID
+        plugin = snapshot_dir(root, PLUGIN_ID)
         artifacts = plugin / ".xsec-market" / "artifacts"
         stable = self.archive(artifacts / "stable.xsec-plugin", "1.0.0")
         beta = self.archive(artifacts / "beta.xsec-plugin", "1.1.0", traversal=traversal)
@@ -123,7 +127,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 "plugins": [
                     {
                         "name": PLUGIN_ID,
-                        "source": {"source": "local", "path": f"./plugins/{PLUGIN_ID}"},
+                        "source": {"source": "local", "path": f"./.xsec-factory/snapshots/{PLUGIN_ID}"},
                         "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
                         "category": "Security",
                     }
@@ -668,7 +672,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             factory = Path(directory) / "factory"
             factory.mkdir()
             _, beta = self.make_factory(factory)
-            artifact = factory / "plugins" / PLUGIN_ID / ".xsec-market" / beta["artifacts"][0]["url"]
+            artifact = snapshot_dir(factory, PLUGIN_ID) / ".xsec-market" / beta["artifacts"][0]["url"]
             artifact.write_bytes(artifact.read_bytes() + b"changed")
 
             with self.assertRaisesRegex(materializer.MaterializationError, "SHA-256 does not match"):
@@ -677,7 +681,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
     def test_filter_index_removes_factory_only_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-index-") as directory:
             root = Path(directory)
-            plugin = root / "plugins" / PLUGIN_ID
+            plugin = snapshot_dir(root, PLUGIN_ID)
             (plugin / ".xsec-market").mkdir(parents=True)
             (plugin / ".xsec-market" / "release.sig.jws.json").write_text("signature", encoding="utf-8")
             (plugin / "old.xsec-plugin").write_text("artifact", encoding="utf-8")
@@ -772,7 +776,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             factory = Path(directory) / "factory"
             factory.mkdir()
             self.make_factory(factory)
-            relative = f"plugins/{PLUGIN_ID}/.xsec-market/releases.json"
+            relative = f".xsec-factory/snapshots/{PLUGIN_ID}/.xsec-market/releases.json"
             blob = subprocess.run(
                 ["git", "cat-file", "blob", f"HEAD:{relative}"],
                 cwd=str(factory),
@@ -798,7 +802,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             factory.mkdir()
             stable, beta = self.make_factory(factory)
             authenticated = materializer.verify_retained_release_signature(factory, PLUGIN_ID)
-            release_path = factory / "plugins" / PLUGIN_ID / ".xsec-market" / "releases.json"
+            release_path = snapshot_dir(factory, PLUGIN_ID) / ".xsec-market" / "releases.json"
             mutated = json.loads(release_path.read_text(encoding="utf-8"))
             mutated["channels"]["stable"]["releaseId"] = beta["releaseId"]
             write_json(release_path, mutated)

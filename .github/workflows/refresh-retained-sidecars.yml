@@ -114,7 +114,7 @@ jobs:
           PLUGIN_ID: ${{ inputs.plugin_id }}
         run: |
           set -euo pipefail
-          expected="plugins/${PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json"
+          expected=".xsec-factory/snapshots/${PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json"
           mapfile -t changed < <(
             { git diff --name-only --no-renames HEAD; git ls-files --others --exclude-standard; } | LC_ALL=C sort -u
           )

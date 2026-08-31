@@ -26,7 +26,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from build_market import WINDOWS_RESERVED_DEVICE_NAMES
+from build_market import SNAPSHOT_ROOT_RELATIVE_PATH, WINDOWS_RESERVED_DEVICE_NAMES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,9 +201,9 @@ def canonical_plugin_subject(source_path: object) -> str:
         fail("marketplace plugin source.path must be a non-empty string")
     path = PurePosixPath(source_path)
     if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} or ":" in part for part in path.parts):
-        fail("marketplace plugin source.path must remain below plugins/")
-    if path.parts[0] != "plugins":
-        fail("marketplace plugin source.path must be below plugins/")
+        fail("marketplace plugin source.path must remain below .xsec-factory/snapshots/")
+    if tuple(path.parts[: len(SNAPSHOT_ROOT_RELATIVE_PATH.parts)]) != SNAPSHOT_ROOT_RELATIVE_PATH.parts:
+        fail("marketplace plugin source.path must be below .xsec-factory/snapshots/")
     return "/".join(path.parts)
 
 
@@ -503,7 +503,7 @@ def retained_release_document(root: Path, plugin_id: str) -> MarketplaceDocument
         or plugin_id.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES
     ):
         fail("retained release refresh plugin ID is unsafe")
-    subject = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    subject = (SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id / ".xsec-market" / "releases.json").as_posix()
     matching = [document for document in marketplace_documents(root) if document.subject == subject]
     if len(matching) != 1 or matching[0].purpose != "xsec.plugin-marketplace.release":
         fail("retained release refresh must name a current Marketplace release document")

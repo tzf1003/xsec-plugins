@@ -32,7 +32,7 @@ import sys
 import tempfile
 import zipfile
 
-from build_market import RELEASE_ID_PATTERN, is_link, load_release_document
+from build_market import SNAPSHOT_ROOT_RELATIVE_PATH, RELEASE_ID_PATTERN, is_link, load_release_document
 from external_source_factory import FIRST_PARTY_APPROVED_SOURCES
 from kms_marketplace_publisher import MarketplaceDocument, MarketplaceKmsPublisherError, verify_historical_sidecar_signature
 from validate_market import validate_archive, validate_zip_member
@@ -735,7 +735,7 @@ def selected_release_artifact(
 ) -> tuple[dict[str, object], Path]:
     if channel not in {"beta", "stable"}:
         fail("release channel must be beta or stable")
-    release_path = factory_root / "plugins" / plugin_id / ".xsec-market" / "releases.json"
+    release_path = factory_root / SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id / ".xsec-market" / "releases.json"
     if release_document is None:
         try:
             document = load_release_document(release_path, plugin_id)
@@ -792,11 +792,11 @@ def selected_release_artifact(
 def verify_retained_release_signature(factory_root: Path, plugin_id: str) -> dict[str, object]:
     """Authenticate the exact release index before using any artifact it names."""
 
-    release_path = factory_root / "plugins" / plugin_id / ".xsec-market" / "releases.json"
+    release_path = factory_root / SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id / ".xsec-market" / "releases.json"
     sidecar = release_path.with_name("releases.json.sig.jws.json")
     if is_link(release_path) or is_link(sidecar) or not release_path.is_file() or not sidecar.is_file():
         fail("retained release history and its KMS sidecar must be regular files")
-    subject = PurePosixPath("plugins") / plugin_id / ".xsec-market" / "releases.json"
+    subject = PurePosixPath(*SNAPSHOT_ROOT_RELATIVE_PATH.parts) / plugin_id / ".xsec-market" / "releases.json"
     # Do not verify the potentially EOL-converted Windows worktree file. The
     # trusted Factory preflight pins HEAD to origin/main, and the signature is
     # over the Git blob that Desktop receives from the protected repository.
@@ -942,26 +942,32 @@ def require_factory_history(factory_root: Path) -> Path:
 
 
 def filter_index_paths(plugin_id: str) -> int:
-    """Internal ``git filter-branch`` index filter; never emits source files."""
+    """Keep one snapshot package and rewrite it to the standalone source layout."""
 
-    prefix = PurePosixPath("plugins") / plugin_id
-    output = run_git(["ls-files", "-z"], cwd=Path.cwd()).stdout
-    for raw_path in output.split(b"\0"):
-        if not raw_path:
-            continue
+    prefix = PurePosixPath(*SNAPSHOT_ROOT_RELATIVE_PATH.parts) / plugin_id
+    destination = PurePosixPath("plugins") / plugin_id
+    output = run_git(["ls-files", "-s", "-z"], cwd=Path.cwd()).stdout
+    for entry in (entry for entry in output.split(b"\0") if entry):
+        try:
+            header, raw_path = entry.split(b"\t", 1)
+            mode, object_id, stage = header.decode("ascii").split(" ")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise MaterializationError("legacy plugin history has an invalid Git index entry") from error
+        if stage != "0":
+            fail("legacy plugin history has an unmerged Git index entry")
         try:
             value = raw_path.decode("utf-8", errors="strict")
         except UnicodeDecodeError as error:
             raise MaterializationError("legacy plugin history contains a non-UTF-8 path") from error
         path = PurePosixPath(value)
         try:
-            path.relative_to(prefix)
+            relative = path.relative_to(prefix)
         except ValueError:
-            # fast-export is already path-scoped. Refuse rather than carrying
-            # an unrelated Factory file into a source repository.
             fail("legacy history filter retained a path outside the selected plugin")
-        if source_member_is_forbidden(path):
-            run_git(["update-index", "--force-remove", "--", value], cwd=Path.cwd())
+        run_git(["update-index", "--force-remove", "--", value], cwd=Path.cwd())
+        if not source_member_is_forbidden(path):
+            target = (destination / relative).as_posix()
+            run_git(["update-index", "--add", "--cacheinfo", f"{mode},{object_id},{target}"], cwd=Path.cwd())
     return 0
 
 
@@ -993,7 +999,7 @@ def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) 
                 "--show-original-ids",
                 "main",
                 "--",
-                f"plugins/{plugin_id}",
+                (SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id).as_posix(),
             ]
         ),
         stdout=subprocess.PIPE,

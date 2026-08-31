@@ -23,7 +23,7 @@ import zipfile
 
 REGISTRY_RELATIVE_PATH = Path(".xsec-factory") / "registry.json"
 MARKETPLACE_RELATIVE_PATH = Path(".agents") / "plugins" / "marketplace.json"
-PLUGIN_ROOT_RELATIVE_PATH = Path("plugins")
+SNAPSHOT_ROOT_RELATIVE_PATH = Path(".xsec-factory") / "snapshots"
 PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "publications"
 ARTIFACT_DIR_NAME = "artifacts"
 PUBLICATION_ATTESTATION_SCHEMA_VERSION = 1
@@ -552,7 +552,7 @@ def require_link_free_snapshot_tree(root: Path, label: str) -> None:
 def sync_plugin_snapshot(root: Path, plugin_id: str, source_dir: Path) -> Path:
     """Atomically replace package inputs while retaining Factory release history.
 
-    A discoverable ``plugins/<id>`` snapshot must contain the exact package
+    A discoverable ``.xsec-factory/snapshots/<id>`` snapshot must contain the exact package
     inputs, not only ``plugin.json``: validation rebuilds it and compares the
     result to the selected immutable artifact digest.  The generated
     ``.xsec-market`` directory is copied from the prior snapshot rather than
@@ -560,7 +560,7 @@ def sync_plugin_snapshot(root: Path, plugin_id: str, source_dir: Path) -> Path:
     """
 
     destination = plugin_snapshot_dir(root, plugin_id)
-    plugin_root = root / PLUGIN_ROOT_RELATIVE_PATH
+    plugin_root = root / SNAPSHOT_ROOT_RELATIVE_PATH
     require_write_path_below(root, destination, "plugin snapshot")
     if is_link(plugin_root):
         fail("plugins snapshot root must not be a symbolic link")
@@ -745,9 +745,9 @@ def require_write_path_below(root: Path, path: Path, label: str) -> None:
 
 def plugin_snapshot_dir(root: Path, plugin_id: str) -> Path:
     safe_plugin_id(plugin_id)
-    candidate = root / PLUGIN_ROOT_RELATIVE_PATH / plugin_id
+    candidate = root / SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
     try:
-        candidate.resolve(strict=False).relative_to((root / PLUGIN_ROOT_RELATIVE_PATH).resolve(strict=False))
+        candidate.resolve(strict=False).relative_to((root / SNAPSHOT_ROOT_RELATIVE_PATH).resolve(strict=False))
     except ValueError as error:
         raise FactoryError("plugin snapshot path escaped the Factory root") from error
     return candidate
@@ -830,7 +830,7 @@ def published_plugin_entries(root: Path, registry: FactoryRegistry) -> list[dict
         entries.append(
             {
                 "name": registration.plugin_id,
-                "source": {"source": "local", "path": f"./plugins/{registration.plugin_id}"},
+                "source": {"source": "local", "path": f"./.xsec-factory/snapshots/{registration.plugin_id}"},
                 "policy": {"installation": registration.installation, "authentication": registration.authentication},
                 "category": registration.category,
             }

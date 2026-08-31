@@ -257,7 +257,7 @@ jobs:
           PLUGIN_ID: ${{ steps.build.outputs.plugin_id }}
         run: |
           set -euo pipefail
-          git add -- .agents/plugins/marketplace.json "plugins/$PLUGIN_ID" ".xsec-factory/publications/$PLUGIN_ID.json"
+          git add -- .agents/plugins/marketplace.json ".xsec-factory/snapshots/$PLUGIN_ID" ".xsec-factory/publications/$PLUGIN_ID.json"
           git diff --cached --quiet && exit 0
           git config user.name "xsec-marketplace-factory[bot]"
           git config user.email "xsec-marketplace-factory[bot]@users.noreply.github.com"

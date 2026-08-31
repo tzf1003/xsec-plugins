@@ -13,7 +13,7 @@ import argparse
 import json
 from pathlib import Path
 
-from build_market import RELEASE_ID_PATTERN, ROOT, is_link, load_release_document, stable_json
+from build_market import SNAPSHOT_ROOT_RELATIVE_PATH, RELEASE_ID_PATTERN, ROOT, is_link, load_release_document, stable_json
 
 
 class PromotionError(ValueError):
@@ -23,7 +23,7 @@ class PromotionError(ValueError):
 def release_path(root: Path, plugin_id: str) -> Path:
     if not plugin_id or plugin_id in {".", ".."} or any(character in plugin_id for character in ("/", "\\", ":", "\x00")):
         raise PromotionError("plugin ID must be a safe marketplace directory name")
-    candidate = root / "plugins" / plugin_id / ".xsec-market" / "releases.json"
+    candidate = root / SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id / ".xsec-market" / "releases.json"
     if is_link(candidate) or is_link(candidate.parent):
         raise PromotionError("release metadata must not use symbolic links")
     try:

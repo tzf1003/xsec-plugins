@@ -13,7 +13,7 @@ from factory_core import (
     FactoryError,
     MAX_PUBLICATION_ATTESTATION_BYTES,
     MARKETPLACE_RELATIVE_PATH,
-    PLUGIN_ROOT_RELATIVE_PATH,
+    SNAPSHOT_ROOT_RELATIVE_PATH,
     PUBLICATIONS_RELATIVE_PATH,
     REGISTRY_RELATIVE_PATH,
     artifact_url,
@@ -355,7 +355,7 @@ def validate_factory(
         if is_link(publication_attestation_root) or not publication_attestation_root.is_dir():
             raise FactoryError("publication attestation root must be a regular directory")
     expected_attestations: dict[str, bytes] = {}
-    snapshot_root = root / PLUGIN_ROOT_RELATIVE_PATH
+    snapshot_root = root / SNAPSHOT_ROOT_RELATIVE_PATH
     expected_ids = {entry.plugin_id for entry in registry.plugins}
     if snapshot_root.exists():
         if not snapshot_root.is_dir() or snapshot_root.is_symlink():

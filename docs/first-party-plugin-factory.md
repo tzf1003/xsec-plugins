@@ -100,7 +100,8 @@ plugins/<plugin-id>/
 ```
 
 历史通过 `git fast-export`/`fast-import` 从 Factory `main` 中仅保留
-`plugins/<plugin-id>`，再在每个历史 commit 的 index 中移除 `.xsec-market`、
+`.xsec-factory/snapshots/<plugin-id>`，再重写为源码仓库的
+`plugins/<plugin-id>`，并在每个历史 commit 的 index 中移除 `.xsec-market`、
 `.xsec-plugin` 和 `.sig.jws.json`。生成后会删除 filter 的 original refs、过期 reflog
 并执行 GC；两条最终分支再次断言没有 Marketplace metadata、artifact 或 signature。
 候选 Git 仓库用私有空 `--template` 初始化，持久及逐命令强制 `core.hooksPath` 指向 null device，
@@ -211,7 +212,7 @@ Factory gate 的身份。缺少任一配置、取消、runner 异常或 merge �
 分支头。任一检查或 merge 失败都不会让 stale PR 合入，也不会把 pending Factory gate 变为
 可复用的 green status。
 retained sidecar repair 同样走此门禁：diff 必须严格只修改一个现有
-`plugins/<plugin-id>/.xsec-market/releases.json.sig.jws.json`，并在 exact head 上重新进行
+`.xsec-factory/snapshots/<plugin-id>/.xsec-market/releases.json.sig.jws.json`，并在 exact head 上重新进行
 KMS/JWS 验签、source gate 与 Codex review；它不改变 release history 或 channel pointer。
 唯一允许的 no-pointer 例外是当前 Stable 已选中当前 Beta 的 registered external Stable completion：
 它必须只包含严格形状的已签名 provenance/status 更新，重新校验外部 `main` ref 后才可合并，且不会

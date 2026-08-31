@@ -20,11 +20,16 @@ from factory_core import (  # noqa: E402
     require_portable_package_paths,
     safe_plugin_id,
     safe_repository,
+    SNAPSHOT_ROOT_RELATIVE_PATH,
     write_marketplace_index,
 )
 from factory_publish import beta_publish, registry_prepare, stable_promote  # noqa: E402
 from factory_validate import validate_factory  # noqa: E402
 import factory_attestation  # noqa: E402
+
+
+def snapshot_dir(factory: Path) -> Path:
+    return factory / SNAPSHOT_ROOT_RELATIVE_PATH / "com.example.sample"
 
 
 class MarketplaceFactoryTests(unittest.TestCase):
@@ -94,12 +99,12 @@ class MarketplaceFactoryTests(unittest.TestCase):
                 "example/factory",
                 root / "artifacts",
             )
-            snapshot = factory / "plugins" / "com.example.sample"
+            snapshot = snapshot_dir(factory)
             self.assertTrue((snapshot / "plugin.json").is_file())
             self.assertTrue((snapshot / "frontend" / "index.js").is_file())
             self.assertTrue((snapshot / ".xsec-market" / "releases.json").is_file())
             index = json.loads((factory / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
-            self.assertEqual(index["plugins"][0]["source"], {"source": "local", "path": "./plugins/com.example.sample"})
+            self.assertEqual(index["plugins"][0]["source"], {"source": "local", "path": "./.xsec-factory/snapshots/com.example.sample"})
             release = load_release_document(snapshot / ".xsec-market" / "releases.json", "com.example.sample")
             self.assertEqual(release["channels"]["beta"]["releaseId"], built["release_id"])
             self.assertIsNone(release["channels"]["stable"])
@@ -272,7 +277,7 @@ class MarketplaceFactoryTests(unittest.TestCase):
             self.configure_registry(factory)
             beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
 
-            manifest_path = factory / "plugins" / "com.example.sample" / "plugin.json"
+            manifest_path = snapshot_dir(factory) / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["extensions"]["com.xsec.desktop"]["engines"]["xsec"] = ">=999.0.0"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -289,7 +294,7 @@ class MarketplaceFactoryTests(unittest.TestCase):
             self.configure_registry(factory)
             beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
 
-            manifest_path = factory / "plugins" / "com.example.sample" / "plugin.json"
+            manifest_path = snapshot_dir(factory) / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             # This leaves the name, SemVer, and engines untouched, but changes
             # discovery/runtime metadata that is also inside the archive.
@@ -384,7 +389,7 @@ class MarketplaceFactoryTests(unittest.TestCase):
             source = self.make_source(root)
             self.configure_registry(factory)
             beta_publish(factory, "com.example.sample", source, "a" * 40, "example/factory", root / "artifacts")
-            release_path = factory / "plugins" / "com.example.sample" / ".xsec-market" / "releases.json"
+            release_path = snapshot_dir(factory) / ".xsec-market" / "releases.json"
             release = json.loads(release_path.read_text(encoding="utf-8"))
             release["releases"][0]["artifacts"][0]["url"] = "https://github.com/example/factory/releases/download/other/other.xsec-plugin"
             release_path.write_text(json.dumps(release), encoding="utf-8")
@@ -416,7 +421,7 @@ class MarketplaceFactoryTests(unittest.TestCase):
             write_marketplace_index(factory, load_registry(factory))
             validate_factory(factory, "example/factory")
 
-            shutil.rmtree(factory / "plugins" / "com.example.sample")
+            shutil.rmtree(snapshot_dir(factory))
             (factory / ".xsec-factory" / "publications" / "com.example.sample.json").unlink()
             with self.assertRaisesRegex(FactoryError, "disabled plugin com.example.sample must retain"):
                 validate_factory(factory, "example/factory")
@@ -439,7 +444,7 @@ class MarketplaceFactoryTests(unittest.TestCase):
             registry["plugins"] = []
             registry_path.write_text(json.dumps(registry), encoding="utf-8")
             write_marketplace_index(factory, load_registry(factory))
-            shutil.rmtree(factory / "plugins" / "com.example.sample")
+            shutil.rmtree(snapshot_dir(factory))
             (factory / ".xsec-factory" / "publications" / "com.example.sample.json").unlink()
 
             with self.assertRaisesRegex(FactoryError, "cannot be removed from the registry"):
@@ -484,7 +489,7 @@ class MarketplaceFactoryTests(unittest.TestCase):
 
             baseline = root / "trusted-baseline"
             shutil.copytree(factory, baseline)
-            release_path = factory / "plugins" / "com.example.sample" / ".xsec-market" / "releases.json"
+            release_path = snapshot_dir(factory) / ".xsec-market" / "releases.json"
             release = json.loads(release_path.read_text(encoding="utf-8"))
             release["releases"].reverse()
             release_path.write_text(json.dumps(release), encoding="utf-8")

@@ -75,8 +75,8 @@ jobs:
           else
             factory_content="$(printf '%s' "$pr_files" | jq -e '
               def plugin_id: "[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?";
-              def release_index: test("^plugins/" + plugin_id + "/\\.xsec-market/releases\\.json$");
-              def release_sidecar: test("^plugins/" + plugin_id + "/\\.xsec-market/releases\\.json\\.sig\\.jws\\.json$");
+              def release_index: test("^\\.xsec-factory/snapshots/" + plugin_id + "/\\.xsec-market/releases\\.json$");
+              def release_sidecar: test("^\\.xsec-factory/snapshots/" + plugin_id + "/\\.xsec-market/releases\\.json\\.sig\\.jws\\.json$");
               def factory_document: test("^\\.xsec-factory/(?:official-registry\\.json|official-(?:publications|publication-proofs|adoptions|adoption-proofs|status)/" + plugin_id + "\\.json)$");
               any(.[][]; .filename | if type == "string" then (release_index or release_sidecar or factory_document) else false end)
             ' >/dev/null && echo true || echo false)"

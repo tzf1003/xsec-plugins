@@ -140,12 +140,16 @@ def write_historical_release_sidecar(root: Path, plugin_id: str, *, source_revis
     return write_historical_sidecar(
         publisher.MarketplaceDocument(
             "xsec.plugin-marketplace.release",
-            f"plugins/{plugin_id}/.xsec-market/releases.json",
+            f".xsec-factory/snapshots/{plugin_id}/.xsec-market/releases.json",
             release,
         ),
         release.with_name(release.name + ".sig.jws.json"),
         source_revision=source_revision,
     )
+
+
+def snapshot_dir(root: Path, plugin_id: str) -> Path:
+    return root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
 
 
 def write_publication_proof(root: Path, plugin_id: str, *, source_revision: str = BETA_SHA) -> Path:
@@ -233,7 +237,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
     def make_first_party_adoption(self, root: Path) -> str:
         plugin_id = "com.xsec.workspace.sub-agent"
         self.make_factory(root, self.first_party_entry())
-        snapshot = root / "plugins" / plugin_id
+        snapshot = snapshot_dir(root, plugin_id)
         snapshot.mkdir(parents=True)
         write_json(
             snapshot / "plugin.json",
@@ -284,7 +288,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         write_proof: bool = True,
     ) -> str:
         factory.stage_beta(root, PLUGIN_ID, source_root)
-        snapshot = root / "plugins" / PLUGIN_ID
+        snapshot = snapshot_dir(root, PLUGIN_ID)
         build_market.build_plugin(snapshot, snapshot)
         factory.record_beta(root, PLUGIN_ID, source_sha, "test-publisher")
         if write_proof:
@@ -518,7 +522,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 root / ".agents" / "plugins" / "marketplace.json",
                 {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": [entry]},
             )
-            (root / "plugins" / PLUGIN_ID).mkdir(parents=True)
+            snapshot_dir(root, PLUGIN_ID).mkdir(parents=True)
 
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "cannot claim existing plugin"):
                 factory.stage_beta(root, PLUGIN_ID, source)
@@ -539,7 +543,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
 
             history = json.loads(factory.release_path(root, PLUGIN_ID).read_text(encoding="utf-8"))
             self.assertEqual(history["releases"][0]["releaseId"], original_release_id)
-            build_market.build_plugin(root / "plugins" / PLUGIN_ID, root / "plugins" / PLUGIN_ID)
+            build_market.build_plugin(snapshot_dir(root, PLUGIN_ID), snapshot_dir(root, PLUGIN_ID))
             self.assertEqual(len(json.loads(factory.release_path(root, PLUGIN_ID).read_text(encoding="utf-8"))["releases"]), 2)
 
     def test_changed_bytes_with_the_same_semver_are_rejected_by_existing_market_builder(self) -> None:
@@ -552,7 +556,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             (source / "package" / "frontend.js").write_text("export function activate() { return 'changed'; }\n", encoding="utf-8")
             factory.stage_beta(root, PLUGIN_ID, source)
             with self.assertRaisesRegex(ValueError, "already contains immutable content for version 1.0.0"):
-                build_market.build_plugin(root / "plugins" / PLUGIN_ID, root / "plugins" / PLUGIN_ID)
+                build_market.build_plugin(snapshot_dir(root, PLUGIN_ID), snapshot_dir(root, PLUGIN_ID))
 
     def test_stable_requires_exactly_the_selected_beta_content_and_records_main_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-stable-") as directory:
@@ -582,7 +586,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             release_id = self.make_first_party_adoption(root)
             source_root = workspace / "source-main"
             shutil.copytree(
-                root / "plugins" / plugin_id,
+                snapshot_dir(root, plugin_id),
                 source_root / "plugins" / plugin_id,
                 ignore=shutil.ignore_patterns(".xsec-market"),
             )
@@ -705,7 +709,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.make_factory(root, self.registry_entry())
             release_id = self.stage_and_record_beta(root, source)
 
-            self.assertFalse((root / "plugins" / PLUGIN_ID / "node_modules").exists())
+            self.assertFalse((snapshot_dir(root, PLUGIN_ID) / "node_modules").exists())
             self.assertEqual(factory.verify_stable(root, PLUGIN_ID, source, release_id)["release_id"], release_id)
 
     def test_external_source_rejects_nonportable_desktop_package_paths(self) -> None:
@@ -913,7 +917,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.assertTrue(sidecar.is_file())
             factory.validate_registry_and_snapshots(root)
 
-            snapshot = root / "plugins" / PLUGIN_ID
+            snapshot = snapshot_dir(root, PLUGIN_ID)
             artifacts = sorted((snapshot / ".xsec-market" / "artifacts").glob("*.xsec-plugin"))
             self.assertEqual(len(artifacts), 2)
 
@@ -953,7 +957,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 factory.validate_registry_and_snapshots(root)
             sidecar = write_historical_release_sidecar(root, PLUGIN_ID)
 
-            shutil.rmtree(root / "plugins" / PLUGIN_ID)
+            shutil.rmtree(snapshot_dir(root, PLUGIN_ID))
             factory.publication_path(root, PLUGIN_ID).unlink()
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "must retain its immutable snapshot"):
                 factory.validate_registry_and_snapshots(root)
@@ -971,7 +975,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             # external package instead.
             write_json(root / ".xsec-factory" / "official-registry.json", {"schemaVersion": 2, "plugins": []})
             factory.publication_path(root, PLUGIN_ID).unlink()
-            manifest_path = root / "plugins" / PLUGIN_ID / "plugin.json"
+            manifest_path = snapshot_dir(root, PLUGIN_ID) / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["extensions"]["com.xsec.desktop"]["permissions"] = {"process.spawn": {}}
             write_json(manifest_path, manifest)
@@ -1003,7 +1007,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 root / ".agents" / "plugins" / "marketplace.json",
                 {"name": "xsec-official", "interface": {"displayName": "Test"}, "plugins": []},
             )
-            shutil.rmtree(root / "plugins" / PLUGIN_ID)
+            shutil.rmtree(snapshot_dir(root, PLUGIN_ID))
             factory.publication_path(root, PLUGIN_ID).unlink()
 
             with self.assertRaisesRegex(
@@ -1332,7 +1336,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-external-snapshot-link-") as directory:
             root = Path(directory)
             self.make_factory(root)
-            snapshot = root / "plugins" / "com.xsec.asset-discovery"
+            snapshot = snapshot_dir(root, "com.xsec.asset-discovery")
             snapshot.mkdir(parents=True)
 
             # Keep the regression deterministic on Windows machines where
@@ -1399,7 +1403,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.make_factory(root, self.registry_entry())
             self.stage_and_record_beta(root, source)
 
-            manifest_path = root / "plugins" / PLUGIN_ID / "plugin.json"
+            manifest_path = snapshot_dir(root, PLUGIN_ID) / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["extensions"]["com.xsec.desktop"]["engines"] = {"xsec": ">=2", "pluginApi": "^2"}
             write_json(manifest_path, manifest)
@@ -2038,7 +2042,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             old_release_id = self.make_first_party_adoption(root)
             plugin_id = "com.xsec.workspace.sub-agent"
             source = root / "source"
-            shutil.copytree(root / "plugins" / plugin_id, source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
+            shutil.copytree(snapshot_dir(root, plugin_id), source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
             source_manifest = source / "plugins" / plugin_id / "plugin.json"
             manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
             manifest["version"] = "1.0.1"
@@ -2046,7 +2050,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             (source / "plugins" / plugin_id / "frontend.js").write_text("export function activate() { return 'next'; }\n", encoding="utf-8")
 
             factory.stage_beta(root, plugin_id, source)
-            snapshot = root / "plugins" / plugin_id
+            snapshot = snapshot_dir(root, plugin_id)
             build_market.build_plugin(snapshot, snapshot)
             factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
             write_historical_release_sidecar(root, plugin_id, source_revision="d" * 40)
@@ -2100,12 +2104,12 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             # Beta provenance event and must start a new smoke cycle.
             source = root / "source"
             shutil.copytree(
-                root / "plugins" / plugin_id,
+                snapshot_dir(root, plugin_id),
                 source / "plugins" / plugin_id,
                 ignore=shutil.ignore_patterns(".xsec-market"),
             )
             factory.stage_beta(root, plugin_id, source)
-            snapshot = root / "plugins" / plugin_id
+            snapshot = snapshot_dir(root, plugin_id)
             build_market.build_plugin(snapshot, snapshot)
             factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
             factory.record_status(
@@ -2150,12 +2154,12 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             # event for its current release/source tuple has been recorded.
             source = root / "source"
             shutil.copytree(
-                root / "plugins" / plugin_id,
+                snapshot_dir(root, plugin_id),
                 source / "plugins" / plugin_id,
                 ignore=shutil.ignore_patterns(".xsec-market"),
             )
             factory.stage_beta(root, plugin_id, source)
-            snapshot = root / "plugins" / plugin_id
+            snapshot = snapshot_dir(root, plugin_id)
             build_market.build_plugin(snapshot, snapshot)
             factory.record_beta(root, plugin_id, next_sha, "test-publisher")
             write_publication_proof(root, plugin_id, source_revision=next_sha)
@@ -2174,7 +2178,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.make_first_party_adoption(root)
             plugin_id = "com.xsec.workspace.sub-agent"
             source = root / "source"
-            shutil.copytree(root / "plugins" / plugin_id, source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
+            shutil.copytree(snapshot_dir(root, plugin_id), source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
             manifest_path = source / "plugins" / plugin_id / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["version"] = "1.0.1"
@@ -2185,7 +2189,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             )
 
             factory.stage_beta(root, plugin_id, source)
-            snapshot = root / "plugins" / plugin_id
+            snapshot = snapshot_dir(root, plugin_id)
             build_market.build_plugin(snapshot, snapshot)
             factory.record_beta(root, plugin_id, "d" * 40, "test-publisher")
             write_historical_release_sidecar(root, plugin_id, source_revision="d" * 40)
@@ -2321,7 +2325,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         )
         self.assertNotIn("steps.external-stable.outputs.changed == 'true'", publisher_workflow)
         self.assertIn("duplicate source delivery", publisher_workflow)
-        self.assertIn("git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory", publisher_workflow)
+        self.assertIn("git status --porcelain --untracked-files=all -- .agents/plugins .xsec-factory", publisher_workflow)
         self.assertIn("Record Factory Beta state", publisher_workflow)
         self.assertIn("check-main-rebuild", publisher_workflow)
         self.assertIn("SOURCE_STABLE_REF: ${{ steps.external-request.outputs.stable_ref }}", publisher_workflow)

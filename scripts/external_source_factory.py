@@ -4,7 +4,7 @@
 This script is deliberately used only by the protected ``publish.yml``
 workflow.  It never obtains GitHub credentials, runs source build scripts, or
 signs anything.  The workflow supplies an exact, already-checked-out commit;
-this bridge snapshots that package below ``plugins/<id>/`` so the existing
+this bridge snapshots that package below ``.xsec-factory/snapshots/<id>/`` so the existing
 official builder, KMS publisher, release index, and Desktop marketplace reader
 keep one compatible on-disk contract.
 
@@ -30,6 +30,7 @@ from build_market import (
     MARKETPLACE_RELATIVE_PATH,
     RELEASE_ID_PATTERN,
     ROOT,
+    SNAPSHOT_ROOT_RELATIVE_PATH,
     WINDOWS_RESERVED_DEVICE_NAMES,
     is_link,
     iter_plugin_files,
@@ -60,7 +61,6 @@ ADOPTIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoptions"
 ADOPTION_PROOFS_RELATIVE_PATH = OFFICIAL_ADOPTION_PROOFS_RELATIVE_PATH
 STATUSES_RELATIVE_PATH = Path(".xsec-factory") / "official-status"
 STATUS_PROOFS_RELATIVE_PATH = OFFICIAL_STATUS_PROOFS_RELATIVE_PATH
-PLUGIN_ROOT_RELATIVE_PATH = Path("plugins")
 GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 # Keep this in lockstep with Desktop's package/catalog validator: ASCII
 # lowercase/digits, 64 bytes at most, no terminal separator or repeated
@@ -643,11 +643,11 @@ def prepare(root: Path, plugin_id: str, channel: str, source_sha: str) -> dict[s
 
 def snapshot_directory(root: Path, plugin_id: str) -> Path:
     plugin_id = safe_plugin_id(plugin_id)
-    destination = root / PLUGIN_ROOT_RELATIVE_PATH / plugin_id
+    destination = root / SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
     try:
-        destination.resolve(strict=False).relative_to((root / PLUGIN_ROOT_RELATIVE_PATH).resolve(strict=False))
+        destination.resolve(strict=False).relative_to((root / SNAPSHOT_ROOT_RELATIVE_PATH).resolve(strict=False))
     except ValueError as error:
-        raise ExternalSourceFactoryError("plugin snapshot path escaped plugins/") from error
+        raise ExternalSourceFactoryError("plugin snapshot path escaped .xsec-factory/snapshots/") from error
     return destination
 
 
@@ -1012,7 +1012,7 @@ def swap_snapshot(root: Path, destination: Path, source_dir: Path) -> None:
     is in place. This routine only operates below the checked-out Factory root.
     """
 
-    plugin_root = root / PLUGIN_ROOT_RELATIVE_PATH
+    plugin_root = root / SNAPSHOT_ROOT_RELATIVE_PATH
     if is_link(plugin_root):
         fail("plugins snapshot root must not be a symbolic link")
     plugin_root.mkdir(parents=True, exist_ok=True)
@@ -1059,7 +1059,7 @@ def swap_snapshot(root: Path, destination: Path, source_dir: Path) -> None:
 def marketplace_entry(registration: Registration) -> dict[str, object]:
     return {
         "name": registration.plugin_id,
-        "source": {"source": "local", "path": f"./plugins/{registration.plugin_id}"},
+        "source": {"source": "local", "path": f"./.xsec-factory/snapshots/{registration.plugin_id}"},
         "policy": {"installation": registration.installation, "authentication": registration.authentication},
         "category": registration.category,
     }
@@ -1758,7 +1758,7 @@ def validate_adoption(
         if require_active_release_sidecar:
             fail(f"first-party plugin {registration.plugin_id} KMS release sidecar is unavailable")
     else:
-        release_subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
+        release_subject = f".xsec-factory/snapshots/{registration.plugin_id}/.xsec-market/releases.json"
         try:
             verify_historical_sidecar_signature(
                 release_sidecar.read_bytes(),
@@ -2448,7 +2448,7 @@ def validate_disabled_release_sidecar(
         if require_release_sidecar:
             fail(f"disabled external official plugin {registration.plugin_id} KMS release sidecar is unavailable")
         return
-    subject = f"plugins/{registration.plugin_id}/.xsec-market/releases.json"
+    subject = f".xsec-factory/snapshots/{registration.plugin_id}/.xsec-market/releases.json"
     document = MarketplaceDocument("xsec.plugin-marketplace.release", subject, release)
     try:
         verify_historical_sidecar_signature(sidecar.read_bytes(), document)
@@ -3181,7 +3181,7 @@ def validate_registry_and_snapshots(
                 "as an external Factory package"
             )
 
-    snapshot_root = root / PLUGIN_ROOT_RELATIVE_PATH
+    snapshot_root = root / SNAPSHOT_ROOT_RELATIVE_PATH
     if snapshot_root.exists():
         if is_link(snapshot_root) or not snapshot_root.is_dir():
             fail("official plugin snapshot directory must be a regular directory")

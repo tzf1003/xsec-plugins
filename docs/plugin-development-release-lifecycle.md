@@ -30,9 +30,22 @@
 
 当插件的开发源码位于独立 Git 仓库时，`xsec-plugins` 充当**官方签名的
 Factory/收录库**，而不是第二个开发仓库。外部仓库仍是代码唯一开发权威；
-Factory 只保存经过审批的发布快照、不可变 artifact、release history 和可审计的
-来源证据。因此不要在 `xsec-plugins/plugins/<id>/` 直接开发或把它当作应同步回
-外部仓库的源码目录。
+Factory 将可编辑源码放在 `xsec-plugins/plugins/<id>/` 的独立 Git 子项目中；
+发布快照、不可变 artifact、release history 和可审计来源证据只放在
+`.xsec-factory/snapshots/<id>/`。开发应在子项目中完成，不能编辑快照来替代源码提交。
+
+### 工厂布局迁移
+
+将旧 Factory 从直接插件目录迁移为 Git 子项目时，先把每个不可变快照移入
+`.xsec-factory/snapshots/<id>/`，再将 `plugins/<id>/` 固定为对应源码仓库的 `beta`
+子项目。旧 `.sig.jws.json` 绑定旧路径，不能复制到新位置；迁移提交只保留
+`.xsec-factory/layout-migration.json` 标记和无签名快照。受保护的
+`migrate-factory-layout-sidecars.yml` 会在 `main` 上重新签署现有 index、release
+history 与 provenance，并以单独 PR 删除标记。该工作流不构建新版本、不移动 Beta/Stable
+指针，也不签署 smoke status。
+
+标记合并后、手动执行该工作流前，必须先部署 Cloud broker 对新快照 subject 和该固定 workflow
+ref 的 allowlist；旧目录 subject 不保留兼容签署路径，缺少该生产策略时请求必须失败。
 
 先在 `.xsec-factory/official-registry.json` 提交经审查的 allowlist 条目。条目固定：
 
@@ -88,7 +101,7 @@ Beta 请求先读取 Factory `main` 中的 allowlist，再使用仅有 `Contents
 `Metadata: Read` 权限的 GitHub App 临时 token 检出**精确 SHA**。工作流必须证明该
 SHA 仍可从注册的 `beta` 分支到达，清除 checkout 凭据，并且只静态读取/复制/确定性
 打包：不会执行插件代码、Git hook、`npm`/`pnpm` 脚本或外部 build script。Factory
-随后将快照放入 `plugins/<id>/`，由原有不可变发布器构建并记录 Beta 来源证据。
+随后将快照放入 `.xsec-factory/snapshots/<id>/`，由原有不可变发布器构建并记录 Beta 来源证据。
 
 外部源码可达性校验的 Git transport 也有独立信任边界：checkout 固定为
 `https://github.com`，先拒绝非规范/明文 HTTP `origin`、`insteadOf` URL 重写、remote

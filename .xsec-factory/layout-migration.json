@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "layout": "git-subprojects-with-release-snapshots",
+  "pendingKmsSidecars": true
+}

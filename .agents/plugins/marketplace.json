@@ -8,7 +8,7 @@
       "name": "com.xsec.asset-discovery",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.asset-discovery"
+        "path": "./.xsec-factory/snapshots/com.xsec.asset-discovery"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -20,7 +20,7 @@
       "name": "com.xsec.attack-path",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.attack-path"
+        "path": "./.xsec-factory/snapshots/com.xsec.attack-path"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -32,7 +32,7 @@
       "name": "com.xsec.project-workspace",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.project-workspace"
+        "path": "./.xsec-factory/snapshots/com.xsec.project-workspace"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -44,7 +44,7 @@
       "name": "com.xsec.system-terminal",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.system-terminal"
+        "path": "./.xsec-factory/snapshots/com.xsec.system-terminal"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -56,7 +56,7 @@
       "name": "com.xsec.workspace.approvals",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.workspace.approvals"
+        "path": "./.xsec-factory/snapshots/com.xsec.workspace.approvals"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -68,7 +68,7 @@
       "name": "com.xsec.workspace.browser",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.workspace.browser"
+        "path": "./.xsec-factory/snapshots/com.xsec.workspace.browser"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -80,7 +80,7 @@
       "name": "com.xsec.workspace.conversation-tree",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.workspace.conversation-tree"
+        "path": "./.xsec-factory/snapshots/com.xsec.workspace.conversation-tree"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -92,7 +92,7 @@
       "name": "com.xsec.workspace.files",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.workspace.files"
+        "path": "./.xsec-factory/snapshots/com.xsec.workspace.files"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -104,7 +104,7 @@
       "name": "com.xsec.workspace.project-outcomes",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.workspace.project-outcomes"
+        "path": "./.xsec-factory/snapshots/com.xsec.workspace.project-outcomes"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -116,7 +116,7 @@
       "name": "com.xsec.workspace.sub-agent",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.workspace.sub-agent"
+        "path": "./.xsec-factory/snapshots/com.xsec.workspace.sub-agent"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
@@ -128,7 +128,7 @@
       "name": "com.xsec.workspace.traffic",
       "source": {
         "source": "local",
-        "path": "./plugins/com.xsec.workspace.traffic"
+        "path": "./.xsec-factory/snapshots/com.xsec.workspace.traffic"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",

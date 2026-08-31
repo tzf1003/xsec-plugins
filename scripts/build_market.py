@@ -24,7 +24,8 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE_RELATIVE_PATH = Path(".agents") / "plugins" / "marketplace.json"
 MARKETPLACE = ROOT / MARKETPLACE_RELATIVE_PATH
-PLUGIN_ROOT = ROOT / "plugins"
+SNAPSHOT_ROOT_RELATIVE_PATH = Path(".xsec-factory") / "snapshots"
+PLUGIN_ROOT = ROOT / SNAPSHOT_ROOT_RELATIVE_PATH
 ARTIFACT_DIR_NAME = "artifacts"
 # Dependency installs are not a reproducible source input. The external
 # Factory snapshot already excludes node_modules, so the shared deterministic
@@ -523,7 +524,7 @@ def copy_source_tree(output_root: Path) -> None:
         require_link_free_tree(source_dir, "plugin source tree")
         shutil.copytree(
             source_dir,
-            output_root / "plugins" / source_dir.name,
+            output_root / SNAPSHOT_ROOT_RELATIVE_PATH / source_dir.name,
             ignore=shutil.ignore_patterns("__pycache__", ".git", "*.sig", "*.sig.jws.json"),
         )
 
@@ -532,9 +533,9 @@ def active_marketplace_release_documents(output_root: Path) -> set[Path]:
     """Return release documents that the current marketplace will re-sign.
 
     Withdrawal removes a plugin from marketplace discovery but intentionally
-    leaves its immutable snapshot in ``plugins/``.  Its KMS sidecar is bound to
+    leaves its immutable snapshot in ``.xsec-factory/snapshots/``. Its KMS sidecar is bound to
     the retained historical release document and must therefore survive a later
-    global ``--clean``.  Parse only safe local ``plugins/`` source paths before
+    global ``--clean``. Parse only safe local snapshot source paths before
     deciding which sidecars are replaceable in this run.
     """
 
@@ -552,7 +553,7 @@ def active_marketplace_release_documents(output_root: Path) -> set[Path]:
     if not isinstance(entries, list):
         raise ValueError("marketplace.json plugins must be a list before sidecar cleanup")
 
-    output_plugins = output_root / "plugins"
+    output_plugins = output_root / SNAPSHOT_ROOT_RELATIVE_PATH
     active: set[Path] = set()
     for entry in entries:
         source = entry.get("source") if isinstance(entry, dict) else None
@@ -563,15 +564,16 @@ def active_marketplace_release_documents(output_root: Path) -> set[Path]:
         if (
             relative.is_absolute()
             or not relative.parts
-            or relative.parts[0] != "plugins"
+            or tuple(relative.parts[: len(SNAPSHOT_ROOT_RELATIVE_PATH.parts)])
+            != SNAPSHOT_ROOT_RELATIVE_PATH.parts
             or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
         ):
-            raise ValueError("marketplace plugin source.path must remain below plugins/ before sidecar cleanup")
+            raise ValueError("marketplace plugin source.path must remain below .xsec-factory/snapshots/ before sidecar cleanup")
         candidate = output_root.joinpath(*relative.parts)
         try:
             candidate.resolve(strict=False).relative_to(output_plugins.resolve(strict=False))
         except (OSError, ValueError) as error:
-            raise ValueError("marketplace plugin source.path escaped plugins/ before sidecar cleanup") from error
+            raise ValueError("marketplace plugin source.path escaped .xsec-factory/snapshots/ before sidecar cleanup") from error
         active.add((candidate / ".xsec-market" / "releases.json").resolve(strict=False))
     return active
 
@@ -585,7 +587,7 @@ def clean_generated_output(output_root: Path) -> None:
     KMS sidecars for currently discoverable plugins are regenerated in this
     publication; sidecars for withdrawn snapshots remain as signed history.
     """
-    output_plugins = output_root / "plugins"
+    output_plugins = output_root / SNAPSHOT_ROOT_RELATIVE_PATH
     if is_link(output_plugins):
         raise ValueError(f"generated plugin root must not be a symbolic link: {output_plugins}")
     if not output_plugins.exists():
@@ -606,7 +608,7 @@ def clean_generated_output(output_root: Path) -> None:
         try:
             release_root.resolve(strict=True).relative_to(output_plugins.resolve(strict=True))
         except (OSError, ValueError) as error:
-            raise ValueError(f"generated output path must remain below plugins/: {release_root}") from error
+            raise ValueError(f"generated output path must remain below .xsec-factory/snapshots/: {release_root}") from error
         release_roots.append(release_root)
     # Preserve the historic validation ordering: reject unsafe plugin paths
     # before opening the marketplace metadata that decides which sidecars are
@@ -737,7 +739,7 @@ def main() -> None:
         try:
             source_plugin_dir.relative_to(PLUGIN_ROOT.resolve())
         except ValueError as error:
-            raise ValueError(f"plugin source must remain below plugins/: {relative_path}") from error
+            raise ValueError(f"plugin source must remain below .xsec-factory/snapshots/: {relative_path}") from error
         output_plugin_dir = output_root / source_plugin_dir.relative_to(ROOT)
         build_plugin(source_plugin_dir, output_plugin_dir)
 

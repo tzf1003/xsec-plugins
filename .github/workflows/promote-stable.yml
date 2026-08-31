@@ -128,7 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
         run: |
-          git add -A -- .agents/plugins plugins .xsec-factory
+          git add -A -- .agents/plugins .xsec-factory
           git diff --cached --quiet && { echo "No stable pointer update to publish."; exit 1; }
           git config user.name "xsec-marketplace[bot]"
           git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
