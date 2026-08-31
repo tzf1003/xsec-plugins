@@ -25,6 +25,7 @@ from build_market import (
     MARKETPLACE_RELATIVE_PATH,
     RELEASE_ID_PATTERN,
     ROOT,
+    SNAPSHOT_ROOT_RELATIVE_PATH,
     is_link,
     require_release_engines,
     release_id,
@@ -1427,10 +1428,10 @@ def marketplace_entries(root: Path) -> list[tuple[str, Path, dict[str, object]]]
         if not isinstance(source, dict) or source.get("source") != "local":
             fail(f"marketplace plugin {plugin_id} must use a local source")
         source_path = source.get("path")
-        expected_path = f"./plugins/{plugin_id}"
+        expected_path = f"./{SNAPSHOT_ROOT_RELATIVE_PATH.as_posix()}/{plugin_id}"
         if source_path != expected_path:
             fail(f"marketplace plugin {plugin_id} source.path must be {expected_path}")
-        plugin_dir = root / "plugins" / plugin_id
+        plugin_dir = root / SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
         if is_link(plugin_dir) or not plugin_dir.is_dir():
             fail(f"marketplace plugin {plugin_id} source directory is unavailable or a symbolic link")
         policy = entry.get("policy")

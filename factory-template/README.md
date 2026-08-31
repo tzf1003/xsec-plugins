@@ -12,9 +12,9 @@ source, and Desktop treats it as a confirmation-driven custom marketplace.
 - `.xsec-factory/registry.json` is the auditable allowlist of source GitHub
   repositories. Adding a registry entry authorizes a repository; it does not
   publish any source code or make a plugin visible in Desktop.
-- `plugins/<plugin-id>/` is the generated, complete package-input snapshot;
+- `.xsec-factory/snapshots/<plugin-id>/` is the generated, complete package-input snapshot;
   `plugin.json` plus every archived source file are retained alongside
-  `plugins/<plugin-id>/.xsec-market/releases.json`. The Factory rebuilds this
+  `.xsec-factory/snapshots/<plugin-id>/.xsec-market/releases.json`. The Factory rebuilds this
   snapshot and compares it to the selected immutable artifact digest during
   validation. Its local path intentionally matches the Desktop marketplace
   discovery contract. Do not hand-edit it.

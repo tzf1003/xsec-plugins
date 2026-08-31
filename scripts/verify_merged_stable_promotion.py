@@ -17,16 +17,17 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from build_market import load_release_document
+from build_market import SNAPSHOT_ROOT_RELATIVE_PATH, load_release_document
 from kms_marketplace_publisher import MarketplaceKmsPublisherError, marketplace_documents, sidecar_path_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ID_PATTERN = r"[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?"
-RELEASE_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})/\.xsec-market/releases\.json$")
-RELEASE_SIDECAR_PATTERN = re.compile(rf"^plugins/{PLUGIN_ID_PATTERN}/\.xsec-market/releases\.json\.sig\.jws\.json$")
-PLUGIN_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})/(.+)$")
-MARKETPLACE_SOURCE_PATH_PATTERN = re.compile(rf"^\./plugins/({PLUGIN_ID_PATTERN})$")
+SNAPSHOT_ROOT = SNAPSHOT_ROOT_RELATIVE_PATH.as_posix()
+RELEASE_PATH_PATTERN = re.compile(rf"^{re.escape(SNAPSHOT_ROOT)}/({PLUGIN_ID_PATTERN})/\.xsec-market/releases\.json$")
+RELEASE_SIDECAR_PATTERN = re.compile(rf"^{re.escape(SNAPSHOT_ROOT)}/{PLUGIN_ID_PATTERN}/\.xsec-market/releases\.json\.sig\.jws\.json$")
+PLUGIN_PATH_PATTERN = re.compile(rf"^{re.escape(SNAPSHOT_ROOT)}/({PLUGIN_ID_PATTERN})/(.+)$")
+MARKETPLACE_SOURCE_PATH_PATTERN = re.compile(rf"^\./{re.escape(SNAPSHOT_ROOT)}/({PLUGIN_ID_PATTERN})$")
 PUBLICATION_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-publications/({PLUGIN_ID_PATTERN})\.json$")
 PUBLICATION_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-publication-proofs/({PLUGIN_ID_PATTERN})\.json$")
 ADOPTION_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-adoptions/({PLUGIN_ID_PATTERN})\.json$")
@@ -267,10 +268,10 @@ def verify_retained_sidecar_refresh_candidate(root: Path, before: str, after: st
         fail("retained sidecar refresh candidate must change exactly one releases.json KMS sidecar")
     # RELEASE_SIDECAR_PATTERN intentionally has no capture group because it is
     # also used as a boolean allowlist elsewhere. The validated path has the
-    # fixed ``plugins/<plugin-id>/...`` form, so extracting this component is
+    # fixed Factory snapshot form, so extracting this component is
     # unambiguous after the full-match check above.
-    plugin_id = paths[0].split("/", 2)[1]
-    release_path = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    plugin_id = paths[0].split("/", 3)[2]
+    release_path = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json"
     if not git_succeeds(root, ["cat-file", "-e", f"{before}:{release_path}"]) or not git_succeeds(
         root, ["cat-file", "-e", f"{after}:{release_path}"]
     ):
@@ -483,7 +484,7 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
     promoted_ids = {plugin_id for plugin_id, _ in release_paths}
     allowed_paths(channel, paths, promoted_ids)
     for plugin_id, release_path in release_paths:
-        sidecar = f"plugins/{plugin_id}/.xsec-market/releases.json.sig.jws.json"
+        sidecar = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json"
         if sidecar not in paths:
             fail("merged publication must refresh every changed release KMS sidecar")
         if git_succeeds(root, ["cat-file", "-e", f"{before}:{release_path}"]):
@@ -557,7 +558,7 @@ def verify_stable_maintenance(root: Path, before: str, after: str, paths: list[s
     evidence_proof = f".xsec-factory/official-publication-proofs/{plugin_id}.json"
     if evidence_proof not in paths:
         fail("no-pointer Stable completion must refresh its provenance KMS sidecar")
-    release_path = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    release_path = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json"
     if not git_succeeds(root, ["cat-file", "-e", f"{before}:{release_path}"]) or not git_succeeds(
         root, ["cat-file", "-e", f"{after}:{release_path}"]
     ):
@@ -613,7 +614,7 @@ def verify_source_only_beta(
     if len(publications) != 1 or len(statuses) != 1 or publications[0] != statuses[0]:
         fail("source-only Beta must change one matching provenance and status document")
     plugin_id = publications[0]
-    release_path = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    release_path = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json"
     release_sidecar = f"{release_path}.sig.jws.json"
     evidence_path = f".xsec-factory/official-publications/{plugin_id}.json"
     evidence_proof_path = f".xsec-factory/official-publication-proofs/{plugin_id}.json"
@@ -702,7 +703,7 @@ def verify_beta_smoke_ready(
     if len(status_paths) != 1:
         fail("no-pointer Beta smoke transition must change exactly one Factory status document")
     plugin_id = status_paths[0]
-    release_path = f"plugins/{plugin_id}/.xsec-market/releases.json"
+    release_path = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json"
     release_sidecar = f"{release_path}.sig.jws.json"
     evidence_path = f".xsec-factory/official-publications/{plugin_id}.json"
     proof_path = f".xsec-factory/official-publication-proofs/{plugin_id}.json"
@@ -729,14 +730,14 @@ def verify_beta_smoke_ready(
         if not isinstance(source_path, str):
             fail("no-pointer Beta smoke transition retained Marketplace source path is invalid")
         # The marketplace's public source contract intentionally uses an
-        # explicit repository-relative ``./plugins/<id>`` path.  Registry and
+        # explicit repository-relative Factory snapshot path. Registry and
         # status documents use the source repository's ``plugins/<id>`` path,
         # so accepting that representation here would both reject production
         # snapshots and weaken this candidate's Marketplace-bound allowlist.
         match = MARKETPLACE_SOURCE_PATH_PATTERN.fullmatch(source_path)
         if match is None:
             fail("no-pointer Beta smoke transition retained Marketplace source path is not canonical")
-        active_release_sidecars.add(f"plugins/{match.group(1)}/.xsec-market/releases.json.sig.jws.json")
+        active_release_sidecars.add(f"{SNAPSHOT_ROOT}/{match.group(1)}/.xsec-market/releases.json.sig.jws.json")
     # A normal KMS renewal can refresh proof sidecars for every *other* active
     # Factory document while this one status changes.  These are signatures,
     # not source-of-truth documents, so allow the exact sidecar set derived

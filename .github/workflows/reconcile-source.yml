@@ -189,7 +189,7 @@ jobs:
               echo "Generated candidate #${number} changed the registered source identity and cannot be superseded." >&2
               exit 1
             }
-            release_path="$candidate_root/plugins/${PLUGIN_ID}/.xsec-market/releases.json"
+            release_path="$candidate_root/.xsec-factory/snapshots/${PLUGIN_ID}/.xsec-market/releases.json"
             evidence_path="$candidate_root/.xsec-factory/official-publications/${PLUGIN_ID}.json"
             # Authenticate an in-flight candidate against its *recorded* Beta
             # source and immutable publication event.  Do not require that

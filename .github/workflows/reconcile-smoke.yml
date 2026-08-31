@@ -109,7 +109,7 @@ jobs:
             repository="$(printf '%s' "$registration" | jq -r .source.repository)"
             active="$(printf '%s' "$registration" | jq -r .status)"
             [ "$active" = "active" ] || continue
-            smoke_beta="$(git show "${MARKETPLACE_REVISION}:plugins/${plugin_id}/.xsec-market/releases.json" 2>/dev/null | jq -r '.channels.beta.releaseId // empty' || true)"
+            smoke_beta="$(git show "${MARKETPLACE_REVISION}:.xsec-factory/snapshots/${plugin_id}/.xsec-market/releases.json" 2>/dev/null | jq -r '.channels.beta.releaseId // empty' || true)"
             smoke_status="$(git show "${MARKETPLACE_REVISION}:.xsec-factory/official-status/${plugin_id}.json" 2>/dev/null || true)"
             smoke_status_state="$(printf '%s' "$smoke_status" | jq -r '.publication.state // empty' 2>/dev/null || true)"
             smoke_status_beta="$(printf '%s' "$smoke_status" | jq -r '.release.betaReleaseId // empty' 2>/dev/null || true)"
@@ -118,7 +118,7 @@ jobs:
             current_status_state="$(printf '%s' "$current_status" | jq -r '.publication.state // empty' 2>/dev/null || true)"
             current_status_beta="$(printf '%s' "$current_status" | jq -r '.release.betaReleaseId // empty' 2>/dev/null || true)"
             current_beta_sha="$(printf '%s' "$current_status" | jq -r '.source.betaSha // empty' 2>/dev/null || true)"
-            current_beta="$(jq -r '.channels.beta.releaseId // empty' "plugins/${plugin_id}/.xsec-market/releases.json" 2>/dev/null || true)"
+            current_beta="$(jq -r '.channels.beta.releaseId // empty' ".xsec-factory/snapshots/${plugin_id}/.xsec-market/releases.json" 2>/dev/null || true)"
             # A later main source event can downgrade the exact same Beta to
             # waiting_for_beta if main no longer rebuilds it. Never let an
             # older retained smoke revision bypass that current gate. Both

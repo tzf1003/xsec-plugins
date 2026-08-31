@@ -21,6 +21,7 @@ jobs:
         id: classify
         env:
           PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -35,6 +36,10 @@ jobs:
           }
           [[ "$PR_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || {
             echo "Factory PR head SHA is malformed." >&2
+            exit 1
+          }
+          [[ "$PR_BASE_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Factory PR base SHA is malformed." >&2
             exit 1
           }
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
@@ -64,9 +69,61 @@ jobs:
           # revalidates the exact tree, rather than receiving a shared-SHA
           # not-applicable success status.
           pr_metadata="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          [ "$(printf '%s' "$pr_metadata" | jq -er .base.sha)" = "$PR_BASE_SHA" ] && [ "$(printf '%s' "$pr_metadata" | jq -er .head.sha)" = "$PR_HEAD_SHA" ] || {
+            echo "PR head/base changed while the Factory gate was classifying it." >&2
+            exit 1
+          }
           changed_file_count="$(printf '%s' "$pr_metadata" | jq -er '.changed_files | if type == "number" and floor == . and . >= 0 then . else error("invalid changed_files") end')"
           pr_files="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100")"
-          returned_file_count="$(printf '%s' "$pr_files" | jq -er '[.[][]] | if all(.[]; type == "object" and (.filename | type == "string")) then length else error("invalid PR file response") end')"
+          # GitHub's PR file endpoint labels a renamed Gitlink only with its
+          # destination filename. Compare immutable base/head trees so adds,
+          # removals, moves and revision updates remain pending regardless of
+          # their location; a truncated or malformed tree also stays pending.
+          base_tree="$(gh api "repos/${REPOSITORY}/git/trees/${PR_BASE_SHA}?recursive=1")"
+          head_tree="$(gh api "repos/${REPOSITORY}/git/trees/${PR_HEAD_SHA}?recursive=1")"
+          if base_gitlinks="$(printf '%s' "$base_tree" | jq -ce '
+              if .truncated == false and (.tree | type == "array") then
+                [
+                  .tree[]
+                  | select((.mode == "160000") or (.type == "commit"))
+                  | if (
+                    (.path | type == "string")
+                    and .mode == "160000"
+                    and .type == "commit"
+                    and (.sha | type == "string" and test("^[a-f0-9]{40}$"))
+                  ) then {path: .path, sha: .sha} else error("invalid Gitlink") end
+                ]
+                | sort_by(.path)
+                | if (map(.path) | unique | length) == length then . else error("duplicate Gitlink") end
+              else error("incomplete Git tree") end
+            ')" && head_gitlinks="$(printf '%s' "$head_tree" | jq -ce '
+              if .truncated == false and (.tree | type == "array") then
+                [
+                  .tree[]
+                  | select((.mode == "160000") or (.type == "commit"))
+                  | if (
+                    (.path | type == "string")
+                    and .mode == "160000"
+                    and .type == "commit"
+                    and (.sha | type == "string" and test("^[a-f0-9]{40}$"))
+                  ) then {path: .path, sha: .sha} else error("invalid Gitlink") end
+                ]
+                | sort_by(.path)
+                | if (map(.path) | unique | length) == length then . else error("duplicate Gitlink") end
+              else error("incomplete Git tree") end
+            ')" && [ "$base_gitlinks" = "$head_gitlinks" ]; then
+            gitlink_changed=false
+          else
+            gitlink_changed=true
+          fi
+          returned_file_count="$(printf '%s' "$pr_files" | jq -er '
+            [.[][]]
+            | if all(.[];
+                type == "object"
+                and (.filename | type == "string")
+                and ((has("previous_filename") | not) or (.previous_filename | type == "string"))
+              ) then length else error("invalid PR file response") end
+          ')"
           layout_migration="$(printf '%s' "$pr_files" | jq -e 'any(.[][]; .filename == ".xsec-factory/layout-migration.json")' >/dev/null && echo true || echo false)"
           if [ "$returned_file_count" -ne "$changed_file_count" ]; then
             # GitHub bounds this endpoint for huge diffs. Its incomplete
@@ -75,17 +132,20 @@ jobs:
           else
             factory_content="$(printf '%s' "$pr_files" | jq -e '
               def plugin_id: "[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?";
-              def release_index: test("^plugins/" + plugin_id + "/\\.xsec-market/releases\\.json$");
-              def release_sidecar: test("^plugins/" + plugin_id + "/\\.xsec-market/releases\\.json\\.sig\\.jws\\.json$");
+              def release_index: test("^\\.xsec-factory/snapshots/" + plugin_id + "/\\.xsec-market/releases\\.json$");
+              def release_sidecar: test("^\\.xsec-factory/snapshots/" + plugin_id + "/\\.xsec-market/releases\\.json\\.sig\\.jws\\.json$");
               def factory_document: test("^\\.xsec-factory/(?:official-registry\\.json|official-(?:publications|publication-proofs|adoptions|adoption-proofs|status)/" + plugin_id + "\\.json)$");
-              any(.[][]; .filename | if type == "string" then (release_index or release_sidecar or factory_document) else false end)
+              def subproject: test("^plugins/" + plugin_id + "$");
+              def submodule_manifest: . == ".gitmodules";
+              def factory_path: release_index or release_sidecar or factory_document or subproject or submodule_manifest;
+              any(.[][]; [.filename, (.previous_filename? // "")] | any(.[]; factory_path))
             ' >/dev/null && echo true || echo false)"
           fi
           case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in
             "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/stage-first-party-adoption-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*|"$REPOSITORY":xsec-marketplace/layout-signatures-*) event_factory=true ;;
             *) event_factory=false ;;
           esac
-          if [ "$layout_migration" = "true" ] || [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ]; then
+          if [ "$layout_migration" = "true" ] || [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ] || [ "$gitlink_changed" = "true" ]; then
             # A pending layout marker is privileged Factory content. Its exact
             # transition must remain pending for protected revalidation.
             echo "factory_generated=true" >> "$GITHUB_OUTPUT"

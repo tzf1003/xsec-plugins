@@ -13,6 +13,7 @@ import json
 import shutil
 from pathlib import Path
 
+from build_market import SNAPSHOT_ROOT_RELATIVE_PATH
 from marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS
 
 
@@ -54,7 +55,7 @@ def main() -> None:
         source = source_root / plugin_id / "plugin.json"
         if not source.is_file():
             raise FileNotFoundError(source)
-        destination = ROOT / "plugins" / plugin_id
+        destination = ROOT / SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination / "plugin.json")
         manifest = json.loads(source.read_text(encoding="utf-8"))
@@ -71,7 +72,7 @@ def main() -> None:
             )
         entries.append({
             "name": plugin_id,
-            "source": {"source": "local", "path": f"./plugins/{plugin_id}"},
+            "source": {"source": "local", "path": f"./.xsec-factory/snapshots/{plugin_id}"},
             "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
             "category": "Security",
         })

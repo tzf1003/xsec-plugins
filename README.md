@@ -4,8 +4,10 @@ This public repository is the canonical marketplace for the XSEC Desktop
 business plugins. It follows the portable Agent Plugins marketplace contract:
 
 - `.agents/plugins/marketplace.json` is the discovery index.
-- Every `plugins/<id>/` directory carries `plugin.json` for XSEC and
-  `.codex-plugin/plugin.json` for Codex-compatible discovery.
+- Every `plugins/<id>/` directory is an independent Git source project. Its
+  package may be at the project root or under `plugins/<id>/`.
+- `.xsec-factory/snapshots/<id>/` retains the immutable package input,
+  including `plugin.json` and `.codex-plugin/plugin.json`, used for releases.
 - `.xsec-market/releases.json` is a signed release index. Schema v2 keeps an
   append-only `releases` list and exposes independent `beta` and `stable`
   channel pointers.
@@ -55,7 +57,7 @@ approved external plugin repository. It is not the external plugin's active
 development repository. The external repository owns its code and uses its
 protected `beta` branch for a candidate and protected `main` branch for the
 same candidate promoted to Stable. This Factory retains only a reviewed,
-publishable snapshot in `plugins/<plugin-id>/`, its immutable artifacts and
+publishable snapshot in `.xsec-factory/snapshots/<plugin-id>/`, its immutable artifacts and
 release history, and source provenance in
 `.xsec-factory/official-publications/<plugin-id>.json`.
 
@@ -188,7 +190,7 @@ the reviewer-gated `production` environment, with the Factory publisher token
 and GitHub Actions OIDC. It shares the normal publication queue, re-reads
 current protected `main`, validates the immutable release records, artifacts
 and deterministic source build before signing, and asks the Cloud broker to
-sign only `plugins/<plugin-id>/.xsec-market/releases.json`.
+sign only `.xsec-factory/snapshots/<plugin-id>/.xsec-market/releases.json`.
 
 The workflow validates that exact new KMS sidecar, runs strict Factory
 validation, and rejects its run unless the sole changed (including untracked)
@@ -355,8 +357,9 @@ for the cross-platform release hand-off.
 
 The official KMS-signed marketplace above is intentionally separate from the
 user-owned Factory template in [`factory-template/`](factory-template/). A
-Factory keeps third-party plugin source in its own Git repositories, generates
-Desktop-compatible metadata snapshots under `plugins/<id>/`, and publishes
+Factory keeps third-party plugin source in independent Git subprojects under
+`plugins/<id>/`, generates Desktop-compatible metadata snapshots under
+`.xsec-factory/snapshots/<id>/`, and publishes
 confirmation-driven Beta/Stable releases from exact Git commits. It never
 inherits the official signing key, trusted-source status, or default-install
 privileges, and it is not an alternative way to approve an official source

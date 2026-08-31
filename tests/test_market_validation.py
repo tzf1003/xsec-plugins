@@ -26,6 +26,10 @@ from validate_market import (  # noqa: E402
 )
 
 
+def snapshot_dir(root: Path, plugin_id: str) -> Path:
+    return root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
+
+
 class MarketplaceValidationTests(unittest.TestCase):
     maxDiff = None
 
@@ -59,7 +63,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         })
         for plugin_id, contract in contracts.items():
             with self.subTest(plugin_id=plugin_id):
-                plugin_dir = ROOT / "plugins" / plugin_id
+                plugin_dir = snapshot_dir(ROOT, plugin_id)
                 manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
                 source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
                 validate_market.validate_official_settings_contract(manifest, plugin_id)
@@ -76,21 +80,21 @@ class MarketplaceValidationTests(unittest.TestCase):
 
     def test_official_plugin_settings_rejects_session_bound_read(self) -> None:
         plugin_id = "com.xsec.system-terminal"
-        manifest = json.loads((ROOT / "plugins" / plugin_id / "plugin.json").read_text(encoding="utf-8"))
+        manifest = json.loads((snapshot_dir(ROOT, plugin_id) / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]["xsec.terminal.settings.get"]["binding"] = "session"
         with self.assertRaisesRegex(MarketplaceValidationError, "canonical plugin settings permission"):
             validate_market.validate_official_settings_contract(manifest, plugin_id)
 
     def test_official_plugin_settings_rejects_missing_settings_activation(self) -> None:
         plugin_id = "com.xsec.system-terminal"
-        manifest = json.loads((ROOT / "plugins" / plugin_id / "plugin.json").read_text(encoding="utf-8"))
+        manifest = json.loads((snapshot_dir(ROOT, plugin_id) / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["activationEvents"] = ["onWorkspaceTool:system-terminal"]
         with self.assertRaisesRegex(MarketplaceValidationError, "activate for its canonical plugin settings page"):
             validate_market.validate_official_settings_contract(manifest, plugin_id)
 
     def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
         source = (
-            ROOT / "plugins" / "com.xsec.system-terminal" / "com.xsec.desktop" / "frontend" / "index.js"
+            snapshot_dir(ROOT, "com.xsec.system-terminal") / "com.xsec.desktop" / "frontend" / "index.js"
         ).read_text(encoding="utf-8")
         settings_source, main_source = source.split("export function activate(host)", 1)
 
@@ -117,7 +121,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         """Auxiliary plugin settings reads must not hide the useful failure state."""
 
         asset_source = (
-            ROOT / "plugins" / "com.xsec.asset-discovery" / "com.xsec.desktop" / "frontend" / "index.js"
+            snapshot_dir(ROOT, "com.xsec.asset-discovery") / "com.xsec.desktop" / "frontend" / "index.js"
         ).read_text(encoding="utf-8")
         # Runs and assets are the main workspace data.  The settings read is
         # intentionally converted to a value-or-error result before the
@@ -155,7 +159,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn("if(!settingsReady)return;const value", asset_source)
         self.assertIn("if(!settingsReady)return;if(!confirm", asset_source)
         asset_manifest = json.loads(
-            (ROOT / "plugins" / "com.xsec.asset-discovery" / "plugin.json").read_text(encoding="utf-8")
+            (snapshot_dir(ROOT, "com.xsec.asset-discovery") / "plugin.json").read_text(encoding="utf-8")
         )
         asset_methods = asset_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
         self.assertEqual(asset_methods["xsec.asset-discovery.credentials.set"]["binding"], "plugin")
@@ -172,7 +176,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         )
 
         approval_source = (
-            ROOT / "plugins" / "com.xsec.workspace.approvals" / "com.xsec.desktop" / "frontend" / "index.js"
+            snapshot_dir(ROOT, "com.xsec.workspace.approvals") / "com.xsec.desktop" / "frontend" / "index.js"
         ).read_text(encoding="utf-8")
         self.assertIn("let settingsReady = false;", approval_source)
         self.assertIn("settingsReady = false;", approval_source)
@@ -180,7 +184,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('saveButton.disabled = true;', approval_source)
 
         traffic_source = (
-            ROOT / "plugins" / "com.xsec.workspace.traffic" / "com.xsec.desktop" / "frontend" / "index.js"
+            snapshot_dir(ROOT, "com.xsec.workspace.traffic") / "com.xsec.desktop" / "frontend" / "index.js"
         ).read_text(encoding="utf-8")
         # The helpers deliberately propagate to load().  Its single outer
         # catch writes the error after the rejected Promise.all, so it cannot
@@ -202,7 +206,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn('规则已删除，但刷新规则列表失败', traffic_source)
 
         for plugin_id in validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT:
-            frontend = ROOT / "plugins" / plugin_id / "com.xsec.desktop" / "frontend" / "index.js"
+            frontend = snapshot_dir(ROOT, plugin_id) / "com.xsec.desktop" / "frontend" / "index.js"
             settings_source = frontend.read_text(encoding="utf-8")
             self.assertRegex(settings_source, r"settingsReady\s*=\s*false", plugin_id)
             self.assertRegex(settings_source, r"if\s*\(!settingsReady\)", plugin_id)
@@ -337,7 +341,7 @@ class MarketplaceValidationTests(unittest.TestCase):
     def test_stable_promotion_reuses_an_existing_release_and_changes_no_artifact(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-stable-promotion-") as directory:
             root = Path(directory)
-            plugin_dir = root / "plugins" / "com.example.test"
+            plugin_dir = snapshot_dir(root, "com.example.test")
             entrypoint = plugin_dir / "frontend" / "index.js"
             entrypoint.parent.mkdir(parents=True)
             manifest = {
@@ -365,10 +369,15 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertEqual(artifact_bytes, {path.name: path.read_bytes() for path in (plugin_dir / ".xsec-market" / "artifacts").glob("*.xsec-plugin")})
             self.assertFalse(promote_release.promote_stable(root, "com.example.test", str(beta_id)))
 
+    def test_stable_promotion_workflow_detects_snapshot_metadata_changes(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")
+
+        self.assertIn("git diff --quiet -- .xsec-factory/snapshots", workflow)
+
     def test_stable_promotion_rejects_an_unknown_release_id(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-stable-promotion-invalid-") as directory:
             root = Path(directory)
-            plugin_dir = root / "plugins" / "com.example.test" / ".xsec-market"
+            plugin_dir = snapshot_dir(root, "com.example.test") / ".xsec-market"
             plugin_dir.mkdir(parents=True)
             release = {
                 "schemaVersion": 2,
@@ -384,7 +393,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-market-tampered-artifact-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
-            artifact = next(output.glob("plugins/*/.xsec-market/artifacts/*.xsec-plugin"))
+            artifact = next(output.glob(".xsec-factory/snapshots/*/.xsec-market/artifacts/*.xsec-plugin"))
             with artifact.open("ab") as handle:
                 handle.write(b"tampered")
             with self.assertRaisesRegex(MarketplaceValidationError, "SHA-256"):
@@ -392,7 +401,7 @@ class MarketplaceValidationTests(unittest.TestCase):
 
     def test_approvals_frontend_v2_contract_survives_the_generated_archive(self) -> None:
         plugin_id = "com.xsec.workspace.approvals"
-        plugin_dir = ROOT / "plugins" / plugin_id
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = validate_source_manifest(plugin_id, plugin_dir)
         desktop = manifest["extensions"]["com.xsec.desktop"]
         self.assertEqual(desktop["frontendApi"]["version"], 2)
@@ -402,7 +411,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-market-approvals-frontend-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
-            release_path = output / "plugins" / plugin_id / ".xsec-market" / "releases.json"
+            release_path = snapshot_dir(output, plugin_id) / ".xsec-market" / "releases.json"
             release = build_market.load_release_document(release_path, plugin_id)
             beta_id = release["channels"]["beta"]["releaseId"]
             beta_release = next(item for item in release["releases"] if item["releaseId"] == beta_id)
@@ -412,7 +421,7 @@ class MarketplaceValidationTests(unittest.TestCase):
 
     def test_every_official_frontend_is_executable_and_placeholder_free(self) -> None:
         placeholder = "XSEC official plugin is active in Desktop."
-        for plugin_dir in sorted((ROOT / "plugins").iterdir()):
+        for plugin_dir in sorted((ROOT / build_market.SNAPSHOT_ROOT_RELATIVE_PATH).iterdir()):
             if not plugin_dir.is_dir():
                 continue
             plugin_id = plugin_dir.name
@@ -428,7 +437,7 @@ class MarketplaceValidationTests(unittest.TestCase):
 
     def test_generic_official_frontend_gate_rejects_success_screen_stub(self) -> None:
         plugin_id = "com.xsec.workspace.files"
-        plugin_dir = ROOT / "plugins" / plugin_id
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         stub = "export function activate(host){document.body.textContent='XSEC official plugin is active in Desktop.';return{mount(){},update(){},dispose(){}}}"
         with self.assertRaisesRegex(MarketplaceValidationError, "placeholder/fallback marker"):
@@ -436,7 +445,7 @@ class MarketplaceValidationTests(unittest.TestCase):
 
     def test_approvals_frontend_rejects_any_noncanonical_reviewed_structure(self) -> None:
         plugin_id = "com.xsec.workspace.approvals"
-        plugin_dir = ROOT / "plugins" / plugin_id
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         entrypoint = "com.xsec.desktop/frontend/index.js"
         source = (plugin_dir / entrypoint).read_text(encoding="utf-8")
@@ -451,7 +460,7 @@ class MarketplaceValidationTests(unittest.TestCase):
 
     def test_approvals_frontend_contract_rejects_placeholder_archive(self) -> None:
         plugin_id = "com.xsec.workspace.approvals"
-        plugin_dir = ROOT / "plugins" / plugin_id
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         entrypoint = "com.xsec.desktop/frontend/index.js"
         source = (plugin_dir / entrypoint).read_text(encoding="utf-8")
@@ -1183,7 +1192,7 @@ export function renderPlaceholder() {}
     def test_cleanup_rejects_linked_plugin_root_before_traversal(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-clean-link-") as directory:
             output_root = Path(directory) / "output"
-            output_plugins = output_root / "plugins"
+            output_plugins = output_root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH
             output_plugins.mkdir(parents=True)
 
             with (
@@ -1199,7 +1208,7 @@ export function renderPlaceholder() {}
     def test_cleanup_rejects_linked_plugin_directory_before_cleanup(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-clean-child-link-") as directory:
             output_root = Path(directory) / "output"
-            output_plugins = output_root / "plugins"
+            output_plugins = output_root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH
             linked_plugin = output_plugins / "com.xsec.test"
             linked_plugin.mkdir(parents=True)
 

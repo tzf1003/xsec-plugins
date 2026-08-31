@@ -519,7 +519,7 @@ jobs:
         # step replaces it through Cloud KMS and the generated PR is strict.
         run: |
           set -euo pipefail
-          documents=(.agents/plugins/marketplace.json plugins/*/.xsec-market/releases.json)
+          documents=(.agents/plugins/marketplace.json .xsec-factory/snapshots/*/.xsec-market/releases.json)
           for document in "${documents[@]}"; do
             [ -f "$document" ] || continue
             git diff --quiet -- "$document" && continue
@@ -541,7 +541,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ] && [ "$STABLE_CHANGED" != "true" ] \
-            && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory)"; then
+            && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins .xsec-factory)"; then
             # A no-op must still prove the already-selected pointer has
             # immutable Factory evidence, but it must leave no output to sign.
             # In particular, a late smoke callback that turned the status
@@ -555,7 +555,7 @@ jobs:
               exit 1
             }
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
-          elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "beta" ] && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins plugins .xsec-factory)"; then
+          elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "beta" ] && test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins .xsec-factory)"; then
             # A duplicate source delivery has neither changed immutable
             # metadata nor UI state. It must not create a new sidecar/PR or
             # bypass the reviewed-merge Desktop dispatcher; an operator can
@@ -572,7 +572,7 @@ jobs:
             while IFS=$'\t' read -r change path; do
               [ "$change" = "D" ] || { only_cleaned_sidecars=false; break; }
               case "$path" in
-                .agents/plugins/marketplace.json.sig.jws.json|plugins/*/.xsec-market/releases.json.sig.jws.json)
+                .agents/plugins/marketplace.json.sig.jws.json|.xsec-factory/snapshots/*/.xsec-market/releases.json.sig.jws.json)
                   sidecar_paths+=("$path")
                   ;;
                 *)
@@ -580,7 +580,7 @@ jobs:
                   break
                   ;;
               esac
-            done < <(git diff --name-status -- .agents/plugins plugins .xsec-factory)
+            done < <(git diff --name-status -- .agents/plugins .xsec-factory)
             if "$only_cleaned_sidecars"; then
               # Restore only the verified expected cleanup.  A source change,
               # release-index advance, Factory evidence change, replacement,
@@ -653,7 +653,7 @@ jobs:
           set -euo pipefail
           # Stage Factory provenance as well as the index/release sidecars.
           # A KMS sidecar binds exact bytes and must never be left untracked.
-          git add -A .agents/plugins plugins .xsec-factory
+          git add -A .agents/plugins .xsec-factory
           if git diff --cached --quiet; then
             echo "marketplace_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             echo "published=false" >> "$GITHUB_OUTPUT"

@@ -86,15 +86,15 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
     def make_marketplace(self, root: Path) -> list[publisher.MarketplaceDocument]:
         index = {
             "plugins": [
-                {"name": "com.example.beta", "source": {"path": "./plugins/com.example.beta"}},
-                {"name": "com.example.alpha", "source": {"path": "./plugins/com.example.alpha"}},
+                {"name": "com.example.beta", "source": {"path": "./.xsec-factory/snapshots/com.example.beta"}},
+                {"name": "com.example.alpha", "source": {"path": "./.xsec-factory/snapshots/com.example.alpha"}},
             ]
         }
         index_path = root / ".agents" / "plugins" / "marketplace.json"
         index_path.parent.mkdir(parents=True)
         index_path.write_bytes(json.dumps(index, separators=(",", ":")).encode("utf-8"))
         for plugin_id in ("com.example.alpha", "com.example.beta"):
-            release = root / "plugins" / plugin_id / ".xsec-market" / "releases.json"
+            release = root / ".xsec-factory" / "snapshots" / plugin_id / ".xsec-market" / "releases.json"
             release.parent.mkdir(parents=True)
             release.write_bytes(f'{{"pluginId":"{plugin_id}"}}'.encode("utf-8"))
         return publisher.marketplace_documents(root)
@@ -260,8 +260,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                 requested,
                 [
                     ("xsec.plugin-marketplace.index", ".agents/plugins/marketplace.json"),
-                    ("xsec.plugin-marketplace.release", "plugins/com.example.alpha/.xsec-market/releases.json"),
-                    ("xsec.plugin-marketplace.release", "plugins/com.example.beta/.xsec-market/releases.json"),
+                    ("xsec.plugin-marketplace.release", ".xsec-factory/snapshots/com.example.alpha/.xsec-market/releases.json"),
+                    ("xsec.plugin-marketplace.release", ".xsec-factory/snapshots/com.example.beta/.xsec-market/releases.json"),
                 ],
             )
             for sidecar_path in written:
@@ -278,7 +278,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             selected = publisher.retained_release_document(root, "com.example.beta")
             self.assertEqual(
                 selected.subject,
-                "plugins/com.example.beta/.xsec-market/releases.json",
+                ".xsec-factory/snapshots/com.example.beta/.xsec-market/releases.json",
             )
             self.assertEqual(selected.purpose, "xsec.plugin-marketplace.release")
 
@@ -751,11 +751,11 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-kms-clean-") as directory:
             root = Path(directory)
             marketplace = root / ".agents" / "plugins" / "marketplace.json"
-            release = root / "plugins" / "com.example" / ".xsec-market" / "releases.json"
+            release = root / ".xsec-factory" / "snapshots" / "com.example" / ".xsec-market" / "releases.json"
             marketplace.parent.mkdir(parents=True)
             release.parent.mkdir(parents=True)
             marketplace.write_text(
-                json.dumps({"plugins": [{"source": {"path": "./plugins/com.example"}}]}),
+                json.dumps({"plugins": [{"source": {"path": "./.xsec-factory/snapshots/com.example"}}]}),
                 encoding="utf-8",
             )
             release.write_text("{}", encoding="utf-8")
@@ -787,8 +787,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="xsec-publish-pre-kms-") as directory:
             root = Path(directory)
-            changed = root / "plugins" / "com.example.changed" / ".xsec-market" / "releases.json"
-            unchanged = root / "plugins" / "com.example.unchanged" / ".xsec-market" / "releases.json"
+            changed = root / ".xsec-factory" / "snapshots" / "com.example.changed" / ".xsec-market" / "releases.json"
+            unchanged = root / ".xsec-factory" / "snapshots" / "com.example.unchanged" / ".xsec-market" / "releases.json"
             for document in (changed, unchanged):
                 document.parent.mkdir(parents=True, exist_ok=True)
                 document.write_text('{"channels":{"stable":null}}\n', encoding="utf-8")
@@ -853,13 +853,13 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("Skip a no-op Factory publication without KMS or dispatch", workflow)
         self.assertIn("--allow-unsigned-active-release-sidecars", workflow)
         self.assertIn("Remove KMS sidecars made stale by an immutable Factory update", workflow)
-        self.assertIn('documents=(.agents/plugins/marketplace.json plugins/*/.xsec-market/releases.json)', workflow)
+        self.assertIn('documents=(.agents/plugins/marketplace.json .xsec-factory/snapshots/*/.xsec-market/releases.json)', workflow)
         self.assertIn('git diff --quiet -- "$document" && continue', workflow)
         self.assertIn('sidecar="${document}.sig.jws.json"', workflow)
         self.assertIn("Refusing to remove a symbolic-link Marketplace KMS sidecar", workflow)
         self.assertIn('sidecar_paths=()', workflow)
         self.assertIn("only_cleaned_sidecars=true", workflow)
-        self.assertIn('git diff --name-status -- .agents/plugins plugins .xsec-factory', workflow)
+        self.assertIn('git diff --name-status -- .agents/plugins .xsec-factory', workflow)
         self.assertIn('[ "$change" = "D" ]', workflow)
         self.assertIn('git restore --source=HEAD --worktree -- "${sidecar_paths[@]}"', workflow)
         self.assertIn("only tracked *deletions* of the exact active", workflow)
@@ -892,7 +892,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertNotIn('event_type:"xsec_marketplace_smoke"', workflow)
         self.assertNotIn("marketplace_public_key_b64", workflow)
         self.assertNotIn("expected_default_plugin_ids", workflow)
-        self.assertIn("git add -A .agents/plugins plugins", workflow)
+        self.assertIn("git add -A .agents/plugins .xsec-factory", workflow)
         self.assertNotIn('gh workflow run validate.yml --ref "$branch"', workflow)
         self.assertNotIn("--event workflow_dispatch", workflow)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)

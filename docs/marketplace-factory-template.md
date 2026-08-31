@@ -12,10 +12,10 @@ Desktop 的官方信任锚。
 - `stable` 渠道：来源提交可从 `refs/heads/main` 到达，且重新确定性打包后必须
   等于已经验证的 Beta `releaseId`。
 
-模板会在 `plugins/<id>/` 写入完整 package-input 快照（`plugin.json` 和所有
+模板会在 `.xsec-factory/snapshots/<id>/` 写入完整 package-input 快照（`plugin.json` 和所有
 会进入 archive 的源文件）以及 `.xsec-market/releases.json`。校验器会重新打包
 该快照并比对已选 Beta artifact 的 SHA-256。`.agents/plugins/marketplace.json` 继续以
-`source.path: "./plugins/<id>"` 引用这些快照，因此现有 Desktop 的本地市场
+`source.path: "./.xsec-factory/snapshots/<id>"` 引用这些快照，因此现有 Desktop 的本地市场
 发现逻辑不必把外部 Git 仓库 URL 当作安装来源。实际 `.xsec-plugin` 是 Factory
 GitHub Release 的不可变 asset，release index 绑定其 SHA-256 和 URL。
 

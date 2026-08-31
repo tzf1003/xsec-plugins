@@ -18,6 +18,11 @@ import verify_merged_stable_promotion as verifier  # noqa: E402
 
 
 PLUGIN_ID = "com.example.plugin"
+SNAPSHOT_ROOT = build_market.SNAPSHOT_ROOT_RELATIVE_PATH.as_posix()
+
+
+def snapshot_path(plugin_id: str) -> str:
+    return f"{SNAPSHOT_ROOT}/{plugin_id}"
 
 
 def git(root: Path, *arguments: str) -> str:
@@ -46,7 +51,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.write_release(root, [stable], beta=stable["releaseId"], stable=stable["releaseId"])
         paths = [".agents/plugins/marketplace.json", ".agents/plugins/marketplace.json.sig.jws.json"]
         if with_release_history:
-            paths.append(f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json")
+            paths.append(f"{snapshot_path(PLUGIN_ID)}/.xsec-market/releases.json.sig.jws.json")
         for path in paths:
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -82,7 +87,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
 
     def write_release(self, root: Path, records: list[dict[str, object]], *, beta: str, stable: str | None) -> None:
         write_json(
-            root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json",
+            root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json",
             {
                 "schemaVersion": 2,
                 "pluginId": PLUGIN_ID,
@@ -140,8 +145,8 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             before, stable, beta = self.make_repository(root)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("signed beta index\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/frontend.js").write_text("export {}\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / "frontend.js").write_text("export {}\n", encoding="utf-8")
             after = self.commit(root, "Merge pull request #123 from arbitrary-title")
 
             result = verifier.classify_merged_change(root, before, after)
@@ -156,8 +161,8 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.write_release(root, [beta], beta=beta["releaseId"], stable=None)
             (root / ".agents/plugins/marketplace.json").write_text("new beta index\n", encoding="utf-8")
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("signed beta index\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/frontend.js").write_text("export {}\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / "frontend.js").write_text("export {}\n", encoding="utf-8")
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],
@@ -193,7 +198,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             stable = release("1.0.0", "stable")
             beta = release("1.1.0", "beta")
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
-            for path in (".agents/plugins/marketplace.json.sig.jws.json", f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json"):
+            for path in (".agents/plugins/marketplace.json.sig.jws.json", f"{snapshot_path(PLUGIN_ID)}/.xsec-market/releases.json.sig.jws.json"):
                 target = root / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text("{}\n", encoding="utf-8")
@@ -203,7 +208,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             before = self.commit(root, "base")
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=beta["releaseId"])
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("signed stable index\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("signed stable release\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("signed stable release\n", encoding="utf-8")
             after = self.commit(root, "a reviewer chose any merge subject")
 
             result = verifier.classify_merged_change(root, before, after)
@@ -217,8 +222,8 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             before, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("signed beta index\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/frontend.js").write_text("export {}\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / "frontend.js").write_text("export {}\n", encoding="utf-8")
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],
@@ -242,9 +247,9 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
-            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}}]})
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("baseline index signature\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text(
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text(
                 "baseline release signature\n", encoding="utf-8"
             )
             before = self.commit(root, "adopted beta release")
@@ -268,7 +273,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             proof.write_text("source-only beta provenance signature\n", encoding="utf-8")
             self.write_inflight_beta_status(root, beta, beta_sha=source_sha, main_gate_sha="d" * 40)
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text(
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text(
                 "refreshed release signature\n", encoding="utf-8"
             )
             after = self.commit(root, "source-only beta cycle")
@@ -305,7 +310,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
-            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}}]})
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],
@@ -331,7 +336,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             other_proof.write_text("baseline other status signature\n", encoding="utf-8")
             before = self.commit(root, "beta awaits a reproducible main")
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
             proof.write_text("refreshed evidence signature\n", encoding="utf-8")
             self.write_inflight_beta_status(
                 root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"]
@@ -370,7 +375,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 root = Path(directory)
                 _, stable, beta = self.make_repository(root, registered=True)
                 self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
-                write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
+                write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}}]})
                 event = {
                     "channel": "beta",
                     "releaseId": beta["releaseId"],
@@ -392,7 +397,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 )
                 before = self.commit(root, "previous registered main gate")
                 (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
-                (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text(
+                (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text(
                     "refreshed release signature\n", encoding="utf-8"
                 )
                 proof.write_text("refreshed evidence signature\n", encoding="utf-8")
@@ -421,7 +426,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
-            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}}]})
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],
@@ -436,7 +441,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.write_inflight_beta_status(root, beta, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=stable["releaseId"])
             before = self.commit(root, "beta awaits a reproducible main")
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
             proof.write_text("refreshed evidence signature\n", encoding="utf-8")
             self.write_inflight_beta_status(root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"])
             (root / f".xsec-factory/official-status-proofs/{PLUGIN_ID}.json").unlink()
@@ -470,7 +475,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             )
             before = self.commit(root, "beta awaits a reproducible main")
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text(
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text(
                 "refreshed release signature\n", encoding="utf-8"
             )
             proof.write_text("refreshed evidence signature\n", encoding="utf-8")
@@ -487,7 +492,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             root = Path(directory)
             _, stable, beta = self.make_repository(root, registered=True)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
-            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./plugins/{PLUGIN_ID}"}}]})
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}}]})
             event = {
                 "channel": "beta",
                 "releaseId": beta["releaseId"],
@@ -504,12 +509,12 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             )
             before = self.commit(root, "beta awaits a reproducible main")
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
             proof.write_text("refreshed evidence signature\n", encoding="utf-8")
             self.write_inflight_beta_status(
                 root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"]
             )
-            unrelated = root / "plugins/com.example.disabled/.xsec-market/releases.json.sig.jws.json"
+            unrelated = root / ".xsec-factory/snapshots/com.example.disabled/.xsec-market/releases.json.sig.jws.json"
             unrelated.parent.mkdir(parents=True, exist_ok=True)
             unrelated.write_text("unrelated retained release signature\n", encoding="utf-8")
             after = self.commit(root, "unsafe inactive release sidecar beside beta smoke")
@@ -523,7 +528,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             before, stable, beta = self.make_repository(root)
             self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("signed beta index\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("signed beta release\n", encoding="utf-8")
             target = root / ".github/workflows/unsafe.yml"
             target.parent.mkdir(parents=True)
             target.write_text("name: unsafe\n", encoding="utf-8")
@@ -576,7 +581,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 "publisher": "factory",
             }
             (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index\n", encoding="utf-8")
-            (root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json").write_text("refreshed release\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text("refreshed release\n", encoding="utf-8")
             write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
             (root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json").parent.mkdir(parents=True, exist_ok=True)
             (root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json").write_text("refreshed evidence\n", encoding="utf-8")
@@ -675,7 +680,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-retained-sidecar-candidate-") as directory:
             root = Path(directory)
             before, _, _ = self.make_repository(root)
-            sidecar = root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json"
+            sidecar = root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json"
             sidecar.write_text("refreshed retained release signature\n", encoding="utf-8")
             after = self.commit(root, "refresh one retained sidecar")
 
@@ -684,7 +689,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 {
                     "kind": "retained-sidecar-refresh",
                     "plugin_id": PLUGIN_ID,
-                    "sidecar_path": f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json",
+                    "sidecar_path": f"{snapshot_path(PLUGIN_ID)}/.xsec-market/releases.json.sig.jws.json",
                 },
             )
 
@@ -692,7 +697,7 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-retained-sidecar-extra-") as directory:
             root = Path(directory)
             before, _, _ = self.make_repository(root)
-            sidecar = root / f"plugins/{PLUGIN_ID}/.xsec-market/releases.json.sig.jws.json"
+            sidecar = root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json"
             sidecar.write_text("refreshed retained release signature\n", encoding="utf-8")
             (root / ".github/workflows/unrelated.yml").parent.mkdir(parents=True)
             (root / ".github/workflows/unrelated.yml").write_text("name: unrelated\n", encoding="utf-8")

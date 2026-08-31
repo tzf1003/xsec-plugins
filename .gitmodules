@@ -1,0 +1,44 @@
+[submodule "plugins/com.xsec.workspace.browser"]
+	path = plugins/com.xsec.workspace.browser
+	url = https://github.com/tzf1003/xsec-plugin-browser.git
+	branch = beta
+[submodule "plugins/com.xsec.system-terminal"]
+	path = plugins/com.xsec.system-terminal
+	url = https://github.com/tzf1003/xsec-plugin-system-terminal.git
+	branch = beta
+[submodule "plugins/com.xsec.workspace.conversation-tree"]
+	path = plugins/com.xsec.workspace.conversation-tree
+	url = https://github.com/tzf1003/xsec-plugin-conversation-tree.git
+	branch = beta
+[submodule "plugins/com.xsec.asset-discovery"]
+	path = plugins/com.xsec.asset-discovery
+	url = https://github.com/tzf1003/xsec-plugin-asset-discovery.git
+	branch = beta
+[submodule "plugins/com.xsec.project-workspace"]
+	path = plugins/com.xsec.project-workspace
+	url = https://github.com/tzf1003/xsec-plugin-project-workspace.git
+	branch = beta
+[submodule "plugins/com.xsec.workspace.sub-agent"]
+	path = plugins/com.xsec.workspace.sub-agent
+	url = https://github.com/tzf1003/xsec-plugin-sub-agent.git
+	branch = beta
+[submodule "plugins/com.xsec.workspace.traffic"]
+	path = plugins/com.xsec.workspace.traffic
+	url = https://github.com/tzf1003/xsec-plugin-traffic.git
+	branch = beta
+[submodule "plugins/com.xsec.workspace.files"]
+	path = plugins/com.xsec.workspace.files
+	url = https://github.com/tzf1003/xsec-plugin-files.git
+	branch = beta
+[submodule "plugins/com.xsec.workspace.approvals"]
+	path = plugins/com.xsec.workspace.approvals
+	url = https://github.com/tzf1003/xsec-plugin-approvals.git
+	branch = beta
+[submodule "plugins/com.xsec.workspace.project-outcomes"]
+	path = plugins/com.xsec.workspace.project-outcomes
+	url = https://github.com/tzf1003/xsec-plugin-project-outcomes.git
+	branch = beta
+[submodule "plugins/com.xsec.attack-path"]
+	path = plugins/com.xsec.attack-path
+	url = https://github.com/tzf1003/xsec-plugin-attack-path.git
+	branch = beta

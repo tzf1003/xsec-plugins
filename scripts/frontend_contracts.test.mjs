@@ -7,16 +7,18 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const pythonCommand = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
+const snapshotPath = (pluginId) => join(root, ".xsec-factory", "snapshots", pluginId);
 
 async function loadFrontend(pluginId) {
-  const path = join(root, "plugins", pluginId, "com.xsec.desktop", "frontend", "index.js");
+  const path = join(snapshotPath(pluginId), "com.xsec.desktop", "frontend", "index.js");
   const source = await readFile(path, "utf8");
   const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
   return { module, source };
 }
 
 async function manifest(pluginId) {
-  return JSON.parse(await readFile(join(root, "plugins", pluginId, "plugin.json"), "utf8"));
+  return JSON.parse(await readFile(join(snapshotPath(pluginId), "plugin.json"), "utf8"));
 }
 
 const treeNode = (id, parentId, extra = {}) => ({
@@ -112,12 +114,13 @@ test("marketplace bootstrap preserves every package-owned frontend", async () =>
     const desktopRoot = join(temporaryRoot, "desktop-plugins");
     await mkdir(join(marketplaceRoot, "scripts"), { recursive: true });
     await cp(join(root, "scripts", "bootstrap_plugins.py"), join(marketplaceRoot, "scripts", "bootstrap_plugins.py"));
+    await cp(join(root, "scripts", "build_market.py"), join(marketplaceRoot, "scripts", "build_market.py"));
     await cp(join(root, "scripts", "marketplace_contract.py"), join(marketplaceRoot, "scripts", "marketplace_contract.py"));
     const marketplace = JSON.parse(await readFile(join(root, ".agents", "plugins", "marketplace.json"), "utf8"));
     for (const entry of marketplace.plugins) {
       const pluginId = entry.name;
       await mkdir(join(desktopRoot, pluginId), { recursive: true });
-      await cp(join(root, "plugins", pluginId, "plugin.json"), join(desktopRoot, pluginId, "plugin.json"));
+      await cp(join(snapshotPath(pluginId), "plugin.json"), join(desktopRoot, pluginId, "plugin.json"));
     }
     const sentinels = new Map([
       ["com.xsec.attack-path", "// attack-path package frontend sentinel\n"],
@@ -126,18 +129,18 @@ test("marketplace bootstrap preserves every package-owned frontend", async () =>
     const packageFrontends = new Map(marketplace.plugins.map(({ name }) => [name, `// ${name} package frontend sentinel\n`]));
     for (const [pluginId, sentinel] of sentinels) packageFrontends.set(pluginId, sentinel);
     for (const [pluginId, sentinel] of packageFrontends) {
-      const frontend = join(marketplaceRoot, "plugins", pluginId, "com.xsec.desktop", "frontend", "index.js");
+      const frontend = join(marketplaceRoot, ".xsec-factory", "snapshots", pluginId, "com.xsec.desktop", "frontend", "index.js");
       await mkdir(dirname(frontend), { recursive: true });
       await writeFile(frontend, sentinel, "utf8");
     }
 
-    const result = spawnSync(process.env.PYTHON || "python", [join(marketplaceRoot, "scripts", "bootstrap_plugins.py"), desktopRoot], {
+    const result = spawnSync(pythonCommand, [join(marketplaceRoot, "scripts", "bootstrap_plugins.py"), desktopRoot], {
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     for (const [pluginId, sentinel] of sentinels) {
       assert.equal(
-          await readFile(join(marketplaceRoot, "plugins", pluginId, "com.xsec.desktop", "frontend", "index.js"), "utf8"),
+          await readFile(join(marketplaceRoot, ".xsec-factory", "snapshots", pluginId, "com.xsec.desktop", "frontend", "index.js"), "utf8"),
           sentinel,
       );
     }
