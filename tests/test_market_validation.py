@@ -125,6 +125,25 @@ class MarketplaceValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(MarketplaceValidationError, "canonical plugin settings permission"):
             validate_market.validate_official_settings_contract(manifest, plugin_id)
 
+    def test_terminal_settings_navigation_rejects_null_descriptor(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        manifest = json.loads((snapshot_dir(ROOT, plugin_id) / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]["xsec.plugin.settings.open"] = None
+        with self.assertRaisesRegex(MarketplaceValidationError, "canonical plugin settings permission"):
+            validate_market.validate_official_settings_contract(manifest, plugin_id)
+
+    def test_official_frontend_rejects_undeclared_host_request(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        marker = "export function activate(host){"
+        self.assertIn(marker, source)
+        source = source.replace(marker, f'{marker}host.request("xsec.plugin.settings.open",{{}});', 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
     def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
         source = (
             snapshot_dir(ROOT, "com.xsec.system-terminal") / "com.xsec.desktop" / "frontend" / "index.js"

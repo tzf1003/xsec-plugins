@@ -1187,6 +1187,15 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
         fail(f"{label} must match the approved official approvals frontend structure")
 
 
+def validate_frontend_host_requests(methods: dict[str, object], source: str, label: str) -> None:
+    requested = set(re.findall(r"\bhost\s*\.\s*request\s*\(\s*[\"'](xsec\.[A-Za-z0-9_.-]+)[\"']", source))
+    undeclared = requested - set(methods)
+    if undeclared:
+        fail(f"{label} calls undeclared host RPC methods: {sorted(undeclared)}")
+    if not re.search(r"\bhost\s*\.\s*request\s*\(", source):
+        fail(f"{label} does not call the declared host RPC surface")
+
+
 def validate_official_frontend(manifest: dict[str, object], source: str, label: str) -> None:
     """Reject empty official UIs and require an executable API-v2 contract."""
 
@@ -1230,8 +1239,7 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
     missing_methods = set(methods) - source_method_literals
     if missing_methods:
         fail(f"{label} does not reference declared RPC methods: {sorted(missing_methods)}")
-    if "host.request(" not in source:
-        fail(f"{label} does not call the declared host RPC surface")
+    validate_frontend_host_requests(methods, source, label)
 
 
 def validate_official_settings_contract(manifest: dict[str, object], label: str) -> None:
@@ -1274,8 +1282,10 @@ def validate_official_settings_contract(manifest: dict[str, object], label: str)
     if not isinstance(optional_methods, dict):
         fail(f"{label} has invalid optional settings RPC declarations")
     for method, (capability, binding) in optional_methods.items():
-        descriptor = methods.get(method)
-        if descriptor is not None and (
+        if method not in methods:
+            continue
+        descriptor = methods[method]
+        if (
             not isinstance(descriptor, dict)
             or descriptor.get("capability") != capability
             or descriptor.get("binding") != binding
