@@ -1207,10 +1207,11 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
     methods = frontend_api.get("methods")
     if not isinstance(methods, dict) or not methods:
         fail(f"{label} must declare at least one host RPC method")
-    if "xsec.workspace.tool.open" in methods and engines.get("pluginApi") != WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE:
-        fail(f"{label} must require plugin API 1.3 for workspace tool navigation")
-    if set(methods) & WORKSPACE_COMPOSER_METHODS and engines.get("pluginApi") != WORKSPACE_COMPOSER_PLUGIN_API_RANGE:
+    composer_methods = set(methods) & WORKSPACE_COMPOSER_METHODS
+    if composer_methods and engines.get("pluginApi") != WORKSPACE_COMPOSER_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.4 for workspace Composer writes")
+    if "xsec.workspace.tool.open" in methods and not composer_methods and engines.get("pluginApi") != WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE:
+        fail(f"{label} must require plugin API 1.3 for workspace tool navigation")
     lowered = source.lower()
     for marker in FORBIDDEN_OFFICIAL_FRONTEND_MARKERS:
         if marker.lower() in lowered:
