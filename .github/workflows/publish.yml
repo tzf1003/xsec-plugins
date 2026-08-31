@@ -404,6 +404,22 @@ jobs:
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
         run: python scripts/external_source_factory.py stage-beta --plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source
+      - name: Advance the first-party development Gitlink to the authenticated Beta source
+        if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' && steps.external-request.outputs.trust_tier == 'first-party' }}
+        env:
+          PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]] || {
+            echo "First-party plugin ID is invalid." >&2
+            exit 1
+          }
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Authenticated Beta source SHA is invalid." >&2
+            exit 1
+          }
+          git update-index --add --cacheinfo "160000,$SOURCE_SHA,plugins/$PLUGIN_ID"
       - name: Verify external main rebuilds the selected immutable Beta release
         id: external-stable
         if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}
@@ -651,8 +667,9 @@ jobs:
           BRANCH_PREFIX: ${{ steps.request.outputs.branch_prefix }}
         run: |
           set -euo pipefail
-          # Stage Factory provenance as well as the index/release sidecars.
-          # A KMS sidecar binds exact bytes and must never be left untracked.
+          # Stage Factory provenance and the already-indexed first-party
+          # Gitlink as well as the index/release sidecars. A KMS sidecar binds
+          # exact bytes and must never be left untracked.
           git add -A .agents/plugins .xsec-factory
           if git diff --cached --quiet; then
             echo "marketplace_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

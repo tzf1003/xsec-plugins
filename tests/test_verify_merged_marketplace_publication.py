@@ -101,6 +101,12 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
         git(root, "commit", "--quiet", "-m", message)
         return git(root, "rev-parse", "HEAD")
 
+    def commit_with_gitlink(self, root: Path, message: str, source_sha: str) -> str:
+        git(root, "add", "--all")
+        git(root, "update-index", "--add", "--cacheinfo", f"160000,{source_sha},plugins/{PLUGIN_ID}")
+        git(root, "commit", "--quiet", "-m", message)
+        return git(root, "rev-parse", "HEAD")
+
     def write_inflight_beta_status(
         self,
         root: Path,
@@ -242,6 +248,43 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.assertEqual(result["promotions"][0]["source"], {"repository": "example/plugin", "ref": "refs/heads/beta", "sha": "a" * 40})
             self.assertEqual(result["promotions"][0]["main_source"], {"repository": "example/plugin", "ref": "refs/heads/main", "sha": "b" * 40})
 
+    def test_binds_first_party_beta_publication_to_its_advanced_gitlink(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-merged-first-party-gitlink-") as directory:
+            root = Path(directory)
+            self.make_repository(root, registered=True)
+            registry_path = root / ".xsec-factory/official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["trustTier"] = "first-party"
+            write_json(registry_path, registry)
+            before = self.commit_with_gitlink(root, "first-party base", "b" * 40)
+
+            stable = release("1.0.0", "stable")
+            beta = release("1.1.0", "beta")
+            self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("signed beta index\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text(
+                "signed beta release\n", encoding="utf-8"
+            )
+            (root / snapshot_path(PLUGIN_ID) / "frontend.js").write_text("export {}\n", encoding="utf-8")
+            event = {
+                "channel": "beta",
+                "releaseId": beta["releaseId"],
+                "source": {"repository": "example/plugin", "path": f"plugins/{PLUGIN_ID}", "ref": "refs/heads/beta", "sha": "a" * 40},
+                "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+                "publisher": "factory",
+            }
+            write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
+            proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            proof.write_text("signed source provenance\n", encoding="utf-8")
+            self.write_inflight_beta_status(root, beta)
+            after = self.commit_with_gitlink(root, "first-party beta", "a" * 40)
+
+            result = verifier.classify_merged_change(root, before, after)
+
+            self.assertEqual(result["kind"], "beta")
+            self.assertEqual(result["promotions"][0]["source"], {"repository": "example/plugin", "ref": "refs/heads/beta", "sha": "a" * 40})
+
     def test_classifies_source_only_registered_beta_without_rewriting_its_release(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-source-only-beta-") as directory:
             root = Path(directory)
@@ -304,6 +347,46 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 ),
                 expected,
             )
+
+    def test_classifies_source_only_first_party_beta_with_its_advanced_gitlink(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-merged-first-party-source-only-beta-") as directory:
+            root = Path(directory)
+            _, stable, beta = self.make_repository(root, registered=True)
+            registry_path = root / ".xsec-factory/official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["trustTier"] = "first-party"
+            write_json(registry_path, registry)
+            self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}}]})
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("baseline index signature\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text(
+                "baseline release signature\n", encoding="utf-8"
+            )
+            before = self.commit_with_gitlink(root, "first-party beta base", "b" * 40)
+
+            source_sha = "c" * 40
+            event = {
+                "channel": "beta",
+                "releaseId": beta["releaseId"],
+                "source": {"repository": "example/plugin", "path": f"plugins/{PLUGIN_ID}", "ref": "refs/heads/beta", "sha": source_sha},
+                "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+                "publisher": "factory",
+            }
+            write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
+            proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            proof.write_text("source-only beta provenance signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(root, beta, beta_sha=source_sha, main_gate_sha="d" * 40)
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
+            (root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json").write_text(
+                "refreshed release signature\n", encoding="utf-8"
+            )
+            after = self.commit_with_gitlink(root, "first-party source-only beta", source_sha)
+
+            result = verifier.classify_merged_change(root, before, after)
+
+            self.assertEqual(result["kind"], "beta")
+            self.assertEqual(result["promotions"][0]["source"]["sha"], source_sha)
 
     def test_classifies_no_pointer_registered_beta_when_main_newly_rebuilds_it(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-smoke-ready-") as directory:

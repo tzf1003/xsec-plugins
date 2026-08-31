@@ -629,6 +629,7 @@ def prepare(root: Path, plugin_id: str, channel: str, source_sha: str) -> dict[s
     owner, repository = registration.repository.split("/", 1)
     return {
         "plugin_id": registration.plugin_id,
+        "trust_tier": registration.trust_tier,
         "source_sha": sha,
         "source_repository": registration.repository,
         "source_owner": owner,
