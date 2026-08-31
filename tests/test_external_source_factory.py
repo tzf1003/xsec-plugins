@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 
@@ -68,6 +68,10 @@ process.stdout.write(sign(null, signingInput, key).toString("base64url"));
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def git(root: Path, *arguments: str) -> None:
+    subprocess.run(["git", *arguments], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
 def base64url(value: bytes) -> str:
@@ -173,6 +177,56 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         proof_verifier = patch.object(factory, "verify_historical_sidecar_signature", verify_test_historical_sidecar)
         proof_verifier.start()
         self.addCleanup(proof_verifier.stop)
+
+    def test_first_party_subprojects_require_exact_gitlinks_and_sources(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-subprojects-") as directory:
+            root = Path(directory)
+            plugin_id = "com.xsec.workspace.browser"
+            repository = factory.FIRST_PARTY_APPROVED_SOURCES[plugin_id]
+            path = f"plugins/{plugin_id}"
+            (root / ".gitmodules").write_text(
+                f'[submodule "{path}"]\n\tpath = {path}\n\turl = https://github.com/{repository}.git\n\tbranch = beta\n',
+                encoding="utf-8",
+            )
+            git(root, "init", "--quiet", "--initial-branch=main")
+            git(root, "config", "user.name", "Factory Test")
+            git(root, "config", "user.email", "factory-test@example.invalid")
+            git(root, "add", ".gitmodules")
+            git(root, "update-index", "--add", "--cacheinfo", f"160000,{'a' * 40},{path}")
+            git(root, "commit", "--quiet", "-m", "test: add first-party subproject")
+            registration = factory.Registration(
+                plugin_id=plugin_id,
+                trust_tier="first-party",
+                repository=repository,
+                source_path=PurePosixPath(path),
+                beta_ref="refs/heads/beta",
+                stable_ref="refs/heads/main",
+                installation="INSTALLED_BY_DEFAULT",
+                authentication="ON_INSTALL",
+                category="Security",
+                status="active",
+            )
+
+            factory.validate_first_party_subprojects(root, (registration,))
+
+            (root / ".gitmodules").write_text(
+                f'[submodule "{path}"]\n\tpath = {path}\n\turl = https://github.com/{repository}.git\n\tbranch = main\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "source is invalid"):
+                factory.validate_first_party_subprojects(root, (registration,))
+
+            (root / ".gitmodules").write_text(
+                f'[submodule "{path}"]\n\tpath = {path}\n\turl = https://github.com/{repository}.git\n\tbranch = beta\n\tupdate = none\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "unsupported field"):
+                factory.validate_first_party_subprojects(root, (registration,))
+
+            (root / ".gitmodules").unlink()
+            (root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH).mkdir(parents=True)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "manifest is unavailable"):
+                factory.validate_first_party_subprojects(root, (registration,))
 
     def registry_entry(self, *, status: str = "active", repository: str = "acme/external-plugin", path: str = "package") -> dict[str, object]:
         return {

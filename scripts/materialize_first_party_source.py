@@ -941,33 +941,65 @@ def require_factory_history(factory_root: Path) -> Path:
     return root
 
 
-def filter_index_paths(plugin_id: str) -> int:
-    """Keep one snapshot package and rewrite it to the standalone source layout."""
+def source_history_relative(path: PurePosixPath, plugin_id: str) -> PurePosixPath:
+    """Map either Factory source location to one source-project relative path."""
 
-    prefix = PurePosixPath(*SNAPSHOT_ROOT_RELATIVE_PATH.parts) / plugin_id
-    destination = PurePosixPath("plugins") / plugin_id
+    prefixes = (
+        PurePosixPath("plugins") / plugin_id,
+        PurePosixPath(*SNAPSHOT_ROOT_RELATIVE_PATH.parts) / plugin_id,
+    )
+    for prefix in prefixes:
+        try:
+            return path.relative_to(prefix)
+        except ValueError:
+            continue
+    fail("legacy history filter retained a path outside the selected plugin")
+
+
+def source_history_paths(factory_root: Path, plugin_id: str) -> list[str]:
+    candidates = (PurePosixPath("plugins") / plugin_id, SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id)
+    paths = [path.as_posix() for path in candidates if factory_git_stdout(factory_root, ["rev-list", "-1", "main", "--", path.as_posix()])]
+    if not paths:
+        fail("Factory main has no retained history for the selected plugin")
+    return paths
+
+
+def staged_entries() -> list[tuple[str, str, PurePosixPath]]:
+    entries: list[tuple[str, str, PurePosixPath]] = []
     output = run_git(["ls-files", "-s", "-z"], cwd=Path.cwd()).stdout
     for entry in (entry for entry in output.split(b"\0") if entry):
         try:
             header, raw_path = entry.split(b"\t", 1)
             mode, object_id, stage = header.decode("ascii").split(" ")
+            path = PurePosixPath(raw_path.decode("utf-8", errors="strict"))
         except (UnicodeDecodeError, ValueError) as error:
             raise MaterializationError("legacy plugin history has an invalid Git index entry") from error
         if stage != "0":
             fail("legacy plugin history has an unmerged Git index entry")
-        try:
-            value = raw_path.decode("utf-8", errors="strict")
-        except UnicodeDecodeError as error:
-            raise MaterializationError("legacy plugin history contains a non-UTF-8 path") from error
-        path = PurePosixPath(value)
-        try:
-            relative = path.relative_to(prefix)
-        except ValueError:
-            fail("legacy history filter retained a path outside the selected plugin")
-        run_git(["update-index", "--force-remove", "--", value], cwd=Path.cwd())
+        entries.append((mode, object_id, path))
+    return entries
+
+
+def filter_index_paths(plugin_id: str) -> int:
+    """Keep the selected package history and rewrite it to the source layout."""
+
+    destination = PurePosixPath("plugins") / plugin_id
+    destinations: set[PurePosixPath] = set()
+    entries = staged_entries()
+    if entries:
+        run_git(["update-index", "--force-remove", "--", *(path.as_posix() for _, _, path in entries)], cwd=Path.cwd())
+    for mode, object_id, path in entries:
+        if mode == "160000":
+            if path != PurePosixPath("plugins") / plugin_id:
+                fail("legacy history contains an unsupported nested Git subproject")
+            continue
+        relative = source_history_relative(path, plugin_id)
+        target = destination / relative
+        if target in destinations:
+            fail("legacy history filter retained duplicate plugin files")
+        destinations.add(target)
         if not source_member_is_forbidden(path):
-            target = (destination / relative).as_posix()
-            run_git(["update-index", "--add", "--cacheinfo", f"{mode},{object_id},{target}"], cwd=Path.cwd())
+            run_git(["update-index", "--add", "--cacheinfo", f"{mode},{object_id},{target.as_posix()}"], cwd=Path.cwd())
     return 0
 
 
@@ -999,7 +1031,7 @@ def filter_legacy_history(factory_root: Path, plugin_id: str, repository: Path) 
                 "--show-original-ids",
                 "main",
                 "--",
-                (SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id).as_posix(),
+                *source_history_paths(factory_root, plugin_id),
             ]
         ),
         stdout=subprocess.PIPE,

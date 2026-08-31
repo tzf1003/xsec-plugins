@@ -369,6 +369,11 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertEqual(artifact_bytes, {path.name: path.read_bytes() for path in (plugin_dir / ".xsec-market" / "artifacts").glob("*.xsec-plugin")})
             self.assertFalse(promote_release.promote_stable(root, "com.example.test", str(beta_id)))
 
+    def test_stable_promotion_workflow_detects_snapshot_metadata_changes(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")
+
+        self.assertIn("git diff --quiet -- .xsec-factory/snapshots", workflow)
+
     def test_stable_promotion_rejects_an_unknown_release_id(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-stable-promotion-invalid-") as directory:
             root = Path(directory)

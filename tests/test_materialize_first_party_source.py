@@ -148,6 +148,21 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             factory = Path(directory) / "factory"
             factory.mkdir()
             self.make_factory(factory)
+            legacy_path = factory / "plugins" / PLUGIN_ID
+            snapshot_path = snapshot_dir(factory, PLUGIN_ID).relative_to(factory)
+            legacy_path.parent.mkdir()
+            git(factory, "mv", snapshot_path.as_posix(), legacy_path.relative_to(factory).as_posix())
+            (legacy_path / "retained-history.js").write_text("export const retained = true;\n", encoding="utf-8")
+            git(factory, "add", "--all")
+            git(factory, "commit", "--quiet", "-m", "test: preserve pre-migration plugin history")
+            (legacy_path / "retained-history.js").unlink()
+            git(factory, "add", "--all")
+            git(factory, "commit", "--quiet", "-m", "test: remove transient source history")
+            git(factory, "mv", legacy_path.relative_to(factory).as_posix(), snapshot_path.as_posix())
+            git(factory, "update-index", "--add", "--cacheinfo", f"160000,{'a' * 40},plugins/{PLUGIN_ID}")
+            git(factory, "commit", "--quiet", "-m", "test: migrate plugin source snapshot")
+            git(factory, "reset", "--hard", "HEAD")
+            git(factory, "update-ref", "refs/remotes/origin/main", "HEAD")
             output = Path(directory) / "source-repository"
 
             result = materializer.materialize_repository(factory, PLUGIN_ID, output)
@@ -160,6 +175,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             self.assertIn("plugins/com.xsec.workspace.sub-agent/plugin.json", git(output, "ls-tree", "-r", "--name-only", "beta"))
             history = git(output, "log", "--format=%s", "--all")
             self.assertIn("feat: retain plugin source history", history)
+            self.assertIn("test: preserve pre-migration plugin history", history)
             source_paths = git(output, "rev-list", "--objects", "--all")
             self.assertNotIn(".xsec-market", source_paths)
             self.assertNotIn(".xsec-plugin", source_paths)

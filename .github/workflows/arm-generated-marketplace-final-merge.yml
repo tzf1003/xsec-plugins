@@ -78,7 +78,9 @@ jobs:
               def release_index: test("^\\.xsec-factory/snapshots/" + plugin_id + "/\\.xsec-market/releases\\.json$");
               def release_sidecar: test("^\\.xsec-factory/snapshots/" + plugin_id + "/\\.xsec-market/releases\\.json\\.sig\\.jws\\.json$");
               def factory_document: test("^\\.xsec-factory/(?:official-registry\\.json|official-(?:publications|publication-proofs|adoptions|adoption-proofs|status)/" + plugin_id + "\\.json)$");
-              any(.[][]; .filename | if type == "string" then (release_index or release_sidecar or factory_document) else false end)
+              def subproject: test("^plugins/" + plugin_id + "$");
+              def submodule_manifest: . == ".gitmodules";
+              any(.[][]; .filename | if type == "string" then (release_index or release_sidecar or factory_document or subproject or submodule_manifest) else false end)
             ' >/dev/null && echo true || echo false)"
           fi
           case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in

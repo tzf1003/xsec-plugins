@@ -53,6 +53,8 @@ class FactoryLayoutMigrationTests(unittest.TestCase):
         self.assertIn("xsec-marketplace/layout-signatures-*", final)
         self.assertIn('layout_migration="$(printf', arm)
         self.assertIn('if [ "$layout_migration" = "true" ] ||', arm)
+        self.assertIn('def subproject:', arm)
+        self.assertIn('def submodule_manifest:', arm)
         self.assertIn('echo "factory_generated=true"', arm)
         self.assertIn('if [ -e "$CANDIDATE/.xsec-factory/layout-migration.json" ]; then', final)
         self.assertIn('verify_factory_layout_migration.py --root "$CANDIDATE" --baseline-root . --before "$BEFORE" --after "$AFTER" --json', final)

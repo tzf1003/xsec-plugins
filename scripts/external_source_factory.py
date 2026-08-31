@@ -24,6 +24,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import subprocess
 import tempfile
 
 from build_market import (
@@ -3136,6 +3137,87 @@ def validate_trusted_baseline_continuity(
             )
 
 
+def factory_git_lines(root: Path, arguments: list[str]) -> list[str]:
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        if name in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} or name.startswith("GIT_CONFIG"):
+            environment.pop(name, None)
+    environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0"})
+    try:
+        result = subprocess.run(
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *arguments],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except (OSError, UnicodeDecodeError) as error:
+        raise ExternalSourceFactoryError("Factory Git metadata is unavailable") from error
+    if result.returncode:
+        fail("Factory Git metadata is invalid")
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def first_party_gitlinks(root: Path) -> dict[str, str]:
+    revisions: dict[str, str] = {}
+    for line in factory_git_lines(root, ["ls-files", "--stage", "--", "plugins"]):
+        try:
+            header, path = line.split("\t", 1)
+            mode, revision, stage = header.split(" ")
+        except ValueError as error:
+            raise ExternalSourceFactoryError("Factory plugin Git index is invalid") from error
+        if mode != "160000" or stage != "0" or not path.startswith("plugins/") or not GIT_SHA_PATTERN.fullmatch(revision):
+            fail("Factory plugins must be Git subprojects")
+        if path in revisions:
+            fail("Factory Git subprojects must not repeat")
+        revisions[path] = revision
+    return revisions
+
+
+def first_party_submodule_settings(root: Path) -> dict[str, dict[str, str]]:
+    manifest = root / ".gitmodules"
+    if is_link(manifest) or not manifest.is_file():
+        fail("Factory subproject manifest is unavailable")
+    settings: dict[str, dict[str, str]] = {}
+    for line in factory_git_lines(root, ["config", "--file", ".gitmodules", "--get-regexp", r"^submodule\..+"]):
+        try:
+            key, value = line.split(maxsplit=1)
+            prefix, field = key.rsplit(".", 1)
+            name = prefix.removeprefix("submodule.")
+        except ValueError as error:
+            raise ExternalSourceFactoryError("Factory subproject manifest is invalid") from error
+        if field not in {"path", "url", "branch"}:
+            fail("Factory subproject manifest has an unsupported field")
+        item = settings.setdefault(name, {})
+        if field in item:
+            fail("Factory subproject manifest repeats a field")
+        item[field] = value
+    return settings
+
+
+def validate_first_party_subprojects(
+    root: Path,
+    registrations: tuple[Registration, ...],
+) -> None:
+    expected = {item.plugin_id: item.repository for item in registrations if item.trust_tier == "first-party"}
+    git_metadata = root / ".git"
+    layouts = (root / SNAPSHOT_ROOT_RELATIVE_PATH, root / ".gitmodules")
+    if not expected or not (git_metadata.exists() or is_link(git_metadata)) or not any(path.exists() or is_link(path) for path in layouts):
+        return
+    expected_paths = {f"plugins/{plugin_id}" for plugin_id in expected}
+    revisions = first_party_gitlinks(root)
+    if set(revisions) != expected_paths:
+        fail("Factory Git subprojects do not match first-party plugins")
+    settings = first_party_submodule_settings(root)
+    if set(settings) != expected_paths:
+        fail("Factory subproject manifest does not match first-party plugins")
+    for plugin_id, repository in expected.items():
+        path = f"plugins/{plugin_id}"
+        if settings[path] != {"path": path, "url": f"https://github.com/{repository}.git", "branch": "beta"}:
+            fail(f"Factory subproject source is invalid for {plugin_id}")
+
+
 def validate_registry_and_snapshots(
     root: Path,
     *,
@@ -3153,6 +3235,7 @@ def validate_registry_and_snapshots(
 
     registrations = load_registry(root)
     validate_trusted_baseline_continuity(root, registrations, baseline_root)
+    validate_first_party_subprojects(root, registrations)
     registered_ids = {registration.plugin_id for registration in registrations}
     index = read_json(root / MARKETPLACE_RELATIVE_PATH, "official marketplace index")
     entries = index.get("plugins")
