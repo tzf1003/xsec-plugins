@@ -50,6 +50,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("gitlink_changed", workflow)
         self.assertIn('|| [ "$factory_content" = "true" ]', workflow)
         self.assertIn('|| [ "$gitlink_changed" = "true" ]', workflow)
+        self.assertIn("contents: read", workflow)
         self.assertIn("never checks out or executes PR content", workflow)
         self.assertNotIn("actions/checkout", workflow)
 

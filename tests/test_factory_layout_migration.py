@@ -77,6 +77,14 @@ class FactoryLayoutMigrationTests(unittest.TestCase):
         self.assertEqual(workflow.count("Pending Factory layout migration has no source-freshness proof."), 2)
         self.assertIn(".xsec-factory/layout-migration.json", workflow)
 
+    def test_source_gate_runs_layout_verification_only_for_the_first_transition(self) -> None:
+        workflow = (ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+
+        self.assertIn('if [ ! -e "$BASELINE_ROOT/.xsec-factory/layout-migration.json" ]; then', workflow)
+        self.assertIn('python scripts/verify_factory_layout_migration.py --root . --baseline-root "$BASELINE_ROOT"', workflow)
+        self.assertIn('cmp -- .xsec-factory/layout-migration.json "$BASELINE_ROOT/.xsec-factory/layout-migration.json"', workflow)
+        self.assertIn('python scripts/external_source_factory.py validate --baseline-root "$BASELINE_ROOT"', workflow)
+
     def test_pending_layout_marker_blocks_desktop_smoke_dispatch(self) -> None:
         workflow = (ROOT / ".github/workflows/dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
 

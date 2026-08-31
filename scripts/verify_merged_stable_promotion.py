@@ -34,6 +34,7 @@ ADOPTION_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-adoptions/({PLUGI
 ADOPTION_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-adoption-proofs/({PLUGIN_ID_PATTERN})\.json$")
 STATUS_PATH_PATTERN = re.compile(rf"^\.xsec-factory/official-status/({PLUGIN_ID_PATTERN})\.json$")
 STATUS_PROOF_PATTERN = re.compile(rf"^\.xsec-factory/official-status-proofs/({PLUGIN_ID_PATTERN})\.json$")
+GITLINK_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})$")
 MARKETPLACE_INDEX = ".agents/plugins/marketplace.json"
 MARKETPLACE_SIDECAR = ".agents/plugins/marketplace.json.sig.jws.json"
 REGISTRY_PATH = ".xsec-factory/official-registry.json"
@@ -281,7 +282,13 @@ def verify_retained_sidecar_refresh_candidate(root: Path, before: str, after: st
     return {"kind": "retained-sidecar-refresh", "plugin_id": plugin_id, "sidecar_path": paths[0]}
 
 
-def allowed_paths(channel: str, paths: list[str], promoted_ids: set[str]) -> None:
+def allowed_paths(
+    channel: str,
+    paths: list[str],
+    promoted_ids: set[str],
+    *,
+    first_party_gitlink_ids: set[str] | None = None,
+) -> None:
     """Permit only the generated Factory surfaces for a signed release PR."""
 
     for path in paths:
@@ -293,6 +300,9 @@ def allowed_paths(channel: str, paths: list[str], promoted_ids: set[str]) -> Non
         if channel == "beta" and plugin_path and plugin_path.group(1) in promoted_ids:
             # Source snapshots and newly-built immutable artifacts belong only
             # to a release index whose Beta pointer advances in this PR.
+            continue
+        gitlink_path = GITLINK_PATH_PATTERN.fullmatch(path)
+        if channel == "beta" and gitlink_path and first_party_gitlink_ids and gitlink_path.group(1) in first_party_gitlink_ids:
             continue
         publication_path = PUBLICATION_PATH_PATTERN.fullmatch(path)
         if publication_path and publication_path.group(1) in promoted_ids:
@@ -344,8 +354,10 @@ def active_registered_source(
     if registration.get("status") != "active":
         fail(f"registered publication plugin {plugin_id} is not active")
     source = registration.get("source")
+    trust_tier = registration.get("trustTier")
     if (
-        not isinstance(source, dict)
+        trust_tier not in {"external", "first-party"}
+        or not isinstance(source, dict)
         or not isinstance(source.get("repository"), str)
         or not REPOSITORY_PATTERN.fullmatch(source["repository"])
         or not isinstance(source.get("path"), str)
@@ -359,7 +371,50 @@ def active_registered_source(
         "path": str(source["path"]),
         "beta_ref": "refs/heads/beta",
         "stable_ref": "refs/heads/main",
+        "trust_tier": str(trust_tier),
     }
+
+
+def gitlink_revision(root: Path, revision: str, plugin_id: str) -> str | None:
+    """Read one exact Gitlink revision without consulting its worktree."""
+
+    path = f"plugins/{plugin_id}"
+    listing = git_text(root, ["ls-tree", revision, "--", path])
+    if not listing:
+        return None
+    try:
+        header, listed_path = listing.split("\t", maxsplit=1)
+        mode, object_type, source_sha = header.split(" ", maxsplit=2)
+    except ValueError as error:
+        raise PromotionVerificationError("first-party Gitlink tree entry is invalid") from error
+    if listed_path != path or mode != "160000" or object_type != "commit" or not SHA_PATTERN.fullmatch(source_sha):
+        fail("first-party Gitlink tree entry is invalid")
+    return source_sha
+
+
+def require_first_party_gitlink(
+    root: Path,
+    before: str,
+    after: str,
+    *,
+    plugin_id: str,
+    source: dict[str, str],
+) -> str | None:
+    """Bind a first-party Beta publication to its exact source Gitlink."""
+
+    identity = active_registered_source(root, after, plugin_id=plugin_id)
+    if identity is None or identity["trust_tier"] != "first-party":
+        return None
+    path = f"plugins/{plugin_id}"
+    if identity["path"] != path:
+        fail("first-party publication has an invalid source path")
+    before_sha = gitlink_revision(root, before, plugin_id)
+    after_sha = gitlink_revision(root, after, plugin_id)
+    if after_sha != source["sha"]:
+        fail("first-party Beta publication Gitlink does not match its authenticated source SHA")
+    if before_sha == after_sha:
+        fail("first-party Beta publication did not advance its Gitlink")
+    return path
 
 
 def registry_source_binding(
@@ -482,7 +537,13 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
 
     promoted: list[dict[str, object]] = []
     promoted_ids = {plugin_id for plugin_id, _ in release_paths}
-    allowed_paths(channel, paths, promoted_ids)
+    first_party_gitlink_ids = {
+        plugin_id
+        for plugin_id in promoted_ids
+        if (identity := active_registered_source(root, after, plugin_id=plugin_id)) is not None
+        and identity["trust_tier"] == "first-party"
+    }
+    allowed_paths(channel, paths, promoted_ids, first_party_gitlink_ids=first_party_gitlink_ids)
     for plugin_id, release_path in release_paths:
         sidecar = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json"
         if sidecar not in paths:
@@ -523,6 +584,7 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         if source is not None:
             record["source"] = source
             if channel == "beta":
+                require_first_party_gitlink(root, before, after, plugin_id=plugin_id, source=source)
                 record["main_source"] = beta_main_gate_binding(
                     root,
                     after,
@@ -581,6 +643,8 @@ def verify_stable_maintenance(root: Path, before: str, after: str, paths: list[s
     )
     if source is None:
         fail("no-pointer Stable completion must belong to an active registered source")
+    if any(GITLINK_PATH_PATTERN.fullmatch(path) for path in paths):
+        fail("no-pointer Stable completion may not change a first-party Gitlink")
     return {
         "kind": "stable-maintenance",
         "promotions": [{"plugin_id": plugin_id, "release_id": stable_release, "source": source}],
@@ -656,6 +720,7 @@ def verify_source_only_beta(
     )
     if source is None:
         fail("source-only Beta must belong to an active registered source")
+    gitlink_path = require_first_party_gitlink(root, before, after, plugin_id=plugin_id, source=source)
     main_source = beta_main_gate_binding(
         root,
         after,
@@ -672,7 +737,7 @@ def verify_source_only_beta(
     except (MarketplaceKmsPublisherError, OSError, ValueError) as error:
         raise PromotionVerificationError("source-only Beta has an invalid active KMS document layout") from error
     for path in paths:
-        if path in required_paths or path in active_kms_sidecars:
+        if path in required_paths or path in active_kms_sidecars or path == gitlink_path:
             continue
         fail(f"source-only Beta changed an unauthorized path: {path}")
     return {
@@ -696,6 +761,8 @@ def verify_beta_smoke_ready(
     generic maintenance: it is the only shape that may reopen Desktop smoke,
     and binds both exact source branch heads so the finalizer can reject a
     decision that became stale while the generated PR waited for review.
+    A first-party recheck may also catch up a stale development Gitlink to
+    that retained Beta SHA.
     """
 
     require_candidate_revisions(root, before, after)
@@ -753,8 +820,9 @@ def verify_beta_smoke_ready(
         raise PromotionVerificationError("no-pointer Beta smoke transition has an invalid active KMS document layout") from error
     if not active_release_sidecars.issubset(active_kms_sidecars):
         fail("no-pointer Beta smoke transition active release sidecar allowlist is incomplete")
+    gitlink_path = f"plugins/{plugin_id}" if f"plugins/{plugin_id}" in paths else None
     for path in paths:
-        if path in required_paths or path in active_kms_sidecars:
+        if path in required_paths or path in active_kms_sidecars or path == gitlink_path:
             continue
         fail(f"no-pointer Beta smoke transition changed an unauthorized path: {path}")
     for path, label in ((MARKETPLACE_INDEX, "Marketplace index"), (release_path, "Beta release index"), (evidence_path, "Beta provenance")):
@@ -810,6 +878,14 @@ def verify_beta_smoke_ready(
         fail("no-pointer Beta smoke transition may not change its immutable Beta source SHA")
     if before_source["mainGateSha"] == after_source["mainGateSha"]:
         fail("no-pointer Beta smoke transition must record a newly compared registered main SHA")
+    if gitlink_path is not None and require_first_party_gitlink(
+        root,
+        before,
+        after,
+        plugin_id=plugin_id,
+        source={"sha": after_source["betaSha"]},
+    ) != gitlink_path:
+        fail("no-pointer Beta smoke transition may not change a first-party Gitlink")
 
     expected_release = {"betaReleaseId": beta_release, "stableReleaseId": stable_release}
     if before_status["release"] != expected_release or after_status["release"] != expected_release:
@@ -908,6 +984,7 @@ def classify_merged_change(
             or PUBLICATION_PROOF_PATTERN.fullmatch(path)
             or STATUS_PATH_PATTERN.fullmatch(path)
             or STATUS_PROOF_PATTERN.fullmatch(path)
+            or GITLINK_PATH_PATTERN.fullmatch(path)
             for path in paths
         ]
         if all(auxiliary) and MARKETPLACE_SIDECAR in paths and any(
