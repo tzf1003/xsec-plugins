@@ -3161,17 +3161,22 @@ def factory_git_lines(root: Path, arguments: list[str]) -> list[str]:
 
 def first_party_gitlinks(root: Path) -> dict[str, str]:
     revisions: dict[str, str] = {}
-    for line in factory_git_lines(root, ["ls-files", "--stage", "--", "plugins"]):
+    for line in factory_git_lines(root, ["ls-files", "--stage"]):
         try:
             header, path = line.split("\t", 1)
             mode, revision, stage = header.split(" ")
         except ValueError as error:
             raise ExternalSourceFactoryError("Factory plugin Git index is invalid") from error
-        if mode != "160000" or stage != "0" or not path.startswith("plugins/") or not GIT_SHA_PATTERN.fullmatch(revision):
+        if stage != "0":
+            fail("Factory Git index has an unmerged entry")
+        if mode == "160000":
+            if not GIT_SHA_PATTERN.fullmatch(revision):
+                fail("Factory Git subproject revision is invalid")
+            if path in revisions:
+                fail("Factory Git subprojects must not repeat")
+            revisions[path] = revision
+        elif path.startswith("plugins/"):
             fail("Factory plugins must be Git subprojects")
-        if path in revisions:
-            fail("Factory Git subprojects must not repeat")
-        revisions[path] = revision
     return revisions
 
 

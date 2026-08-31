@@ -209,6 +209,11 @@ class ExternalSourceFactoryTests(unittest.TestCase):
 
             factory.validate_first_party_subprojects(root, (registration,))
 
+            git(root, "update-index", "--add", "--cacheinfo", f"160000,{'b' * 40},tooling/unreviewed-submodule")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "do not match"):
+                factory.validate_first_party_subprojects(root, (registration,))
+            git(root, "update-index", "--force-remove", "tooling/unreviewed-submodule")
+
             (root / ".gitmodules").write_text(
                 f'[submodule "{path}"]\n\tpath = {path}\n\turl = https://github.com/{repository}.git\n\tbranch = main\n',
                 encoding="utf-8",

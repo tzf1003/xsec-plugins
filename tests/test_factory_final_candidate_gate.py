@@ -45,8 +45,11 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn('def release_index:', workflow)
         self.assertIn('def release_sidecar:', workflow)
         self.assertIn('def factory_document:', workflow)
-        self.assertIn('any(.[][]; .filename | if type == "string" then', workflow)
+        self.assertIn('any(.[][]; [.filename, (.previous_filename? // "")]', workflow)
+        self.assertIn("git/trees/" + "$" + "{PR_BASE_SHA}?recursive=1", workflow)
+        self.assertIn("gitlink_changed", workflow)
         self.assertIn('|| [ "$factory_content" = "true" ]', workflow)
+        self.assertIn('|| [ "$gitlink_changed" = "true" ]', workflow)
         self.assertIn("never checks out or executes PR content", workflow)
         self.assertNotIn("actions/checkout", workflow)
 
