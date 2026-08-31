@@ -26,6 +26,7 @@
   "scripts/validate_market.py": "c2ac48036e7c7c6b4da8bc6ddaf32b5edfa6af07b5d3508ef1348d5fbe10a8fc",
   "scripts/verify_merged_stable_promotion.py": "975993f44f65a62ad83cf952876da4dcfddbab773411d26d10ea2a8c3fcbb50c",
   "tests/test_external_source_factory.py": "e40958fdd7fd6fdb8e700e0680321ca94ebf4cc117525a6a717d2c28de5b2402",
+  "tests/test_factory_final_candidate_gate.py": "7b59deef013bb5a05eb29d7a3f5d19cdfb828582c9909859ba33a9c5eba3298a",
   "tests/test_factory_layout_migration.py": "28db84365d0e49d673f43cd650faad361273de4dcffce6f6d95a7061f3a595a4",
   "tests/test_kms_marketplace_publisher.py": "94497429dbc7d0d76cc5ff88d61a3049508a0b3a9fd8d655f2c00ee7fa0a0578",
   "tests/test_market_validation.py": "04cb0c2229dbdec27d0f9d9dbedd3276218befee042fbdf020e4f7dd498a941f",
