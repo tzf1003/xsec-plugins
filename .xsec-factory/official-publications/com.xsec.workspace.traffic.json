@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.traffic",
+  "events": [
+    {
+      "channel": "beta",
+      "releaseId": "sha256-38c90858e22cdd5d588e0de9caf40591dfec6f1a8229dfa03e2523832cdee7ef",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-traffic",
+        "path": "plugins/com.xsec.workspace.traffic",
+        "ref": "refs/heads/beta",
+        "sha": "30d24dba3c14bae14101f14bb1351c25ff396a18"
+      },
+      "artifact": {
+        "sha256": "f1940906001367a2086d8ddc4d9a349f9e77343864ee50c164760f09b7332bde",
+        "url": "artifacts/com.xsec.workspace.traffic-1.3.0-sha256-f1940906001367a2-any-any.xsec-plugin"
+      },
+      "publisher": "github-actions[bot]"
+    }
+  ]
+}
