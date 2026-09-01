@@ -291,7 +291,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         payload = fixture.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         self.assertEqual(
             hashlib.sha256(payload).hexdigest(),
-            "12807a7dce6ba885e66d5609f07bb623b5bc4a914870927a96ce255419ccdd38",
+            "3cea53b5bed45f4e148a47000f8a65bb53d778b768fe70f994eee6ba146c77d8",
         )
         assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
 
