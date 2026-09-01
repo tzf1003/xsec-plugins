@@ -60,13 +60,18 @@ def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str
     mutations = frontend_section(case, source, "function ruleMutations", "function RulesSection({host})")
     ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
     ca_section = frontend_section(case, source, "function CaSection({host})", "function DefaultFilterSection({host})")
+    ca_details = frontend_section(
+        case, source, "function CaStatusDetails({host,model})", "function RotateConfirmation"
+    )
+    rotation = frontend_section(case, source, "function RotateConfirmation", "function CaSection({host})")
+    activation = frontend_section(case, source, "function PluginApp({host,context})", "function object2")
     settings_page = frontend_section(case, source, "function SettingsPage({host})", "function workspaceInstanceKey")
     case.assertRegex(
         default_filter,
         r"setLoading\(!0\),setError\(void 0\),setSaved\(!1\),loadSettings\(host\)"
         r"\.then\(value=>\{active&&editRevision\.current===startedAtEdit&&"
         r"\(filterRef\.current=value,setFilter\(value\)\)\}\)"
-        r"\.catch\(reason=>\{active&&setError\([^;]*\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}\)"
         r"\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)",
     )
     case.assertIn("error?u2(Notice,{action:", default_filter)
@@ -75,7 +80,7 @@ def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str
         rules,
         r"setLoading\(!0\),setError\(void 0\),loadRules\(host\)"
         r"\.then\(value=>\{active&&setRules\(value\)\}\)"
-        r"\.catch\(reason=>\{active&&setError\([^;]*\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}\)"
         r"\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)",
     )
     case.assertIn("error?u2(Notice,{action:", rules)
@@ -83,23 +88,51 @@ def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str
     case.assertIn("let reload=async()=>{setRules(await loadRules(host))}", rules)
     case.assertIn("function refreshRules(reload,setError,completed){try{await reload()}catch(reason){setError(", source)
     handlers = (
-        ("save:async()=>{", "},toggle:async"),
-        ("toggle:async", "},remove:async"),
-        ("remove:async()=>{", "}}}"),
+        ("save:async()=>{", "},toggle:async", "await saveRule(host,submitted)"),
+        ("toggle:async", "},remove:async", "await toggleRule(host,rule.rule_id,enabled)"),
+        ("remove:async()=>{", "}}}", "await deleteRule(host,ruleId)"),
     )
-    for start, end in handlers:
+    for start, end, mutation in handlers:
         handler_source = frontend_section(case, mutations, start, end)
+        case.assertIn(mutation, handler_source)
         case.assertIn("await refreshRules(reload,setError,", handler_source)
+        case.assertLess(handler_source.index(mutation), handler_source.index("await refreshRules(reload,setError,"))
     case.assertRegex(
         ca_model,
         r"setBusy\(!0\),setError\(void 0\),loadCaStatus\(host\)"
         r"\.then\(value=>\{active&&setStatus\(value\)\}\)"
-        r"\.catch\(reason=>\{active&&setError\([^;]*\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}\)"
         r"\.finally\(\(\)=>\{active&&setBusy\(!1\)\}\)",
     )
     case.assertIn("u2(CaError,{model})", ca_section)
+    case.assertIn("let model=useCaModel(host)", ca_section)
+    case.assertIn("model.run(()=>importCa(host),", ca_details)
+    case.assertIn("model.run(()=>rotateCa(host),", rotation)
+    case.assertRegex(
+        ca_model,
+        r"run:async\(action,name\)=>\{setBusy\(!0\),setError\(void 0\);try\{setStatus\(await action\(\)\)\}"
+        r"catch\(reason\)\{setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}finally\{setBusy\(!1\)\}\}",
+    )
+    case.assertIn(
+        "{save,toggle:toggle2,remove}=ruleMutations({host,reload,draftRef,updateDraft,deleteId,setDeleteId,setBusy,setError})",
+        rules,
+    )
+    case.assertIn('if(context.kind==="settings-page")return u2(SettingsPage,{host})', activation)
     for section in ("DefaultFilterSection", "CaSection", "RulesSection"):
         case.assertIn(f"u2({section},{{host}})", settings_page)
+    loaders = (
+        ("async function loadSettings(host)", "async function saveSettings", 'host.request("xsec.traffic.settings.get",{})'),
+        ("async function loadRules(host)", "async function saveRule", 'host.request("xsec.traffic.passive-rules.list",{})'),
+        ("async function loadCaStatus(host)", "async function importCa", 'host.request("xsec.traffic.ca.status",{})'),
+    )
+    for start, end, request in loaders:
+        case.assertIn(request, frontend_section(case, source, start, end))
+    ca_actions = (
+        ("async function importCa(host)", "async function rotateCa", 'caStatus(await host.request("xsec.traffic.ca.import",{}))'),
+        ("async function rotateCa(host)", "function passiveRule", 'caStatus(await host.request("xsec.traffic.ca.rotate",{}))'),
+    )
+    for start, end, request in ca_actions:
+        case.assertIn(request, frontend_section(case, source, start, end))
     for setter in ("setFilter", "setRules", "setStatus"):
         for cleared_value in ("void 0", "null", "undefined", "[]"):
             case.assertNotIn(f"{setter}({cleared_value})", source)
