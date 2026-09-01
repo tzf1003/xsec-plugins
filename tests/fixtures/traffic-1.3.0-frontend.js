@@ -128,4 +128,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 @media (max-width: 760px) { .traffic-settings { padding: 12px; }.settings-filter-grid { grid-template-columns: 1fr; }.settings-filter-grid .filter-section:last-child { grid-column: 1; }.rule-form { grid-template-columns: 1fr 1fr; }.rule-form .rule-pattern-field { grid-column: 1 / -1; } }
 `;var styles=[base_default,traffic_default,replay_default,settings_default].join(`
 `);var THEME_TOKEN_NAME=/^[a-z0-9-]+$/iu;function applyTheme(theme){for(let[name,value]of Object.entries(theme))THEME_TOKEN_NAME.test(name)&&document.documentElement.style.setProperty(`--xsec-${name}`,value);let mode=theme["color-mode"];(mode==="light"||mode==="dark")&&(document.documentElement.style.colorScheme=mode)}function installStyles(root){let style=document.createElement("style");return style.dataset.xsecTrafficStyles="",style.textContent=styles,root.before(style),style}function readInitialContext(host){if(host.context?.kind!==void 0)return parseContext(host.context)}function activate(host){if(host.apiVersion!==2)throw new Error(`不支持的 Frontend API：${host.apiVersion}`);console.debug("traffic.frontend.activate",{apiVersion:host.apiVersion});let root,current=readInitialContext(host),themeSubscription,style,draw=()=>{!root||!current||G(u2(PluginApp,{host,context:current}),root)};return{mount(nextRoot,context){root=nextRoot,current=parseContext(context),console.info("traffic.frontend.mount",{contextKind:current.kind,toolKind:current.kind==="workspace-tool"?current.tool.kind:void 0}),style=installStyles(root),themeSubscription=host.onTheme(applyTheme),draw()},update(context){current=parseContext(context),console.debug("traffic.frontend.update",{contextKind:current.kind,visible:current.kind==="workspace-tool"?current.visible:void 0}),draw()},dispose(){console.debug("traffic.frontend.dispose"),themeSubscription?.dispose(),themeSubscription=void 0,root&&G(null,root),style?.remove(),style=void 0,root=void 0,current=void 0}}}return __toCommonJS(entrypoint_exports);})();
-export function activate(host){const controller=__xsecTrafficFrontend.activate(host);return{mount(root,context){return controller.mount(root,context)},update(context){return controller.update(context)},dispose(){return controller.dispose()}}}
+/** Activate the Traffic frontend and expose its host lifecycle. */
+export function activate(host){
+  const controller=__xsecTrafficFrontend.activate(host);
+  return{
+    /** Mount the active Traffic surface. */
+    mount(root,context){return controller.mount(root,context)},
+    /** Update the active Traffic context. */
+    update(context){return controller.update(context)},
+    /** Dispose the active Traffic surface. */
+    dispose(){return controller.dispose()}
+  };
+}

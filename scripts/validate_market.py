@@ -203,7 +203,7 @@ APPROVALS_FRONTEND_SOURCE_SHA256_BY_VERSION = {
     "1.3.2": "209e8f2eb043a777a77235bdb4985d7d74f951a86162c913be80c27d9a4dcf18",
 }
 TRAFFIC_FRONTEND_SOURCE_SHA256_BY_VERSION = {
-    "1.3.0": "cdc8bb1d5e7394826ad2e0287c6e95d6bfb6af66d92918827da037055735d0f6",
+    "1.3.0": "392c49eaf32d7ef9c1cb7d492dea0d63a6479f8019b1da98ba69dd1e9ab62978",
 }
 
 
@@ -1564,6 +1564,8 @@ def validate_traffic_frontend(manifest: dict[str, object], source: str, label: s
 
 
 def frontend_string_constants(tokens: list[tuple[str, str]]) -> dict[str, str]:
+    """Collect unambiguous top-level string constants for RPC resolution."""
+
     dense = [token for token in tokens if token[0] != "newline"]
     constants: dict[str, str] = {}
     ambiguous: set[str] = set()
@@ -2589,6 +2591,8 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
 def validate_frontend_host_requests(
     methods: dict[str, object], tokens: list[tuple[str, str]], label: str
 ) -> set[str]:
+    """Validate reachable broker calls and return their declared method names."""
+
     requested = frontend_host_requests(tokens, label)
     undeclared = requested - set(methods)
     if undeclared:
@@ -2602,6 +2606,8 @@ def validate_frontend_rpc_literals(
     label: str,
     requested: set[str] | None = None,
 ) -> None:
+    """Reject undeclared RPC literals and declarations without real requests."""
+
     reachable = frontend_reachable_token_indices(tokens)
     reachable_names = {
         value
@@ -2638,6 +2644,8 @@ def validate_frontend_rpc_literals(
 def frontend_methods_with_capability(
     methods: dict[str, object], capability: str
 ) -> set[str]:
+    """Return frontend method names bound to one declared capability."""
+
     return {
         method
         for method, descriptor in methods.items()

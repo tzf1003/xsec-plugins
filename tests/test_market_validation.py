@@ -28,10 +28,14 @@ from validate_market import (  # noqa: E402
 
 
 def snapshot_dir(root: Path, plugin_id: str) -> Path:
+    """Return the retained Factory snapshot directory for one plugin."""
+
     return root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
 
 
 def traffic_release_contract() -> tuple[dict[str, object], str]:
+    """Load the reviewed Traffic 1.3.0 manifest and frontend fixtures."""
+
     fixture = ROOT / "tests" / "fixtures"
     manifest = json.loads((fixture / "traffic-1.3.0-plugin.json").read_text(encoding="utf-8"))
     source = (fixture / "traffic-1.3.0-frontend.js").read_text(encoding="utf-8")
@@ -39,6 +43,8 @@ def traffic_release_contract() -> tuple[dict[str, object], str]:
 
 
 def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert that asset settings failures remain isolated by surface."""
+
     if "setRuns(await api.runs())" in source:
         case.assertIn("setRunsError(", source)
         case.assertIn("setSettings(await api.settings())", source)
@@ -202,25 +208,33 @@ class MarketplaceValidationTests(unittest.TestCase):
     maxDiff = None
 
     def test_traffic_react_settings_contract_fixture(self) -> None:
+        """Keep the reviewed React settings fixture pinned to its digest."""
+
         fixture = ROOT / "tests" / "fixtures" / "traffic-1.3.0-frontend.js"
         payload = fixture.read_bytes()
         self.assertEqual(
             hashlib.sha256(payload).hexdigest(),
-            "cdc8bb1d5e7394826ad2e0287c6e95d6bfb6af66d92918827da037055735d0f6",
+            "392c49eaf32d7ef9c1cb7d492dea0d63a6479f8019b1da98ba69dd1e9ab62978",
         )
         assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
 
     def test_traffic_reviewed_frontend_contract_accepts_release_bundle(self) -> None:
+        """Accept the complete reviewed Traffic 1.3.0 release contract."""
+
         manifest, source = traffic_release_contract()
         validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
 
     def test_traffic_reviewed_frontend_contract_rejects_source_mutation(self) -> None:
+        """Reject any Traffic frontend mutation outside the reviewed digest."""
+
         manifest, source = traffic_release_contract()
         mutated = source.replace("traffic.frontend.activate", "traffic.frontend.changed", 1)
         with self.assertRaisesRegex(MarketplaceValidationError, "reviewed Traffic frontend source"):
             validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
 
     def test_traffic_reviewed_frontend_contract_rejects_rpc_drift(self) -> None:
+        """Reject capability or binding drift in the reviewed Traffic RPCs."""
+
         manifest, source = traffic_release_contract()
         methods = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
         methods["xsec.traffic.reference.add"]["binding"] = "plugin"
@@ -228,12 +242,16 @@ class MarketplaceValidationTests(unittest.TestCase):
             validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
 
     def test_composer_capability_requires_plugin_api_1_4_for_any_method_name(self) -> None:
+        """Require Plugin API 1.4 for every Composer-capable method name."""
+
         manifest, source = traffic_release_contract()
         manifest["extensions"]["com.xsec.desktop"]["engines"]["pluginApi"] = "^1.3.0"
         with self.assertRaisesRegex(MarketplaceValidationError, "plugin API 1.4"):
             validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
 
     def build_marketplace(self, destination: Path) -> None:
+        """Build a disposable marketplace tree for source-gate assertions."""
+
         command = [
             sys.executable,
             "scripts/build_market.py",
@@ -244,6 +262,8 @@ class MarketplaceValidationTests(unittest.TestCase):
         subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
 
     def test_source_gate_accepts_disposable_unsigned_output(self) -> None:
+        """Accept a disposable unsigned marketplace produced from current sources."""
+
         with tempfile.TemporaryDirectory(prefix="xsec-market-source-test-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
@@ -1355,6 +1375,8 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertEqual(archived_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["version"], 2)
 
     def test_every_official_frontend_is_executable_and_placeholder_free(self) -> None:
+        """Validate lifecycle shape and API floors across official frontends."""
+
         placeholder = "XSEC official plugin is active in Desktop."
         for plugin_dir in sorted((ROOT / build_market.SNAPSHOT_ROOT_RELATIVE_PATH).iterdir()):
             if not plugin_dir.is_dir():
@@ -1378,6 +1400,8 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertIn("export function activate(host)", source, plugin_id)
 
     def test_generic_official_frontend_gate_rejects_success_screen_stub(self) -> None:
+        """Reject an inert success screen in place of an official frontend."""
+
         plugin_id = "com.xsec.workspace.files"
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
