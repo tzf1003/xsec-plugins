@@ -335,6 +335,22 @@ class MarketplaceValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(MarketplaceValidationError, "plugin API 1.4"):
             validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
 
+    def test_browser_surface_methods_require_plugin_api_1_4(self) -> None:
+        """Require Plugin API 1.4 for Browser Surface control methods."""
+
+        plugin_id = "com.xsec.workspace.browser"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        methods = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
+        methods["xsec.browser.surface.open"] = {
+            "capability": "browser.control",
+            "binding": "session",
+        }
+        manifest["extensions"]["com.xsec.desktop"]["engines"]["pluginApi"] = "^1.3.0"
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        with self.assertRaisesRegex(MarketplaceValidationError, "browser surface methods"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
     def build_marketplace(self, destination: Path) -> None:
         """Build a disposable marketplace tree for source-gate assertions."""
 
@@ -1449,6 +1465,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             expected_plugin_api = (
                 "^1.4.0"
                 if validate_market.frontend_methods_with_capability(methods, "workspace.composer.write")
+                or validate_market.frontend_methods_require_browser_surface_api(methods)
                 else "^1.3.0"
                 if "xsec.workspace.tool.open" in methods
                 else "^1.2.0"
