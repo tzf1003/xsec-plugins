@@ -148,7 +148,7 @@ jobs:
         id: decision
         run: |
           set -euo pipefail
-          changed="$(git status --porcelain --untracked-files=all -- .agents/plugins .xsec-factory | rg -v '\.sig\.jws\.json$' || true)"
+          changed="$(git status --porcelain --untracked-files=all -- .agents/plugins .xsec-factory | grep -v '\.sig\.jws\.json$' || true)"
           if [ -n "$changed" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
