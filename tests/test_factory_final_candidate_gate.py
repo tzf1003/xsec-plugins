@@ -62,7 +62,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("activation PR later adds only the matching sidecar", workflow)
         self.assertIn("xsec-marketplace/refresh-retained-sidecar-*", workflow)
         self.assertIn("beta-smoke-ready", workflow)
-        self.assertIn("Only external Beta branches may reopen a no-pointer Desktop smoke cycle", workflow)
+        self.assertIn("Only external Beta or signed batch branches may reopen a no-pointer Desktop smoke cycle", workflow)
         self.assertIn("--verify-first-party-adoption-candidate", workflow)
         self.assertIn("--verify-retained-sidecar-refresh-candidate", workflow)
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
