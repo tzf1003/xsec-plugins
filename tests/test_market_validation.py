@@ -272,6 +272,49 @@ class MarketplaceValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
+    def test_javascript_contract_tokens_do_not_treat_member_catch_as_control_header(self) -> None:
+        source = 'promise.catch(error=>error)/host.request("xsec.example")/1;'
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        self.assertNotIn(("regex", '/host.request("xsec.example")/'), tokens)
+
+    def test_javascript_contract_tokens_preserve_asi_for_break_and_continue(self) -> None:
+        source = 'while(true){break\n/host.request("xsec.example")/.test("")} '
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        self.assertIn(("regex", '/host.request("xsec.example")/'), tokens)
+
+    def test_official_frontend_rejects_parenthesized_and_continued_rpc_arguments(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        marker = "export function activate(host){"
+        self.assertIn(marker, source)
+        for call in (
+            '(host).request(dynamicMethod,{});',
+            'host.request("xsec.terminal.settings.get"+host.context.suffix,{});',
+        ):
+            with self.subTest(call=call):
+                mutated = source.replace(marker, f"{marker}{call}", 1)
+                with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+                    validate_market.validate_official_frontend(manifest, mutated, plugin_id)
+
+    def test_official_frontend_excludes_unreachable_function_rpc_evidence(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        method = 'host.request("xsec.plugin.settings.open",{})'
+        source = source.replace(method, "undefined", 1)
+        source += f'\nfunction example(host){{{method}}}\n'
+        with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
+    def test_frontend_binding_counts_include_catch_and_method_parameters(self) -> None:
+        source = 'const METHOD="xsec.good";class C{send(METHOD){host.request(METHOD,{})}}try{}catch(METHOD){host.request(METHOD,{})}'
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+            validate_market.frontend_host_requests(tokens, "frontend")
+
     def test_javascript_contract_tokens_treat_slash_after_control_header_as_regex(self) -> None:
         source = (
             'if(true)/host.request("xsec.plugin.settings.open")/.test("");'

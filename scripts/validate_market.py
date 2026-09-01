@@ -297,7 +297,11 @@ def javascript_control_header_closed(tokens: list[tuple[str, str]]) -> bool:
         return False
     previous = tokens[opening - 1]
     if previous[0] == "identifier" and previous[1] in CONTROL_HEADER_KEYWORDS:
-        return True
+        # A member call such as ``value.catch(...)`` is an expression, not a
+        # control-statement header.  Treating its closing parenthesis as a
+        # statement boundary would let a following division slash consume
+        # arbitrary source as a regex literal.
+        return opening < 2 or tokens[opening - 2] != ("punctuation", ".")
     return (
         opening >= 2
         and previous == ("identifier", "await")
@@ -424,25 +428,37 @@ def javascript_for_of_keyword(tokens: list[tuple[str, str]]) -> bool:
 def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
     """Return whether the next slash can begin a JavaScript regex literal."""
 
-    significant = [token for token in tokens if token[0] != "newline"]
-    if not significant:
+    cursor = len(tokens) - 1
+    had_line_terminator = False
+    while cursor >= 0 and tokens[cursor][0] == "newline":
+        had_line_terminator = True
+        cursor -= 1
+    if cursor < 0:
         return True
-    kind, value = significant[-1]
+    kind, value = tokens[cursor]
     if kind == "identifier":
+        if value in {"break", "continue"}:
+            return had_line_terminator
         if value not in REGEX_PREFIX_KEYWORDS:
             return False
-        if len(significant) >= 2 and significant[-2] == ("punctuation", "."):
+        previous = cursor - 1
+        while previous >= 0 and tokens[previous][0] == "newline":
+            previous -= 1
+        if previous >= 0 and tokens[previous] == ("punctuation", "."):
             return False
         if value == "of":
-            return javascript_for_of_keyword(significant)
+            return javascript_for_of_keyword(tokens[: cursor + 1])
         return True
     if kind in {"number", "regex", "string", "template"} or value == "]":
         return False
     if value == "}":
-        return javascript_statement_brace_closed(significant)
+        return javascript_statement_brace_closed(tokens[: cursor + 1])
     if value == ")":
-        return javascript_control_header_closed(significant)
-    if value in {"+", "-"} and len(significant) > 1 and significant[-2] == significant[-1]:
+        return javascript_control_header_closed(tokens[: cursor + 1])
+    previous = cursor - 1
+    while previous >= 0 and tokens[previous][0] == "newline":
+        previous -= 1
+    if value in {"+", "-"} and previous >= 0 and tokens[previous] == tokens[cursor]:
         return False
     return True
 
@@ -1509,6 +1525,117 @@ def frontend_rpc_bindings(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
     return bindings
 
 
+def frontend_named_function_blocks(tokens: list[tuple[str, str]]) -> dict[str, tuple[int, int]]:
+    """Index ordinary named function declarations by their source span."""
+
+    blocks: dict[str, tuple[int, int]] = {}
+    for index, token in enumerate(tokens):
+        if token != ("identifier", "function"):
+            continue
+        cursor = index + 1
+        if cursor < len(tokens) and tokens[cursor] == ("punctuation", "*"):
+            cursor += 1
+        if cursor >= len(tokens) or tokens[cursor][0] != "identifier":
+            continue
+        name = tokens[cursor][1]
+        opening = cursor + 1
+        if opening >= len(tokens) or tokens[opening] != ("punctuation", "("):
+            continue
+        parameter_closing = matching_parenthesis(tokens, opening)
+        if parameter_closing is None or parameter_closing + 1 >= len(tokens):
+            continue
+        body_opening = parameter_closing + 1
+        if tokens[body_opening] != ("punctuation", "{"):
+            continue
+        body_closing = matching_brace(tokens, body_opening)
+        if body_closing is not None:
+            # Duplicate names are ambiguous; dropping them causes callers to
+            # remain outside the reachability proof and fail closed.
+            if name in blocks:
+                blocks.pop(name)
+            else:
+                blocks[name] = (index, body_closing)
+    return blocks
+
+
+def frontend_activation_body_range(tokens: list[tuple[str, str]]) -> tuple[int, int] | None:
+    """Locate the exported ``activate(host)`` body in token space."""
+
+    for index, token in enumerate(tokens):
+        if token != ("identifier", "export"):
+            continue
+        cursor = index + 1
+        if cursor < len(tokens) and tokens[cursor] == ("identifier", "async"):
+            cursor += 1
+        expected = [
+            ("identifier", "function"),
+            ("identifier", "activate"),
+            ("punctuation", "("),
+            ("identifier", "host"),
+            ("punctuation", ")"),
+            ("punctuation", "{"),
+        ]
+        if tokens[cursor:cursor + len(expected)] != expected:
+            continue
+        opening = cursor + len(expected) - 1
+        closing = matching_brace(tokens, opening)
+        if closing is not None:
+            return opening + 1, closing
+    return None
+
+
+def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] | None:
+    """Return token indices reachable from exported activation and lifecycle code.
+
+    Frontends commonly keep host-request helpers in named functions above the
+    exported activation.  A small call-graph walk includes helpers called by
+    activation while excluding unrelated demonstrations or shadowed functions.
+    A source fragment without an activation (used by unit tests) retains the
+    historical whole-fragment behavior.
+    """
+
+    activation = frontend_activation_body_range(tokens)
+    if activation is None:
+        return None
+    blocks = frontend_named_function_blocks(tokens)
+    reachable: set[int] = set(range(activation[0], activation[1]))
+    queued: list[str] = []
+
+    def enqueue_calls(start: int, end: int) -> None:
+        for index in range(start, end - 1):
+            if tokens[index][0] != "identifier" or tokens[index + 1] != ("punctuation", "("):
+                continue
+            name = tokens[index][1]
+            spread_call = (
+                index >= 3
+                and tokens[index - 3:index] == [
+                    ("punctuation", "."),
+                    ("punctuation", "."),
+                    ("punctuation", "."),
+                ]
+            )
+            if name not in blocks or (
+                index and tokens[index - 1] == ("punctuation", ".") and not spread_call
+            ):
+                continue
+            closing = matching_parenthesis(tokens, index + 1)
+            if closing is not None and closing + 1 < len(tokens) and tokens[closing + 1] == ("punctuation", "{"):
+                continue
+            queued.append(name)
+
+    enqueue_calls(*activation)
+    seen: set[str] = set()
+    while queued:
+        name = queued.pop()
+        if name in seen or name not in blocks:
+            continue
+        seen.add(name)
+        start, end = blocks[name]
+        reachable.update(range(start, end + 1))
+        enqueue_calls(start, end)
+    return reachable
+
+
 def frontend_binding_counts(tokens: list[tuple[str, str]]) -> dict[str, int]:
     """Count const/let/var, function, and parameter bindings by identifier."""
 
@@ -1533,6 +1660,36 @@ def frontend_binding_counts(tokens: list[tuple[str, str]]) -> dict[str, int]:
                     index = closing
             index += 1
             continue
+        # ``catch (METHOD) { ... }`` introduces a binding just like a
+        # function parameter.  Count it so a top-level RPC constant cannot be
+        # incorrectly resolved through a shadowed catch variable.
+        if kind == "identifier" and value == "catch" and index + 1 < len(tokens) and tokens[index + 1] == ("punctuation", "("):
+            closing = matching_parenthesis(tokens, index + 1)
+            if closing is not None:
+                for token in tokens[index + 2:closing]:
+                    if token[0] == "identifier":
+                        add(token[1])
+                index = closing + 1
+                continue
+        # Class and object methods use the same parameter-binding semantics as
+        # ordinary functions.  The ``name(...) {`` shape is intentionally
+        # restricted to non-control identifiers and skips ``function name``
+        # declarations already handled above.
+        if kind == "punctuation" and value == "(" and index and tokens[index - 1][0] == "identifier":
+            name = tokens[index - 1][1]
+            if name not in {"if", "for", "while", "switch", "with", "catch"}:
+                previous = index - 2
+                if previous < 0 or tokens[previous] not in {
+                    ("identifier", "function"),
+                    ("punctuation", "*"),
+                }:
+                    closing = matching_parenthesis(tokens, index)
+                    if closing is not None and closing + 1 < len(tokens) and tokens[closing + 1] == ("punctuation", "{"):
+                        for token in tokens[index + 1:closing]:
+                            if token[0] == "identifier":
+                                add(token[1])
+                        index = closing + 1
+                        continue
         if kind == "identifier" and value == "function":
             index += 1
             if index < len(tokens) and tokens[index] == ("punctuation", "*"):
@@ -1582,9 +1739,24 @@ def _bracket_request_length(dense: list[tuple[str, str]], index: int) -> int:
 def host_request_argument_index(dense: list[tuple[str, str]], index: int) -> int | None:
     """Return the first-argument index of host.request / host?.request / host["request"]."""
 
-    if index >= len(dense) or dense[index] != ("identifier", "host"):
+    if index >= len(dense):
         return None
-    cursor = index + 1
+    # Parenthesized receivers are semantically equivalent to the bare broker
+    # binding.  Accept a simple comma expression whose final value is ``host``
+    # as well (for example ``(0, host).request(...)``); any other expression is
+    # left unresolved and therefore fails closed in the caller.
+    if dense[index] == ("identifier", "host"):
+        cursor = index + 1
+    elif dense[index] == ("punctuation", "("):
+        closing = matching_parenthesis(dense, index)
+        if closing is None:
+            return None
+        inner = dense[index + 1:closing]
+        if not inner or inner[-1] != ("identifier", "host"):
+            return None
+        cursor = closing + 1
+    else:
+        return None
     if (
         cursor + 1 < len(dense)
         and dense[cursor] == ("punctuation", "?")
@@ -1626,15 +1798,27 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
     dense = [token for token in tokens if token[0] != "newline"]
     bindings = frontend_rpc_bindings(dense)
     binding_counts = frontend_binding_counts(dense)
+    reachable = frontend_reachable_token_indices(tokens)
     requested: set[str] = set()
     saw_request = False
+    dense_source_indices = [index for index, token in enumerate(tokens) if token[0] != "newline"]
     for index in range(len(dense)):
+        if reachable is not None and dense_source_indices[index] not in reachable:
+            continue
         argument_index = host_request_argument_index(dense, index)
         if argument_index is None:
             continue
         saw_request = True
         argument_kind, argument_value = dense[argument_index]
         if argument_kind == "string":
+            # The entire first argument must be this literal.  A continuation
+            # such as ``"xsec.method" + dynamic`` or ``.replace(...)`` is
+            # executable data and cannot satisfy a static declaration.
+            if argument_index + 1 >= len(dense) or dense[argument_index + 1] not in {
+                ("punctuation", ","),
+                ("punctuation", ")"),
+            }:
+                fail(f"{label} contains an unresolved host RPC request argument")
             requested.add(argument_value)
         elif (
             argument_kind == "identifier"
@@ -1661,9 +1845,28 @@ def validate_frontend_host_requests(
 def validate_frontend_rpc_literals(
     methods: dict[str, object], tokens: list[tuple[str, str]], label: str
 ) -> None:
+    reachable = frontend_reachable_token_indices(tokens)
+    reachable_names = {
+        value
+        for index, (kind, value) in enumerate(tokens)
+        if kind == "identifier" and (reachable is None or index in reachable)
+    }
     literals = {
-        value for kind, value in tokens
-        if kind == "string" and re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value)
+        value
+        for index, (kind, value) in enumerate(tokens)
+        if kind == "string"
+        and re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value)
+        and (
+            reachable is None
+            or index in reachable
+            or (
+                index >= 3
+                and tokens[index - 3] == ("identifier", "const")
+                and tokens[index - 2][0] == "identifier"
+                and tokens[index - 2][1] in reachable_names
+                and tokens[index - 1] == ("punctuation", "=")
+            )
+        )
     }
     undeclared = literals - set(methods)
     if undeclared:
