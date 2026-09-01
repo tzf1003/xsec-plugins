@@ -187,7 +187,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('any(.protection_rules[]?; .type == "branch_policy")', final_merge)
         self.assertIn('select(.type == "required_reviewers")', final_merge)
         self.assertIn("length == 0", final_merge)
-        self.assertIn("coderabbitai", final_merge.lower())
+        self.assertIn('commits/${HEAD_SHA}/status', final_merge)
+        self.assertIn('any($status.statuses[]?; .context == "CodeRabbit" and .state == "success")', final_merge)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", final_merge)
         self.assertIn("pageInfo{hasNextPage endCursor}", final_merge)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
@@ -354,9 +355,10 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('error("expected exactly one merged Factory generated PR")', workflow)
         self.assertNotIn('gh api -H \'Accept: application/vnd.github+json\' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100"', workflow)
 
-    def test_final_gate_requires_coderabbit_and_resolved_threads(self) -> None:
+    def test_final_gate_requires_coderabbit_check_and_resolved_threads(self) -> None:
         workflow = FINAL_MERGE_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("coderabbitai", workflow.lower())
+        self.assertIn('commits/${HEAD_SHA}/status', workflow)
+        self.assertIn('any($status.statuses[]?; .context == "CodeRabbit" and .state == "success")', workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertIn("pageInfo{hasNextPage endCursor}", workflow)
         self.assertNotIn("review_request_at=", workflow)
