@@ -129,4 +129,4 @@ jobs:
           python scripts/factory_main_protection_policy.py --input "$current" --output "$desired"
           gh api --method PUT "repos/${GITHUB_REPOSITORY}/branches/main/protection" --input "$desired" > "$verified"
           python scripts/factory_main_protection_policy.py --input "$verified" --verify
-          echo "Classic Factory main protection is active: strict GitHub-Actions source gate, admin enforcement, and resolved conversations. The exact-head finalizer gate is enforced by its verified Ruleset."
+          echo "Classic Factory main protection is active: strict GitHub-Actions source gate and admin enforcement. The exact-head finalizer gate is enforced by its verified Ruleset."

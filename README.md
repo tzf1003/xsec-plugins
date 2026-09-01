@@ -260,8 +260,8 @@ installing this code and whenever protection is audited. Its protected-branch-on
 `production` job needs the repository-scoped administration secret
 `XSEC_MARKETPLACE_ADMIN_TOKEN` and `XSEC_MARKETPLACE_FINALIZER_APP_ID`; it sets strict, GitHub-Actions-app-pinned
 `source-gate` in classic protection, enforces that check for administrators,
-preserves unrelated checks and branch restrictions, removes pull-request approval
-requirements, and requires resolved conversations.
+preserves unrelated checks and branch restrictions, and removes pull-request
+approval and conversation-resolution requirements.
 Before it changes classic protection, it creates and verifies the separate
 `xsec-marketplace-final-exact-head` Ruleset: that Ruleset alone requires the
 strict GitHub-Actions `factory-final-merge-gate` and permits only the configured

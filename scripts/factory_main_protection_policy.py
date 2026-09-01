@@ -159,7 +159,7 @@ def desired_policy(protection: dict[str, Any]) -> dict[str, Any]:
         "allow_force_pushes": False,
         "allow_deletions": False,
         "block_creations": enabled(protection.get("block_creations"), "block_creations"),
-        "required_conversation_resolution": True,
+        "required_conversation_resolution": False,
         "lock_branch": enabled(protection.get("lock_branch"), "lock_branch"),
         "allow_fork_syncing": enabled(protection.get("allow_fork_syncing"), "allow_fork_syncing"),
     }
@@ -182,8 +182,8 @@ def verify_policy(protection: dict[str, Any]) -> None:
         fail("required status checks must be strict")
     if enabled(protection.get("enforce_admins"), "enforce_admins") is not True:
         fail("administrators must be subject to branch protection")
-    if enabled(protection.get("required_conversation_resolution"), "required_conversation_resolution") is not True:
-        fail("pull-request conversations must be resolved")
+    if enabled(protection.get("required_conversation_resolution"), "required_conversation_resolution"):
+        fail("pull-request conversation requirements must be disabled")
     if enabled(protection.get("allow_force_pushes"), "allow_force_pushes"):
         fail("force pushes must remain disabled")
     if enabled(protection.get("allow_deletions"), "allow_deletions"):

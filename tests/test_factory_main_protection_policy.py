@@ -78,6 +78,7 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
             ],
         )
         self.assertIsNone(desired["required_pull_request_reviews"])
+        self.assertFalse(desired["required_conversation_resolution"])
         self.assertEqual(desired["restrictions"], {"users": ["release-admin"], "teams": ["release-team"], "apps": ["release-app"]})
         self.assertTrue(desired["required_linear_history"])
         self.assertFalse(desired["allow_force_pushes"])
@@ -93,6 +94,7 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
             ],
         }
         active["required_pull_request_reviews"] = None
+        active["required_conversation_resolution"] = {"enabled": False}
         policy.verify_policy(active)
 
         stale = current_protection()
@@ -149,6 +151,15 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(policy.ProtectionPolicyError, "review requirements"):
             policy.verify_policy(review_required)
+
+        conversation_required = current_protection()
+        conversation_required["enforce_admins"] = {"enabled": True}
+        conversation_required["required_status_checks"] = {
+            "strict": True,
+            "checks": [{"context": "source-gate", "app_id": 15368}],
+        }
+        with self.assertRaisesRegex(policy.ProtectionPolicyError, "conversation requirements"):
+            policy.verify_policy(conversation_required)
 
 
 if __name__ == "__main__":
