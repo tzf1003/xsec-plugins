@@ -309,12 +309,44 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest, source = traffic_release_contract()
         validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
 
-    def test_traffic_reviewed_frontend_contract_rejects_source_mutation(self) -> None:
-        """Reject any Traffic frontend mutation outside the reviewed digest."""
+    def test_traffic_contract_accepts_a_new_source_version(self) -> None:
+        """Accept a new Traffic version once its broker surface is verified."""
 
         manifest, source = traffic_release_contract()
-        mutated = source.replace("traffic.frontend.activate", "traffic.frontend.changed", 1)
-        with self.assertRaisesRegex(MarketplaceValidationError, "reviewed Traffic frontend source"):
+        manifest["version"] = "1.3.1"
+        candidate = source.replace("traffic.frontend.activate", "traffic.frontend.1.3.1", 1)
+        validate_market.validate_official_frontend(manifest, candidate, "Traffic 1.3.1")
+
+    def test_traffic_contract_rejects_undeclared_rpc_mutation(self) -> None:
+        """Reject a source change that expands the approved Traffic surface."""
+
+        manifest, source = traffic_release_contract()
+        mutated = source.replace("xsec.traffic.list", "xsec.traffic.hidden", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "declared Traffic RPC surface"):
+            validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
+
+    def test_traffic_contract_rejects_reassigned_rpc_host(self) -> None:
+        """Reject a helper that replaces its broker before making an RPC."""
+
+        manifest, source = traffic_release_contract()
+        mutated = source.replace(
+            "function listTraffic(host,cursor,filter){",
+            "function listTraffic(host,cursor,filter){host={request(){return Promise.resolve({})}};",
+            1,
+        )
+        with self.assertRaisesRegex(MarketplaceValidationError, "Traffic host broker contract"):
+            validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
+
+    def test_traffic_contract_rejects_destructured_rpc_host(self) -> None:
+        """Reject a helper that replaces its broker by destructuring."""
+
+        manifest, source = traffic_release_contract()
+        mutated = source.replace(
+            "function listTraffic(host,cursor,filter){",
+            "function listTraffic(host,cursor,filter){({host}={host:{request(){return Promise.resolve({})}}});",
+            1,
+        )
+        with self.assertRaisesRegex(MarketplaceValidationError, "Traffic host broker contract"):
             validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
 
     def test_traffic_reviewed_frontend_contract_rejects_rpc_drift(self) -> None:

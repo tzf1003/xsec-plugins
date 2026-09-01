@@ -187,8 +187,9 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('any(.protection_rules[]?; .type == "branch_policy")', final_merge)
         self.assertIn('select(.type == "required_reviewers")', final_merge)
         self.assertIn("length == 0", final_merge)
-        self.assertNotIn("coderabbit", final_merge.lower())
-        self.assertNotIn("reviewThreads", final_merge)
+        self.assertIn("coderabbitai", final_merge.lower())
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", final_merge)
+        self.assertIn("pageInfo{hasNextPage endCursor}", final_merge)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
         self.assertIn("can_admins_bypass == false", protection)
         self.assertIn("deployment_branch_policy.protected_branches == true", protection)
@@ -302,14 +303,14 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
                 self.assertIn(required_rule, workflow)
         self.assertNotIn('pulls/${pull_number}/merge', workflow)
         self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
-        self.assertNotIn("coderabbit", workflow.lower())
+        self.assertEqual(workflow.count("@coderabbitai review"), 1)
         self.assertNotIn("review_body=", workflow)
         self.assertNotIn("\n\nThis PR was generated", workflow)
         self.assertIn("Retained KMS sidecar repair", readme)
         self.assertIn("refresh-retained-sidecars.yml", readme)
         self.assertIn("intentionally **never merges**\n", readme)
 
-    def test_adoption_workflows_keep_their_dispatch_yaml_valid_without_review_comments(self) -> None:
+    def test_adoption_workflows_request_a_single_review(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
         stage = STAGE_ADOPTION_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
@@ -317,8 +318,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("group: xsec-marketplace-publish-main", stage)
         self.assertIn("Stage only the immutable unsigned adoption proof", stage)
         self.assertIn("The Registry remains pending-adoption", stage)
-        self.assertNotIn("coderabbit", workflow.lower())
-        self.assertNotIn("coderabbit", stage.lower())
+        self.assertEqual(workflow.count("@coderabbitai review"), 1)
+        self.assertEqual(stage.count("@coderabbitai review"), 1)
         self.assertNotIn("review_body=", workflow)
         self.assertNotIn("review_body=", stage)
         self.assertNotIn("\n\nThis is an immutable first-party adoption", workflow)
@@ -353,13 +354,12 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('error("expected exactly one merged Factory generated PR")', workflow)
         self.assertNotIn('gh api -H \'Accept: application/vnd.github+json\' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100"', workflow)
 
-    def test_final_gate_and_post_merge_dispatcher_have_no_review_service_dependency(self) -> None:
-        for workflow_path in (FINAL_MERGE_WORKFLOW, POST_MERGE_DISPATCHER):
-            workflow = workflow_path.read_text(encoding="utf-8")
-            with self.subTest(workflow=workflow_path.name):
-                self.assertNotIn("coderabbit", workflow.lower())
-                self.assertNotIn("reviewThreads", workflow)
-                self.assertNotIn("review_request_at=", workflow)
+    def test_final_gate_requires_coderabbit_and_resolved_threads(self) -> None:
+        workflow = FINAL_MERGE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("coderabbitai", workflow.lower())
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
+        self.assertIn("pageInfo{hasNextPage endCursor}", workflow)
+        self.assertNotIn("review_request_at=", workflow)
 
 
 if __name__ == "__main__":
