@@ -16,7 +16,7 @@
   "factory-template/scripts/factory_core.py": "53dcf69d2db4287d0d309c2b3d258587eb0a697c27ae3decd9b67bcdbe996f5d",
   "factory-template/scripts/factory_validate.py": "950d19e1f8465c6d8d756dc253a3bfb61926199513818b4e971cd65046041c0e",
   "factory-template/tests/test_factory.py": "eadd4ff73443afd4c83d4cbd788cf5111db1612cabf99428595c5ab0626b8a43",
-  "scripts/bootstrap_plugins.py": "ccfdd9ecccacaa00acae93d9635bcefcc3f14bc692c550162740696c047f6905",
+  "scripts/bootstrap_plugins.py": "312dcf4d73db7da9655b162f93fcd117a74444541342ca9e5cb46e27a271da09",
   "scripts/build_market.py": "0653761424579e31a097e9811714bdf276e9cf3e8af46beb1fb95e14aabf96c2",
   "scripts/external_source_factory.py": "d8f4e7353d996886e90b1f5146f475969b83958eb571018ca29eab6f7d8ccc72",
   "scripts/frontend_contracts.test.mjs": "4b38f74a2b1ad38a81e736711d53597b78b781a64349ada1a7a45a7761a4bc82",
