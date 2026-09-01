@@ -79,7 +79,7 @@ adopt-first-party.yml
 要求该 revision 仍是当前 protected main 的祖先，并重新生成完全相同的 assertion bytes；所以 staging
 PR 因随后 main 更新而 rebase/squash merge 时仍绑定其原始审查 baseline，不能改为 merge parent。
 第二阶段随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。两个 PR 都必须经 source
-gate、`@codex review` 和 Finalizer。未来 Beta 发布可追加 history，
+gate、`@coderabbitai review` 和 Finalizer。未来 Beta 发布可追加 history，
 但 adoption 中的历史 prefix 永远不能改写。只要 split source 首次记录 post-adoption Beta/Stable
 provenance（即使新 source SHA 生成的 artifact 与 adoption release 完全相同，未增加 releaseId），
 `.xsec-factory/official-publications/<plugin-id>.json` 与其 KMS proof 就成为
@@ -192,14 +192,12 @@ workflow 和 GitHub 注入的 PR metadata，**从不 checkout 或执行 PR head*
 `xsec-marketplace/*` Factory 分支（包括 `adopt-first-party-*` 和
 `refresh-retained-sidecar-*`）写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
 success/not-applicable，故所需的 Factory context 不会卡住普通产品、文档或 fork PR。完成
-source gate、Codex review 且所有 Codex thread resolve 后，受保护 `production` 环境中的
+source gate、CodeRabbit audit 且所有 CodeRabbit thread resolve 后，受保护 `production` 环境中的
 maintainer 必须手工运行 `final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live
 PR 的 head/base，使用精确 head SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref、
-source gate 与跨 REST pages 的精确 head Codex review、分页后的全部 reviewThreads。若 GitHub
-没有为已完成的 Codex 审查创建 REST review object，门禁只接受官方
-`chatgpt-codex-connector[bot]` 的 summary：它必须显示 `Code Review` 为 `Completed`、精确 full/short
-head，且创建或更新不早于最后一个可信 OWNER 的 `@codex review` 请求；任何普通 bot 评论、运行中
-summary 或不匹配 head 都不能作为回退。Factory
+source gate 与跨 REST pages 的精确 head CodeRabbit audit、分页后的全部 reviewThreads。审查必须由官方
+`coderabbitai` 在最后一个可信 OWNER 的 `@coderabbitai review` 请求之后更新，包含精确 full head 与
+无 actionable comments 的审查总结；普通 bot 评论、运行中状态、限额消息或不匹配 head 都不能作为通过依据。Factory
 candidate 的 `factory-final-merge-gate` 始终由 arm workflow 保持 `pending`：final workflow
 绝不写 success，也不依赖 EXIT/SIGTERM trap 恢复状态。全部检查通过后，它临时创建独立、仓库
 范围受限的 `XSEC_MARKETPLACE_FINALIZER_APP_ID` /
@@ -213,7 +211,7 @@ Factory gate 的身份。缺少任一配置、取消、runner 异常或 merge �
 可复用的 green status。
 retained sidecar repair 同样走此门禁：diff 必须严格只修改一个现有
 `.xsec-factory/snapshots/<plugin-id>/.xsec-market/releases.json.sig.jws.json`，并在 exact head 上重新进行
-KMS/JWS 验签、source gate 与 Codex review；它不改变 release history 或 channel pointer。
+KMS/JWS 验签、source gate 与 CodeRabbit audit；它不改变 release history 或 channel pointer。
 唯一允许的 no-pointer 例外是当前 Stable 已选中当前 Beta 的 registered external Stable completion：
 它必须只包含严格形状的已签名 provenance/status 更新，重新校验外部 `main` ref 后才可合并，且不会
 再次触发 Desktop smoke。
@@ -237,7 +235,7 @@ branch protection 收敛为严格的 `source-gate`、`enforce_admins` 和 conver
 token，并且只用它合入精确 PR。该 App 只有 `contents: write`，是唯一
 允许绕过持续 pending Factory gate 的 Ruleset 身份。缺失 production 环境策略或 Finalizer 配置时的安全回退是
 PR 保持 pending 并修复/re-run gate，绝不临时降低保护或手工绕过。合并后的 protected-main dispatcher 再次验证相同 head、KMS
-sidecar、source gate、Codex review/已解决 threads（使用同一严格的官方 completed-summary 回退）。对于带已注册外部来源的
+sidecar、source gate、CodeRabbit audit/已解决 threads。对于带已注册外部来源的
 Stable completion，dispatcher 还会在当前受 KMS 认证的 status 中核对 `published`、相同的 Stable source/release、Desktop
 smoke URL 与 Factory revision；只有这份精确 Beta callback 证据存在时才不重复发送 Desktop 矩阵。旧内置插件的人工 Stable
 推广/回滚，以及没有终态 callback 证据的受控外部 Stable recovery，都会发送独立的 Stable smoke。
