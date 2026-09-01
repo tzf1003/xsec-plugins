@@ -39,6 +39,9 @@ MARKETPLACE_INDEX = ".agents/plugins/marketplace.json"
 MARKETPLACE_SIDECAR = ".agents/plugins/marketplace.json.sig.jws.json"
 REGISTRY_PATH = ".xsec-factory/official-registry.json"
 PROJECT_WORKSPACE_PLUGIN_ID = "com.xsec.project-workspace"
+ATTACK_PATH_PLUGIN_ID = "com.xsec.attack-path"
+DEFAULT_POLICY = {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"}
+AVAILABLE_POLICY = {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}
 SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99}[A-Za-z0-9])?$")
 
@@ -365,6 +368,86 @@ def one_plugin_entry(
     return entries, index, entry
 
 
+def expected_default_registry(before_registry: dict[str, object]) -> tuple[dict[str, object], str]:
+    before_rows, registry_index, project_row = one_plugin_entry(
+        before_registry,
+        key="plugins",
+        id_key="pluginId",
+        plugin_id=PROJECT_WORKSPACE_PLUGIN_ID,
+        label="Factory registry",
+    )
+    _, attack_registry_index, attack_row = one_plugin_entry(
+        before_registry,
+        key="plugins",
+        id_key="pluginId",
+        plugin_id=ATTACK_PATH_PLUGIN_ID,
+        label="Factory registry",
+    )
+    expected_project = dict(project_row)
+    if project_row.get("trustTier") != "first-party" or project_row.get("policy") != DEFAULT_POLICY:
+        fail("project workspace Registry entry is invalid")
+    if project_row.get("status") == "active":
+        expected_project["status"] = "disabled"
+    elif project_row.get("status") != "disabled":
+        fail("project workspace Registry status is invalid")
+    expected_attack = dict(attack_row)
+    if attack_row.get("trustTier") != "first-party" or attack_row.get("status") != "active":
+        fail("attack path must remain an active first-party Registry entry")
+    if attack_row.get("policy") not in (DEFAULT_POLICY, AVAILABLE_POLICY):
+        fail("attack path Registry policy is invalid")
+    expected_attack["policy"] = dict(AVAILABLE_POLICY)
+    expected_registry = dict(before_registry)
+    expected_rows = list(before_rows)
+    expected_rows[registry_index] = expected_project
+    expected_rows[attack_registry_index] = expected_attack
+    expected_registry["plugins"] = expected_rows
+    return expected_registry, str(project_row["status"])
+
+
+def expected_default_marketplace(
+    before_marketplace: dict[str, object],
+    project_status: str,
+) -> dict[str, object]:
+    before_entries = before_marketplace.get("plugins")
+    if not isinstance(before_entries, list):
+        fail("Marketplace index has no plugin list")
+    project_matches = [
+        (index, entry)
+        for index, entry in enumerate(before_entries)
+        if isinstance(entry, dict) and entry.get("name") == PROJECT_WORKSPACE_PLUGIN_ID
+    ]
+    if len(project_matches) > 1:
+        fail("Marketplace index contains duplicate project workspace entries")
+    market_index = project_matches[0][0] if project_matches else None
+    removed = project_matches[0][1] if project_matches else None
+    _, attack_market_index, attack_entry = one_plugin_entry(
+        before_marketplace,
+        key="plugins",
+        id_key="name",
+        plugin_id=ATTACK_PATH_PLUGIN_ID,
+        label="Marketplace index",
+    )
+    if market_index is None:
+        if project_status != "disabled":
+            fail("project workspace Marketplace discovery and Registry status are inconsistent")
+    elif removed is None or removed.get("policy") != DEFAULT_POLICY:
+        fail("project workspace Marketplace entry has an invalid default policy")
+    if attack_entry.get("policy") not in (DEFAULT_POLICY, AVAILABLE_POLICY):
+        fail("attack path Marketplace entry has an invalid installation policy")
+    expected_entries = list(before_entries)
+    if market_index is not None:
+        del expected_entries[market_index]
+    adjusted_attack_index = attack_market_index - int(
+        market_index is not None and attack_market_index > market_index
+    )
+    expected_attack = dict(attack_entry)
+    expected_attack["policy"] = dict(AVAILABLE_POLICY)
+    expected_entries[adjusted_attack_index] = expected_attack
+    expected_marketplace = dict(before_marketplace)
+    expected_marketplace["plugins"] = expected_entries
+    return expected_marketplace
+
+
 def verify_default_set_payloads(
     *,
     before_registry: dict[str, object],
@@ -372,35 +455,12 @@ def verify_default_set_payloads(
     before_marketplace: dict[str, object],
     after_marketplace: dict[str, object],
 ) -> None:
-    before_rows, registry_index, before_row = one_plugin_entry(
-        before_registry,
-        key="plugins",
-        id_key="pluginId",
-        plugin_id=PROJECT_WORKSPACE_PLUGIN_ID,
-        label="Factory registry",
-    )
-    after_rows = after_registry.get("plugins")
-    expected_row = dict(before_row)
-    expected_row["status"] = "disabled"
-    if before_row.get("trustTier") != "first-party" or before_row.get("status") != "active":
-        fail("project workspace must start as an active first-party Registry entry")
-    expected_registry = dict(before_registry)
-    expected_registry["plugins"] = [*before_rows[:registry_index], expected_row, *before_rows[registry_index + 1 :]]
-    if after_registry != expected_registry or not isinstance(after_rows, list):
-        fail("default-set transition may only disable the project workspace Registry entry")
-    before_entries, market_index, removed = one_plugin_entry(
-        before_marketplace,
-        key="plugins",
-        id_key="name",
-        plugin_id=PROJECT_WORKSPACE_PLUGIN_ID,
-        label="Marketplace index",
-    )
-    expected_marketplace = dict(before_marketplace)
-    expected_marketplace["plugins"] = [*before_entries[:market_index], *before_entries[market_index + 1 :]]
-    if removed.get("policy") != {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"}:
-        fail("project workspace Marketplace entry has an invalid default policy")
+    expected_registry, project_status = expected_default_registry(before_registry)
+    if after_registry != expected_registry:
+        fail("default-set transition changed an unauthorized Registry entry")
+    expected_marketplace = expected_default_marketplace(before_marketplace, project_status)
     if after_marketplace != expected_marketplace:
-        fail("default-set transition may only remove project workspace from discovery")
+        fail("default-set transition changed an unauthorized Marketplace entry")
 
 
 def verify_default_set_transition(root: Path, before: str, after: str) -> dict[str, object]:
