@@ -102,7 +102,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "cancel-in-progress: false",
             'git/ref/heads/main" --jq .object.sha',
             'test("^xsec-marketplace/batch-[0-9]+-[0-9]+$")',
-            "source-gate source-freshness-gate",
+            "for name in source-gate; do",
+            "freshness gate can",
             'creator.login == "coderabbitai[bot]"',
             "reviewThreads(first:100,after:$endCursor)",
             "Verify the signed stale batch as data",
@@ -115,6 +116,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, recovery)
+        self.assertNotIn("for name in source-gate source-freshness-gate; do", recovery)
         self.assertIn("trigger_label:", publisher)
         self.assertIn("outputs:\n      pull_number:", publisher)
         self.assertIn('Factory trigger label is invalid.', publisher)

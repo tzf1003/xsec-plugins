@@ -74,7 +74,11 @@ jobs:
           head_ref="$(printf '%s' "$latest" | jq -er .head.ref)"
           head_sha="$(printf '%s' "$latest" | jq -er .head.sha)"
           checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
-          for name in source-gate source-freshness-gate; do
+          # A stale candidate is rebuilt precisely because its Factory base
+          # can have advanced after it was signed. Its freshness gate can
+          # therefore be red while its immutable candidate remains valid for
+          # detached KMS and transition verification below.
+          for name in source-gate; do
             if ! printf '%s' "$checks" | jq -e --arg name "$name" '
               any(.check_runs[]?; .name == $name and .status == "completed" and .conclusion == "success")
             ' >/dev/null; then
