@@ -82,7 +82,6 @@ jobs:
           owner: ${{ steps.registry.outputs.source_owner }}
           repositories: ${{ steps.registry.outputs.source_repositories }}
           permission-contents: read
-          permission-checks: read
       - name: Fetch, validate, and stage every current source ref
         id: sources
         env:

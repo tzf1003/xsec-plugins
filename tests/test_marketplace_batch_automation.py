@@ -50,7 +50,6 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "length == 10",
             "xsec-marketplace-publish-main",
             "permission-contents: read",
-            "permission-checks: read",
             "python scripts/build_market.py --clean",
             "git status --porcelain --untracked-files=all",
             'source_revision="$(git rev-parse HEAD)"',
@@ -61,6 +60,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, publisher)
+        self.assertNotIn("permission-checks: read", publisher)
 
     def test_batch_caller_grants_write_scope_only_to_the_publisher(self) -> None:
         """Keep write authority on the reusable publication job."""
