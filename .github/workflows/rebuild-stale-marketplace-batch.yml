@@ -74,7 +74,12 @@ jobs:
           head_ref="$(printf '%s' "$latest" | jq -er .head.ref)"
           head_sha="$(printf '%s' "$latest" | jq -er .head.sha)"
           checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
-          for name in source-gate source-freshness-gate; do
+          # A stale candidate is intentionally behind protected main, so its
+          # freshness check rejects the old base. The next job verifies that
+          # immutable candidate as data before rebuilding a new current-base
+          # batch; require its source gate here, then keep the review checks
+          # below as the admission boundary.
+          for name in source-gate; do
             if ! printf '%s' "$checks" | jq -e --arg name "$name" '
               any(.check_runs[]?; .name == $name and .status == "completed" and .conclusion == "success")
             ' >/dev/null; then
