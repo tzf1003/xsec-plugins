@@ -258,8 +258,8 @@ Desktop smoke.
 
 Run `enforce-factory-main-protection.yml` once from protected `main` after
 installing this code and whenever protection is audited. Its protected-branch-only
-`production` job needs only the repository-scoped administration secret
-`XSEC_MARKETPLACE_ADMIN_TOKEN`; it sets strict, GitHub-Actions-app-pinned
+`production` job needs the repository-scoped administration secret
+`XSEC_MARKETPLACE_ADMIN_TOKEN` and `XSEC_MARKETPLACE_FINALIZER_APP_ID`; it sets strict, GitHub-Actions-app-pinned
 `source-gate` in classic protection, enforces that check for administrators,
 preserves unrelated protection settings, and requires resolved conversations.
 Before it changes classic protection, it creates and verifies the separate
