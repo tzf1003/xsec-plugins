@@ -2394,7 +2394,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn('--main-gate-sha "$MAIN_GATE_SHA"', publisher_workflow)
         self.assertIn("Stable source does not yet deterministically rebuild Beta", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
         self.assertIn("waiting_for_beta", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
-        self.assertIn("Factory status is not bound to the reviewed Beta source/release tuple", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
+        self.assertIn("Factory status is not bound to the validated Beta source/release tuple", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
         self.assertIn("complete-smoke-status", publisher_workflow)
         self.assertIn("--stable-sha \"$SOURCE_SHA\"", publisher_workflow)
         self.assertIn("expected_beta_sha", publisher_workflow)
@@ -2419,7 +2419,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("--baseline-root \"$baseline_root\"", adoption_workflow)
         self.assertIn("--factory-revision \"$baseline_revision\"", adoption_workflow)
         self.assertIn("git worktree add --detach", adoption_workflow)
-        self.assertIn("@coderabbitai review", adoption_workflow)
+        self.assertNotIn("coderabbit", adoption_workflow.lower())
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', adoption_workflow)
 
 
