@@ -23,10 +23,11 @@ request. The Finalizer token never reads an external source repository. Missing
 App credentials, an advanced source branch, or a failed merge leaves the
 candidate pending and requires a fresh protected revalidation.
 
-`production` is itself a required review boundary: both the policy workflow
-and final merge query its server-side Environment policy and require at least
-one `required_reviewers` rule with administrator bypass disabled. A missing or
-weaker Environment fails closed before a Ruleset or merge is attempted.
+`production` is restricted to protected branches and forbids administrator
+bypass. Both the policy workflow and final merge query its server-side
+Environment policy, require that branch policy, and require the reviewer list
+to remain empty. A missing or different Environment policy fails closed before
+a Ruleset or merge is attempted.
 
 The enforcing workflow first creates or verifies this Ruleset.  Only after the
 returned Ruleset passes local validation does it remove the finalizer check

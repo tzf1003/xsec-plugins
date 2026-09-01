@@ -235,7 +235,7 @@ branch protection 收敛为严格的 `source-gate`、`enforce_admins` 和 conver
 同时保留现有无关 checks/review 设置。final merge
 不用 Publisher token；它仅在全部 revalidation 后短暂创建独立、仓库范围受限的 Finalizer App
 token，并且只用它合入精确 PR。该 App 只有 `contents: write`，是唯一
-允许绕过持续 pending Factory gate 的 Ruleset 身份。缺失任一环境审批或 Finalizer 配置时的安全回退是
+允许绕过持续 pending Factory gate 的 Ruleset 身份。缺失 production 环境策略或 Finalizer 配置时的安全回退是
 PR 保持 pending 并修复/re-run gate，绝不临时降低保护或手工绕过。合并后的 protected-main dispatcher 再次验证相同 head、KMS
 sidecar、source gate、Codex review/已解决 threads（使用同一严格的官方 completed-summary 回退）。对于带已注册外部来源的
 Stable completion，dispatcher 还会在当前受 KMS 认证的 status 中核对 `published`、相同的 Stable source/release、Desktop
