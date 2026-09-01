@@ -164,7 +164,7 @@ leaves `channels.stable` as `null`, so it cannot reach Stable without
 an explicit promotion. It then requests sidecars from the production Cloud KMS broker
 using a short-lived GitHub OIDC token, validates every broker response, and
 opens the generated metadata as a protected PR. It waits for `validate.yml`,
-requests `@codex review`, and intentionally never merges or dispatches Desktop
+requests `@coderabbitai review`, and intentionally never merges or dispatches Desktop
 smoke itself; the reviewed PR must be merged through protected `main`. The broker accepts
 only the protected `xsec-plugins` production workflow; it calculates the
 document digest itself.
@@ -174,7 +174,7 @@ manual workflow. Give it a plugin ID and an existing `releaseId` to promote or
 roll back. It changes only `channels.stable.releaseId`, never rebuilds an
 archive and never changes an artifact SHA-256. A fresh KMS sidecar is produced
 for the edited index and the update is again opened as a protected PR. It
-requires the source gate, `@codex review`, and a protected merge before Desktop
+requires the source gate, `@coderabbitai review`, and a protected merge before Desktop
 smoke can run.
 It remains the legacy built-in path: a registered external plugin must use the
 external Stable request to `publish.yml`, so its source-main proof cannot be
@@ -197,7 +197,7 @@ validation, and rejects its run unless the sole changed (including untracked)
 path is that `.sig.jws.json` file. It cannot sign the mutable marketplace
 index, choose an arbitrary document path, rebuild an artifact, edit release
 history, move a Beta/Stable pointer, or modify Factory registry/evidence. It
-opens a sidecar-only PR, waits for `validate.yml`, requests `@codex review`,
+opens a sidecar-only PR, waits for `validate.yml`, requests `@coderabbitai review`,
 and intentionally **never merges** the PR.
 
 Before enabling it, the Cloud signing broker's OIDC policy must allow the
@@ -210,7 +210,7 @@ source code and no KMS secret is stored here.
 runs after a protected `main` merge, derives `beta` or `stable` from the exact
 release-index delta (not a PR title or merge subject), cryptographically
 verifies every post-merge KMS sidecar, and checks the merged generated PR's
-successful source gate, completed Codex review, and resolved Codex threads.
+successful source gate, completed CodeRabbit audit, and resolved CodeRabbit threads.
 For a registered plugin it also re-reads the exact `beta`/`main` source branch
 head recorded in newly appended provenance with a new, read-only Source App
 token scoped to that candidate's exact source repositories; a branch that
@@ -236,7 +236,7 @@ for `xsec.plugin-marketplace.official-status` and that exact status subject
 namespace before enabling this Factory change; until then the broker rejects
 the request fail-closed.
 
-After Codex review is completed and every Codex thread is resolved, a protected
+After CodeRabbit audit is completed and every CodeRabbit thread is resolved, a protected
 maintainer runs `final-merge-generated-marketplace-pr.yml` with that PR number.
 It re-reads the live PR head and base, revalidates the exact release diff,
 every KMS sidecar and every registered external ref. The arm workflow, not the
@@ -307,7 +307,7 @@ generated, the protected Cloud Dispatcher re-reads the exact Registry source,
 current Beta head/release/provenance, candidate branch identity and KMS-bound
 status tuple. Only when the candidate's `mainGateSha` is older does it add an
 auditable delivery comment, close that candidate, and request a replacement.
-The replacement is still a new source-gated PR requiring `@codex review` and a
+The replacement is still a new source-gated PR requiring `@coderabbitai review` and a
 protected final merge; a matching current candidate is retained as an
 idempotent no-op and unrelated plugin candidates are never closed.
 
