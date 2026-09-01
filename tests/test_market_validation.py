@@ -18,6 +18,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import build_market  # noqa: E402
+import marketplace_contract  # noqa: E402
 import promote_release  # noqa: E402
 import validate_market  # noqa: E402
 from validate_market import (  # noqa: E402
@@ -361,16 +362,29 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.build_marketplace(output)
             validate_source(ROOT, output)
 
-    def test_source_gate_uses_the_current_active_default_set_in_disposable_output(self) -> None:
-        """The temporary output inherits exactly the active Factory default set."""
+    def test_source_gate_preserves_active_discovery_and_default_set_in_disposable_output(self) -> None:
+        """The temporary output retains active entries and their default policy."""
 
-        expected = set(validate_market.active_default_official_plugin_ids(ROOT))
+        expected_defaults = set(validate_market.active_default_official_plugin_ids(ROOT))
+        expected_entries = {
+            plugin_id
+            for plugin_id, _ in marketplace_contract.active_official_plugin_policies(ROOT)
+        }
         with tempfile.TemporaryDirectory(prefix="xsec-market-active-default-set-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
+            entries = validate_market.marketplace_entries(output, expected_default_ids=expected_defaults)
             self.assertEqual(
-                {plugin_id for plugin_id, _, _ in validate_market.marketplace_entries(output, expected_default_ids=expected)},
-                expected,
+                {plugin_id for plugin_id, _, _ in entries},
+                expected_entries,
+            )
+            self.assertEqual(
+                {
+                    plugin_id
+                    for plugin_id, _, entry in entries
+                    if entry.get("policy") == marketplace_contract.DEFAULT_INSTALLATION_POLICY
+                },
+                expected_defaults,
             )
 
     def test_official_plugin_settings_pages_and_plugin_bound_rpcs_are_declared(self) -> None:
