@@ -264,8 +264,14 @@ jobs:
       - name: Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          CHANNEL: ${{ needs.enforce-publish-ref.outputs.channel }}
           PLUGIN_ID: ${{ inputs.plugin_id }}
           MAINTENANCE: ${{ needs.enforce-publish-ref.outputs.maintenance }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
+          SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
+          SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
         run: |
           set -euo pipefail
           if [ -n "$PLUGIN_ID" ] && ! [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]]; then
@@ -282,6 +288,11 @@ jobs:
           while IFS= read -r candidate; do
             number="$(printf '%s' "$candidate" | jq -er .number)"
             branch="$(printf '%s' "$candidate" | jq -er .head.ref)"
+            head_sha="$(printf '%s' "$candidate" | jq -er .head.sha)"
+            [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "Generated Factory PR #${number} has an invalid head revision." >&2
+              exit 1
+            }
             if [ -z "$PLUGIN_ID" ]; then
               if [ "${MAINTENANCE:-release}" = "align_desktop_defaults" ]; then
                 [[ "$branch" == xsec-marketplace/default-set-* ]] && pending+=("#${number}:${branch}")
@@ -305,7 +316,44 @@ jobs:
                 or .filename == (".xsec-factory/snapshots/" + $plugin_id + "/.xsec-market/releases.json")
               )
             ' >/dev/null; then
-              pending+=("#${number}:${branch}")
+              if [ "$CHANNEL" != "stable" ]; then
+                pending+=("#${number}:${branch}")
+                continue
+              fi
+              # A manual Stable recovery has no immutable Desktop smoke
+              # binding, so it must serialize with every same-plugin Factory
+              # candidate. Only smoke-bound requests may distinguish an older
+              # terminal tuple from the current recovery request.
+              if [ -z "$SMOKE_RUN_URL" ]; then
+                pending+=("#${number}:${branch}")
+                continue
+              fi
+              # A historical terminal candidate must not strand a newer,
+              # smoke-bound Stable publication for the same plugin. It stays
+              # open for audit, but blocks a new request only when its exact
+              # source, release, and Desktop smoke tuple are identical.
+              candidate_status="$(gh api -H 'Accept: application/vnd.github.raw' "repos/${GITHUB_REPOSITORY}/contents/.xsec-factory/official-status/${PLUGIN_ID}.json?ref=${head_sha}")" || {
+                pending+=("#${number}:${branch}")
+                continue
+              }
+              if printf '%s' "$candidate_status" | jq -e \
+                --arg plugin_id "$PLUGIN_ID" \
+                --arg source_sha "$SOURCE_SHA" \
+                --arg release_id "$RELEASE_ID" \
+                --arg beta_sha "$EXPECTED_BETA_SHA" \
+                --arg smoke_url "$SMOKE_RUN_URL" \
+                --arg marketplace_revision "$SMOKE_MARKETPLACE_REVISION" '
+                  .pluginId == $plugin_id
+                  and .publication.state == "published"
+                  and .publication.smokeRunUrl == $smoke_url
+                  and .publication.marketplaceRevision == $marketplace_revision
+                  and .release.betaReleaseId == $release_id
+                  and .release.stableReleaseId == $release_id
+                  and .source.betaSha == $beta_sha
+                  and .source.stableSha == $source_sha
+                ' >/dev/null; then
+                pending+=("#${number}:${branch}")
+              fi
             fi
           done < <(printf '%s' "$candidates" | jq -rc '.[]')
           if [ "${#pending[@]}" -gt 0 ]; then
