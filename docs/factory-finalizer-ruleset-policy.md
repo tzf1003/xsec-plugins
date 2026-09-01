@@ -32,8 +32,8 @@ a Ruleset or merge is attempted.
 The enforcing workflow first creates or verifies this Ruleset.  Only after the
 returned Ruleset passes local validation does it remove the finalizer check
 from classic branch protection.  Classic protection continues to require
-strict GitHub-Actions `source-gate`, applies to administrators, requires
-resolved conversations, and disallows force-push/deletion.  Missing credentials
+strict GitHub-Actions `source-gate`, applies to administrators, leaves
+conversation resolution optional, and disallows force-push/deletion. Missing credentials
 or App configuration, duplicate rulesets, or any same-name Ruleset that differs
 from the exact allowed shape fails closed; the workflow does not update or
 delete unrelated rulesets.
