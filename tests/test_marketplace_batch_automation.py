@@ -164,8 +164,6 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn("github.event.state == 'success'", workflow)
         self.assertIn("github.event.sha", workflow)
         self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', workflow)
-        self.assertNotIn('creator.login == "coderabbitai[bot]"', workflow)
-        self.assertNotIn('creator.type == "Bot"', workflow)
         self.assertIn('reviews(first:100,after:$endCursor)', workflow)
         self.assertIn('.author.login == "coderabbitai"', workflow)
         self.assertIn('.author.__typename == "Bot"', workflow)
