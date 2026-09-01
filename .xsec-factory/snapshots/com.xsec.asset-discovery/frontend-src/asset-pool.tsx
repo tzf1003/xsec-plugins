@@ -51,10 +51,11 @@ export function AssetPool({ api, runs, selectedRunId, onSelectedRunId }: AssetPo
   const [mutating, setMutating] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const latestFilters = useRef(filters);
+  const projectRequestGeneration = useRef(0);
   latestFilters.current = filters;
 
   const load = useCallback(async () => {
-    setLoading(true); setError(undefined); setPage(undefined);
+    setLoading(true); setError(undefined); setPage(undefined); setSelected([]);
     try {
       const next = await api.assets(filters);
       if (latestFilters.current !== filters) return;
@@ -77,8 +78,14 @@ export function AssetPool({ api, runs, selectedRunId, onSelectedRunId }: AssetPo
 
   const update = (next: Partial<AssetFilters>) => setFilters((current) => ({ ...current, ...next, page: next.page ?? 1 }));
   const openImport = async () => {
-    setImportOpen(true); setProjectsError(undefined);
-    try { setProjects(await api.projects()); } catch (reason) { setProjectsError(`读取项目列表失败：${String(reason)}`); }
+    const generation = ++projectRequestGeneration.current;
+    setImportOpen(true); setProjectId(""); setProjects(undefined); setProjectsError(undefined);
+    try {
+      const next = await api.projects();
+      if (generation === projectRequestGeneration.current) setProjects(next);
+    } catch (reason) {
+      if (generation === projectRequestGeneration.current) setProjectsError(`读取项目列表失败：${String(reason)}`);
+    }
   };
   const confirmImport = async () => {
     if (!projectId) { setProjectsError("请选择目标项目。"); return; }
@@ -86,8 +93,21 @@ export function AssetPool({ api, runs, selectedRunId, onSelectedRunId }: AssetPo
     try { const result = await api.importAssets(selected, projectId); setImportOpen(false); setProjectId(""); await load(); setNotice(`导入完成：新增 ${result.created}，跳过 ${result.skipped}，失败 ${result.failed}`); } catch (reason) { setProjectsError(`导入失败：${String(reason)}`); } finally { setMutating(false); }
   };
   const remove = async () => {
+    const selectedCount = selected.length;
     setMutating(true);
-    try { await api.deleteAssets(selected); setDeleteOpen(false); await load(); setNotice(`已删除 ${selected.length} 条资产。`); } catch (reason) { setError(`删除资产失败：${String(reason)}`); } finally { setMutating(false); }
+    console.info("asset-discovery.assets.delete.started", { selectedCount });
+    try {
+      const result = await api.deleteAssets(selected);
+      setDeleteOpen(false);
+      await load();
+      console.info("asset-discovery.assets.delete.completed", { selectedCount, deleted: result.deleted });
+      setNotice(`已删除 ${result.deleted} 条资产。`);
+    } catch (reason) {
+      console.error("asset-discovery.assets.delete.failed", { selectedCount, message: String(reason) });
+      setError(`删除资产失败：${String(reason)}`);
+    } finally {
+      setMutating(false);
+    }
   };
   return <section className="ad-assets">
     <AssetFilterToolbar filters={filters} queryDraft={queryDraft} runs={runs} selectedCount={selected.length} mutating={mutating} onSubmit={() => update({ query: queryDraft.trim() || undefined })} onQuery={(value) => { setQueryDraft(value); if (!value) update({ query: undefined }); }} onUpdate={update} onRun={onSelectedRunId} onImport={() => void openImport()} onDelete={() => setDeleteOpen(true)} />
@@ -129,5 +149,6 @@ function AssetTable({ page, filters, selected, mutating, onSelected, onUpdate }:
 function ImportModal({ projects, error, projectId, count, saving, onProject, onClose, onConfirm }: {
   projects?: Project[]; error?: string; projectId: string; count: number; saving: boolean; onProject: (value: string) => void; onClose: () => void; onConfirm: () => void;
 }) {
-  return <Modal title="导入到项目" onClose={onClose} footer={<><Button disabled={saving} onClick={onClose}>取消</Button><Button className="primary" disabled={saving || !projectId} onClick={onConfirm}>导入</Button></>}><p className="ad-description">将把选中的 {count} 条资产导入到目标项目；已存在的资产会自动跳过。</p><label className="ad-field">目标项目<select className="ad-select" value={projectId} disabled={saving} onChange={(event) => onProject(event.target.value)}><option value="">选择目标项目</option>{projects?.map((project) => <option key={project.id} value={project.id}>{project.name}（{project.code}）</option>)}</select></label>{error ? <p className="ad-field-error">{error}</p> : null}{projects && !projects.length ? <p className="ad-muted">暂无可导入项目。</p> : null}</Modal>;
+  const close = () => { if (!saving) onClose(); };
+  return <Modal title="导入到项目" onClose={close} footer={<><Button disabled={saving} onClick={close}>取消</Button><Button className="primary" disabled={saving || !projectId} onClick={onConfirm}>导入</Button></>}><p className="ad-description">将把选中的 {count} 条资产导入到目标项目；已存在的资产会自动跳过。</p><label className="ad-field">目标项目<select className="ad-select" value={projectId} disabled={saving} onChange={(event) => onProject(event.target.value)}><option value="">选择目标项目</option>{projects?.map((project) => <option key={project.id} value={project.id}>{project.name}（{project.code}）</option>)}</select></label>{error ? <p className="ad-field-error">{error}</p> : null}{projects && !projects.length ? <p className="ad-muted">暂无可导入项目。</p> : null}</Modal>;
 }

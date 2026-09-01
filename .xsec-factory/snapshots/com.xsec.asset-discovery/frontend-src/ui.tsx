@@ -71,7 +71,8 @@ export function ConfirmModal({
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  return <Modal title={title} onClose={onClose} footer={<><Button disabled={busy} onClick={onClose}>取消</Button><Button className={danger ? "danger" : "primary"} disabled={busy} onClick={onConfirm}>{confirmLabel}</Button></>}><p className="ad-confirm-detail">{detail}</p></Modal>;
+  const close = () => { if (!busy) onClose(); };
+  return <Modal title={title} onClose={close} footer={<><Button disabled={busy} onClick={close}>取消</Button><Button className={danger ? "danger" : "primary"} disabled={busy} onClick={onConfirm}>{confirmLabel}</Button></>}><p className="ad-confirm-detail">{detail}</p></Modal>;
 }
 
 export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {

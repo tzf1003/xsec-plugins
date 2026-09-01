@@ -31,6 +31,21 @@
         "url": "artifacts/com.xsec.workspace.sub-agent-1.2.3-sha256-a72d685d47a326dd-any-any.xsec-plugin"
       },
       "publisher": "github-actions[bot]"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-2060e10cc3be72cbb35c5ca70aa0e5592ba083b304272b068ceda0ce8cc52fd7",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-sub-agent",
+        "path": "plugins/com.xsec.workspace.sub-agent",
+        "ref": "refs/heads/beta",
+        "sha": "a709f5cda0739d6ad2c2ba29ba3383f2afd04e1b"
+      },
+      "artifact": {
+        "sha256": "a72d685d47a326ddf5504c5ec89fdafaf9d9be6d8ee3c07dcefc208631207939",
+        "url": "artifacts/com.xsec.workspace.sub-agent-1.2.3-sha256-a72d685d47a326dd-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
     }
   ],
   "smokeOutcomes": [
