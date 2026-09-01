@@ -849,7 +849,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("classify-generated-main-change", workflow)
         self.assertIn("verify_merged_stable_promotion.py", workflow)
         self.assertIn("--verify-active-marketplace-signatures", workflow)
-        self.assertIn("Refuse to sign while any generated Factory PR awaits review", workflow)
+        self.assertIn("Refuse to sign while any generated Factory PR awaits protected final merge", workflow)
         self.assertIn("Skip a no-op Factory publication without KMS or dispatch", workflow)
         self.assertIn("--allow-unsigned-active-release-sidecars", workflow)
         self.assertIn("Remove KMS sidecars made stale by an immutable Factory update", workflow)
@@ -870,7 +870,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             workflow,
         )
         self.assertNotIn("XSEC_MARKETPLACE_SIGNING_KEY_B64", workflow)
-        # Keep the reviewed post-merge sender in lockstep with Desktop's repository_dispatch
+        # Keep the validated post-merge sender in lockstep with Desktop's repository_dispatch
         # receiver. Desktop accepts only the official source repository/ref,
         # then proves the protected source SHA is an ancestor of the generated
         # immutable marketplace commit before it constructs its own raw URL.
@@ -884,11 +884,11 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('--arg source_ref "refs/heads/main"', dispatcher)
         self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
         self.assertIn('--arg source_sha "$SOURCE_SHA"', dispatcher)
-        self.assertIn("Require the merged generated PR, source gate, and completed CodeRabbit audit", dispatcher)
-        self.assertIn("unresolved CodeRabbit review thread", dispatcher)
-        self.assertIn("Revalidate each registered source branch at the reviewed merge boundary", dispatcher)
+        self.assertIn("Require the merged generated PR and source gate", dispatcher)
+        self.assertNotIn("coderabbit", dispatcher.lower())
+        self.assertIn("Revalidate each registered source branch at the exact merge boundary", dispatcher)
         self.assertIn("merge_group:", merge_guard)
-        self.assertIn("Reject a generated PR whose registered source branch advanced during review", merge_guard)
+        self.assertIn("Reject a generated PR whose registered source branch advanced before merge", merge_guard)
         self.assertNotIn('event_type:"xsec_marketplace_smoke"', workflow)
         self.assertNotIn("marketplace_public_key_b64", workflow)
         self.assertNotIn("expected_default_plugin_ids", workflow)
@@ -909,7 +909,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('branch="xsec-marketplace/${BRANCH_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', workflow)
         self.assertIn("workflow_dispatch:", validation_workflow)
 
-    def test_reconcile_source_is_the_only_status_signer_and_restarts_review_after_proof(self) -> None:
+    def test_reconcile_source_is_the_only_status_signer_and_runs_source_gate_after_proof(self) -> None:
         publisher_workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
         reconcile = (ROOT / ".github" / "workflows" / "reconcile-source.yml").read_text(encoding="utf-8")
         smoke = (ROOT / ".github" / "workflows" / "reconcile-smoke.yml").read_text(encoding="utf-8")
@@ -921,7 +921,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("--official-status-plugin-id", reconcile)
         self.assertIn("--allow-unsigned-official-status-plugin-id", reconcile)
         self.assertIn('gh workflow run validate.yml --ref "$branch"', reconcile)
-        self.assertIn("@coderabbitai review", reconcile)
+        self.assertNotIn("coderabbit", reconcile.lower())
         # Reconciliation authenticates each candidate's own Beta tuple first,
         # then compares it with the live source head to supersede stale work.
         # It refreshes protected Factory main before deriving the PR delta; the
@@ -959,7 +959,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         for workflow in (publisher_workflow, promotion):
             self.assertNotIn("--official-status-plugin-id", workflow)
             self.assertIn("--exclude-official-status", workflow)
-        # Adoption signs precisely the one assertion that was already reviewed
+        # Adoption signs precisely the one assertion that was already validated
         # on protected main.  It must neither call the mutable status selector
         # nor accidentally sign every ordinary Marketplace document.
         self.assertNotIn("--official-status-plugin-id", adoption)
@@ -988,9 +988,9 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('git rev-parse origin/main', workflow)
         self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
-        self.assertIn("review_body=\"@coderabbitai review\"$'\\n\\n'", workflow)
+        self.assertNotIn("coderabbit", workflow.lower())
         self.assertIn("This workflow intentionally does not merge this PR", workflow)
-        self.assertIn("Refuse to sign while any generated Factory PR awaits review", workflow)
+        self.assertIn("Refuse to sign while any generated Factory PR awaits protected final merge", workflow)
         self.assertNotIn("steps.publish.outputs.published == 'true'", workflow)
         self.assertIn("group: xsec-marketplace-publish-main", publish_workflow)
         self.assertIn("chore: publish marketplace beta release", publish_workflow)

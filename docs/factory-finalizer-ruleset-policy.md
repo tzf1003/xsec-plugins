@@ -12,7 +12,7 @@ active only for `refs/heads/main`, requires the strict
 `factory-final-merge-gate` status from GitHub Actions integration `15368`, and
 has exactly one bypass actor: the numeric GitHub App integration ID supplied as
 `XSEC_MARKETPLACE_FINALIZER_APP_ID`.  Its bypass mode is `pull_request`, so the
-App can complete the already-reviewed exact-head merge but cannot bypass a
+App can complete the already-validated exact-head merge but cannot bypass a
 direct update. The final workflow separately creates a short-lived,
 contents-read-only Source App token from
 `XSEC_MARKETPLACE_SOURCE_APP_ID` / `XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY`.
@@ -32,8 +32,8 @@ a Ruleset or merge is attempted.
 The enforcing workflow first creates or verifies this Ruleset.  Only after the
 returned Ruleset passes local validation does it remove the finalizer check
 from classic branch protection.  Classic protection continues to require
-strict GitHub-Actions `source-gate`, applies to administrators, requires
-resolved conversations, and disallows force-push/deletion.  Missing credentials
+strict GitHub-Actions `source-gate`, applies to administrators, leaves
+conversation resolution optional, and disallows force-push/deletion. Missing credentials
 or App configuration, duplicate rulesets, or any same-name Ruleset that differs
 from the exact allowed shape fails closed; the workflow does not update or
 delete unrelated rulesets.

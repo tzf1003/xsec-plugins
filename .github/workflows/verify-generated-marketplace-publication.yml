@@ -44,7 +44,7 @@ jobs:
           fi
           python scripts/kms_marketplace_publisher.py --root . --verify-active-marketplace-signatures >/dev/null
           printf '%s\n' "$result" > "$RUNNER_TEMP/marketplace-publication.json"
-      - name: Reject a generated PR whose registered source branch advanced during review
+      - name: Reject a generated PR whose registered source branch advanced before merge
         env:
           BEFORE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
           AFTER: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}

@@ -34,13 +34,8 @@ supplies a URL, a public key, or a plugin list.
 
 `channel` is exactly `beta` or `stable`. Before merge, the protected Factory
 final gate re-reads the exact PR head/base and registered source heads with the
-separate read-only Source App, then requires the current source gate, completed
-CodeRabbit audit and no unresolved CodeRabbit threads. The audit must be a
-CodeRabbit comment for the exact head with its current review summary reporting no
-actionable comments, updated after the trusted OWNER `@coderabbitai review` request.
-Pending summaries, ordinary comments, and rate-limited reviews never qualify.
-The dispatcher derives the
-channel from the reviewed release-index transition, authenticates all KMS
+separate read-only Source App, then requires the current source gate. The dispatcher
+derives the channel from the validated release-index transition, authenticates all KMS
 sidecars, and revalidates every registered external source head again after
 merge with another exact-repository read-only Source App token. The Finalizer
 App is not used for either cross-repository read. A normal protected-main publication
@@ -59,7 +54,7 @@ auditable Factory provenance, but the **dispatch** `source_sha` above remains
 the protected `xsec-plugins/main` revision that KMS signed. Desktop must not
 interpret the dispatch as permission to fetch an external repository, accept an
 external URL, or relax its compiled official origin/ref checks. The merged
-Factory revision contains the reviewed snapshot, release index, and KMS
+Factory revision contains the validated snapshot, release index, and KMS
 sidecars that Desktop verifies normally.
 
 The dispatched Marketplace contract never represents a local Desktop

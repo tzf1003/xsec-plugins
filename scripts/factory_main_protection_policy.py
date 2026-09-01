@@ -4,11 +4,11 @@
 The workflow wrapper obtains the current branch-protection document with the
 GitHub REST API, passes it through this module, and writes the returned
 document back.  Keeping the policy transformation local and deterministic
-makes it reviewable and lets tests prove that a later console edit cannot
+makes it auditable and lets tests prove that a later console edit cannot
 silently remove the two Factory merge boundaries.
 
 This does not call GitHub and deliberately preserves unrelated required
-checks/review restrictions from the existing protection document.
+checks and branch restrictions from the existing protection document.
 """
 
 from __future__ import annotations
@@ -127,25 +127,6 @@ def normalized_actor_lists(value: object, label: str) -> dict[str, list[str]] | 
     return result
 
 
-def normalized_review_policy(value: object) -> dict[str, Any] | None:
-    source = object_or_none(value, "required_pull_request_reviews")
-    if source is None:
-        return None
-    result: dict[str, Any] = {}
-    for field in (
-        "dismiss_stale_reviews",
-        "require_code_owner_reviews",
-        "require_last_push_approval",
-        "required_approving_review_count",
-    ):
-        if field in source:
-            result[field] = source[field]
-    for field in ("dismissal_restrictions", "bypass_pull_request_allowances"):
-        if field in source:
-            result[field] = normalized_actor_lists(source[field], f"required_pull_request_reviews.{field}")
-    return result
-
-
 def desired_policy(protection: dict[str, Any]) -> dict[str, Any]:
     """Return the classic protected-main payload without the finalizer gate."""
 
@@ -162,7 +143,6 @@ def desired_policy(protection: dict[str, Any]) -> dict[str, Any]:
     # rejects a request that contains both fields, even when the latter is
     # empty. Keeping only ``checks`` preserves the GitHub Actions pin, so a
     # user-created status of the same name cannot satisfy the requirement.
-    required_reviews = normalized_review_policy(protection.get("required_pull_request_reviews"))
     restrictions = normalized_actor_lists(protection.get("restrictions"), "restrictions")
     return {
         "required_status_checks": {
@@ -173,13 +153,13 @@ def desired_policy(protection: dict[str, Any]) -> dict[str, Any]:
             ],
         },
         "enforce_admins": True,
-        "required_pull_request_reviews": required_reviews,
+        "required_pull_request_reviews": None,
         "restrictions": restrictions,
         "required_linear_history": enabled(protection.get("required_linear_history"), "required_linear_history"),
         "allow_force_pushes": False,
         "allow_deletions": False,
         "block_creations": enabled(protection.get("block_creations"), "block_creations"),
-        "required_conversation_resolution": True,
+        "required_conversation_resolution": False,
         "lock_branch": enabled(protection.get("lock_branch"), "lock_branch"),
         "allow_fork_syncing": enabled(protection.get("allow_fork_syncing"), "allow_fork_syncing"),
     }
@@ -194,14 +174,16 @@ def verify_policy(protection: dict[str, Any]) -> None:
             fail(f"required status check {context} is not pinned to github-actions")
     if "factory-final-merge-gate" in checks:
         fail("factory-final-merge-gate must be enforced by the dedicated finalizer Ruleset, not classic branch protection")
+    if protection.get("required_pull_request_reviews") is not None:
+        fail("pull request review requirements must be disabled")
     required = object_or_none(protection.get("required_status_checks"), "required_status_checks")
     assert required is not None
     if required.get("strict") is not True:
         fail("required status checks must be strict")
     if enabled(protection.get("enforce_admins"), "enforce_admins") is not True:
         fail("administrators must be subject to branch protection")
-    if enabled(protection.get("required_conversation_resolution"), "required_conversation_resolution") is not True:
-        fail("pull-request conversations must be resolved")
+    if enabled(protection.get("required_conversation_resolution"), "required_conversation_resolution"):
+        fail("pull-request conversation requirements must be disabled")
     if enabled(protection.get("allow_force_pushes"), "allow_force_pushes"):
         fail("force pushes must remain disabled")
     if enabled(protection.get("allow_deletions"), "allow_deletions"):

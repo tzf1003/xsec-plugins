@@ -56,13 +56,13 @@ release, artifact, channel update, or cloud upload.
 approved external plugin repository. It is not the external plugin's active
 development repository. The external repository owns its code and uses its
 protected `beta` branch for a candidate and protected `main` branch for the
-same candidate promoted to Stable. This Factory retains only a reviewed,
+same candidate promoted to Stable. This Factory retains only a validated,
 publishable snapshot in `.xsec-factory/snapshots/<plugin-id>/`, its immutable artifacts and
 release history, and source provenance in
 `.xsec-factory/official-publications/<plugin-id>.json`.
 
 The Factory now has Registry v2 trust tiers.  Ordinary `external` packages
-retain the restrictive optional-package rules; the exact reviewed
+retain the restrictive optional-package rules; the exact validated
 `first-party` source mapping is the only path that may retain a `com.xsec.*`
 identity, existing Desktop capabilities and `INSTALLED_BY_DEFAULT`.  The
 split/migration contract, KMS adoption proof and Cloud reconciliation payloads
@@ -163,9 +163,9 @@ only when the current deterministic package is new, and moves **only** the
 leaves `channels.stable` as `null`, so it cannot reach Stable without
 an explicit promotion. It then requests sidecars from the production Cloud KMS broker
 using a short-lived GitHub OIDC token, validates every broker response, and
-opens the generated metadata as a protected PR. It waits for `validate.yml`,
-requests `@coderabbitai review`, and intentionally never merges or dispatches Desktop
-smoke itself; the reviewed PR must be merged through protected `main`. The broker accepts
+opens the generated metadata as a protected PR. It waits for `validate.yml` and
+intentionally never merges or dispatches Desktop smoke itself; the validated PR
+must be merged through protected `main`. The broker accepts
 only the protected `xsec-plugins` production workflow; it calculates the
 document digest itself.
 
@@ -174,8 +174,7 @@ manual workflow. Give it a plugin ID and an existing `releaseId` to promote or
 roll back. It changes only `channels.stable.releaseId`, never rebuilds an
 archive and never changes an artifact SHA-256. A fresh KMS sidecar is produced
 for the edited index and the update is again opened as a protected PR. It
-requires the source gate, `@coderabbitai review`, and a protected merge before Desktop
-smoke can run.
+requires the source gate and a protected final merge before Desktop smoke can run.
 It remains the legacy built-in path: a registered external plugin must use the
 external Stable request to `publish.yml`, so its source-main proof cannot be
 bypassed.
@@ -197,8 +196,8 @@ validation, and rejects its run unless the sole changed (including untracked)
 path is that `.sig.jws.json` file. It cannot sign the mutable marketplace
 index, choose an arbitrary document path, rebuild an artifact, edit release
 history, move a Beta/Stable pointer, or modify Factory registry/evidence. It
-opens a sidecar-only PR, waits for `validate.yml`, requests `@coderabbitai review`,
-and intentionally **never merges** the PR.
+opens a sidecar-only PR, waits for `validate.yml`, and intentionally **never merges**
+the PR itself.
 
 Before enabling it, the Cloud signing broker's OIDC policy must allow the
 exact protected `refresh-retained-sidecars.yml` workflow ref in
@@ -210,14 +209,14 @@ source code and no KMS secret is stored here.
 runs after a protected `main` merge, derives `beta` or `stable` from the exact
 release-index delta (not a PR title or merge subject), cryptographically
 verifies every post-merge KMS sidecar, and checks the merged generated PR's
-successful source gate, completed CodeRabbit audit, and resolved CodeRabbit threads.
+successful source gate.
 For a registered plugin it also re-reads the exact `beta`/`main` source branch
 head recorded in newly appended provenance with a new, read-only Source App
 token scoped to that candidate's exact source repositories; a branch that
-advanced during review is rejected and must be regenerated and reviewed again. The companion
+advanced before merge is rejected and must be regenerated. The companion
 `verify-generated-marketplace-publication.yml` check proves a publicly readable
-candidate source head before review; it deliberately defers a private source
-instead of exposing the protected Source App to unreviewed PR code. The final
+candidate source head before merge; it deliberately defers a private source
+instead of exposing the protected Source App to untrusted PR code. The final
 protected gate proves every source head with its separately scoped Source App
 token, so a generated Factory PR is not merged by
 a normal PR button: the trusted-base
@@ -236,8 +235,8 @@ for `xsec.plugin-marketplace.official-status` and that exact status subject
 namespace before enabling this Factory change; until then the broker rejects
 the request fail-closed.
 
-After CodeRabbit audit is completed and every CodeRabbit thread is resolved, a protected
-maintainer runs `final-merge-generated-marketplace-pr.yml` with that PR number.
+A protected maintainer runs `final-merge-generated-marketplace-pr.yml` with the
+source-gated PR number.
 It re-reads the live PR head and base, revalidates the exact release diff,
 every KMS sidecar and every registered external ref. The arm workflow, not the
 final workflow, owns the candidate's required status and keeps it **pending**
@@ -261,7 +260,8 @@ installing this code and whenever protection is audited. Its protected-branch-on
 `production` job needs the repository-scoped administration secret
 `XSEC_MARKETPLACE_ADMIN_TOKEN` and `XSEC_MARKETPLACE_FINALIZER_APP_ID`; it sets strict, GitHub-Actions-app-pinned
 `source-gate` in classic protection, enforces that check for administrators,
-preserves unrelated protection settings, and requires resolved conversations.
+preserves unrelated checks and branch restrictions, and removes pull-request
+approval and conversation-resolution requirements.
 Before it changes classic protection, it creates and verifies the separate
 `xsec-marketplace-final-exact-head` Ruleset: that Ruleset alone requires the
 strict GitHub-Actions `factory-final-merge-gate` and permits only the configured
@@ -280,9 +280,8 @@ must accept protected branches only, have no required reviewers, and disallow
 administrator bypass; both workflows query this server-side and fail closed if
 that policy differs.
 The protection workflow normalizes GET-only user/team/app response objects to
-the REST PUT request shape before updating, so existing review dismissals,
-bypass allowances, and branch restrictions are preserved rather than causing a
-failed protection update.
+the REST PUT request shape before updating, so existing branch restrictions are
+preserved rather than causing a failed protection update.
 
 The resulting Desktop dispatch has an explicit `channel` (`beta` or `stable`).
 Desktop defaults to stable; opting into beta must be an explicit Desktop
@@ -296,19 +295,18 @@ signature protocol.
 Beta publication, Stable promotion, retained-sidecar repair, and first-party
 adoption share one serialized publication slot. Before any of them calls KMS,
 it refuses to sign if an `xsec-marketplace/*` generated PR is still open.
-This makes the review interval part of the queue: a second candidate cannot be
-signed against the same Factory base, then become stale or conflict when a
-reviewed PR merges. After merge, the diff/sidecar classifier makes that
-generated transition a no-op for `publish.yml`, independent of how GitHub or a
-reviewer chose the merge subject.
+This makes the open-PR interval part of the queue: a second candidate cannot be
+signed against the same Factory base, then become stale or conflict when the
+first PR merges. After merge, the diff/sidecar classifier makes that generated
+transition a no-op for `publish.yml`, independent of the merge subject.
 
 If a registered source `main` event arrives after its same-plugin Beta PR was
 generated, the protected Cloud Dispatcher re-reads the exact Registry source,
 current Beta head/release/provenance, candidate branch identity and KMS-bound
 status tuple. Only when the candidate's `mainGateSha` is older does it add an
 auditable delivery comment, close that candidate, and request a replacement.
-The replacement is still a new source-gated PR requiring `@coderabbitai review` and a
-protected final merge; a matching current candidate is retained as an
+The replacement is still a new source-gated PR requiring a protected final
+merge; a matching current candidate is retained as an
 idempotent no-op and unrelated plugin candidates are never closed.
 
 When a run waited in that queue, it checks out the protected `main` tip after
