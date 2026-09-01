@@ -71,14 +71,15 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
         self.assertIn("exact PR head has no successful Factory source gate", workflow)
         self.assertIn("Require a current source gate", workflow)
-        self.assertIn("Require the completed CodeRabbit review and resolved threads", workflow)
-        self.assertIn("coderabbitai", workflow.lower())
-        self.assertIn("reviews(first:100,after:$endCursor)", workflow)
+        self.assertIn("Require completed CodeRabbit check and resolved review threads", workflow)
+        self.assertIn('commits/${HEAD_SHA}/status', workflow)
+        self.assertIn('any($status.statuses[]?; .context == "CodeRabbit" and .state == "success")', workflow)
+        self.assertNotIn("reviews(first:100,after:$endCursor)", workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
-        self.assertGreaterEqual(workflow.count("gh api graphql --paginate --slurp"), 4)
+        self.assertGreaterEqual(workflow.count("gh api graphql --paginate --slurp"), 2)
         self.assertIn("pageInfo{hasNextPage endCursor}", workflow)
-        self.assertGreaterEqual(workflow.count("shellcheck disable=SC2016"), 4)
-        self.assertIn('.state == "COMMENTED"', workflow)
+        self.assertGreaterEqual(workflow.count("shellcheck disable=SC2016"), 2)
+        self.assertIn('all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)', workflow)
 
     def test_every_generated_candidate_requests_coderabbit_review_once(self) -> None:
         workflows = (
@@ -156,13 +157,13 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             merge_step,
         )
         self.assertLess(merge_step.index(source_check), merge_step.index(token_assignment))
-        review_check = "require_current_review"
+        review_check = "require_current_review_state"
         self.assertIn(review_check, merge_step)
         self.assertLess(merge_step.rindex(review_check), merge_step.index(token_assignment))
         self.assertNotIn("steps.finalizer.outputs.token", merge_step[: merge_step.index(token_assignment)])
         self.assertEqual(merge_step.count('GH_TOKEN="${{ github.token }}"'), 2)
         self.assertEqual(merge_step.count('GH_TOKEN="${{ steps.finalizer.outputs.token }}"'), 1)
-        self.assertEqual(merge_step.count("gh api graphql --paginate --slurp"), 2)
+        self.assertEqual(merge_step.count("gh api graphql --paginate --slurp"), 1)
         self.assertEqual(merge_step.count("gh api --method PUT"), 1)
 
     def test_final_gate_scopes_source_reader_to_exact_owner_repositories(self) -> None:
