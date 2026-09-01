@@ -223,8 +223,8 @@ jobs:
               python scripts/external_source_factory.py --root "$CANDIDATE" validate
             elif [ "$kind" = "beta-smoke-ready" ]; then
               case "$HEAD_REF" in
-                xsec-marketplace/external-beta-*) ;;
-                *) echo "Only external Beta branches may reopen a no-pointer Desktop smoke cycle." >&2; exit 1 ;;
+                xsec-marketplace/external-beta-*|xsec-marketplace/batch-*) ;;
+                *) echo "Only external Beta or signed batch branches may reopen a no-pointer Desktop smoke cycle." >&2; exit 1 ;;
               esac
               python scripts/external_source_factory.py --root "$CANDIDATE" validate
             elif [ "$kind" != "beta" ] && [ "$kind" != "stable" ]; then
