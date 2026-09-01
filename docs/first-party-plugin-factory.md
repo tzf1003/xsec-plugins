@@ -181,11 +181,13 @@ provenance 的可读状态置为 `waiting_for_beta`：它不会请求 Desktop sm
 main 已精确重建该 Beta 时才转回 `waiting_for_smoke` 并请求一个**新的** Desktop Beta smoke。
 这使 beta 领先 main 是正常的等待状态，而不是一次失败的 Stable 发布。
 
-生成 Factory PR 通过 source gate 后仍占用发布语义上的队列：所有会调用 KMS 的发布、
-Stable、sidecar repair 和 adoption 工作流都先拒绝任何尚未合并的
-`xsec-marketplace/*` PR，避免两个候选基于同一 main 签名。PR 审查期间来源 `beta`/`main`
-继续前进时，`Verify generated Marketplace publication merge` 会失败；但该 PR check 通过后
-来源仍可能继续前进，所以不能把它当作最终合并授权。
+会调用 KMS 的发布、Stable、sidecar repair 和 adoption 工作流共享 publication slot，
+直到候选的不可变文件创建完成。外部 Beta 发布与 Stable 推广随后只阻止**同一插件**的
+待审 Factory transition；它们会按 Factory status、provenance、release 与 snapshot 路径
+识别目标插件，并且在无法完整读取候选变更时 fail closed。这样无关插件可以并行审查，
+但一个插件不能得到两个互相竞争的候选。PR 审查期间来源 `beta`/`main` 继续前进时，
+`Verify generated Marketplace publication merge` 会失败；但该 PR check 通过后来源仍可能
+继续前进，所以不能把它当作最终合并授权。
 
 `arm-generated-marketplace-final-merge.yml` 使用 `pull_request_target`，只读取可信的默认分支
 workflow 和 GitHub 注入的 PR metadata，**从不 checkout 或执行 PR head**。它为同仓、受允许
