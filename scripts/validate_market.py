@@ -447,6 +447,8 @@ def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
                 previous -= 1
             if previous >= 0 and tokens[previous][0] == "identifier" and tokens[previous][1] in {"break", "continue"}:
                 return True
+        if value == "debugger" and had_line_terminator:
+            return True
         if value not in REGEX_PREFIX_KEYWORDS:
             return False
         previous = cursor - 1
@@ -1495,6 +1497,12 @@ def static_rpc_array_values(
         value = tokens[cursor + 3]
         if value[0] != "string" or not re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value[1]):
             return None
+        value_end = cursor + 4
+        if value_end < closing and tokens[value_end] not in {
+            ("punctuation", ","),
+            ("punctuation", "]"),
+        }:
+            return None
         values.add(value[1])
         cursor = array_closing + 1
     return values or None
@@ -1527,7 +1535,24 @@ def frontend_rpc_bindings(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
             continue
         if closing + 2 >= len(tokens) or tokens[closing + 1] != ("punctuation", "="):
             continue
-        source = tokens[closing + 2][1] if tokens[closing + 2][0] == "identifier" else ""
+        source_index = closing + 2
+        source = tokens[source_index][1] if tokens[source_index][0] == "identifier" else ""
+        rhs_end = source_index + 1
+        if (
+            rhs_end + 1 < len(tokens)
+            and tokens[rhs_end] == ("punctuation", ".")
+            and tokens[rhs_end + 1][0] == "identifier"
+        ):
+            rhs_end += 2
+        elif rhs_end < len(tokens) and tokens[rhs_end] == ("punctuation", "["):
+            rhs_end = matching_square_bracket(tokens, rhs_end) or rhs_end
+            rhs_end += 1
+        if rhs_end >= len(tokens) or tokens[rhs_end] not in {
+            ("punctuation", ";"),
+            ("punctuation", ","),
+            ("punctuation", "}"),
+        }:
+            continue
         if source in objects:
             bindings[tokens[index + 2][1]] = objects[source]
     return bindings
@@ -1569,11 +1594,12 @@ def frontend_named_function_blocks(tokens: list[tuple[str, str]]) -> dict[str, t
 def frontend_activation_body_range(tokens: list[tuple[str, str]]) -> tuple[int, int] | None:
     """Locate the exported ``activate(host)`` body in token space."""
 
-    for index, token in enumerate(tokens):
+    dense = [(index, token) for index, token in enumerate(tokens) if token[0] != "newline"]
+    for dense_index, (_, token) in enumerate(dense):
         if token != ("identifier", "export"):
             continue
-        cursor = index + 1
-        if cursor < len(tokens) and tokens[cursor] == ("identifier", "async"):
+        cursor = dense_index + 1
+        if cursor < len(dense) and dense[cursor][1] == ("identifier", "async"):
             cursor += 1
         expected = [
             ("identifier", "function"),
@@ -1583,9 +1609,9 @@ def frontend_activation_body_range(tokens: list[tuple[str, str]]) -> tuple[int, 
             ("punctuation", ")"),
             ("punctuation", "{"),
         ]
-        if tokens[cursor:cursor + len(expected)] != expected:
+        if [token for _, token in dense[cursor:cursor + len(expected)]] != expected:
             continue
-        opening = cursor + len(expected) - 1
+        opening = dense[cursor + len(expected) - 1][0]
         closing = matching_brace(tokens, opening)
         if closing is not None:
             return opening + 1, closing
@@ -1607,6 +1633,12 @@ def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] 
         return None
     blocks = frontend_named_function_blocks(tokens)
     reachable: set[int] = set(range(activation[0], activation[1]))
+    nested_blocks = {
+        span for name, span in blocks.items()
+        if name != "activate" and activation[0] <= span[0] < span[1] <= activation[1]
+    }
+    for start, end in nested_blocks:
+        reachable.difference_update(range(start, end + 1))
     queued: list[str] = []
 
     def enqueue_calls(start: int, end: int) -> None:
@@ -1632,6 +1664,18 @@ def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] 
             queued.append(name)
 
     enqueue_calls(*activation)
+    # Event/timer APIs often receive a named helper as a callback rather than
+    # invoking it directly (``setTimeout(resize, 100)``).  Only references in
+    # the currently reachable activation statements may enqueue that helper.
+    for name, (start, end) in blocks.items():
+        if name == "activate" or not (activation[0] <= start < end <= activation[1]):
+            continue
+        if any(
+            tokens[index] == ("identifier", name)
+            and not (start <= index <= end)
+            for index in reachable
+        ):
+            queued.append(name)
     seen: set[str] = set()
     while queued:
         name = queued.pop()
@@ -1641,6 +1685,15 @@ def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] 
         start, end = blocks[name]
         reachable.update(range(start, end + 1))
         enqueue_calls(start, end)
+        for candidate, (candidate_start, candidate_end) in blocks.items():
+            if candidate == "activate":
+                continue
+            if any(
+                tokens[index] == ("identifier", candidate)
+                and not (candidate_start <= index <= candidate_end)
+                for index in range(start, end + 1)
+            ):
+                queued.append(candidate)
     return reachable
 
 
@@ -1733,6 +1786,43 @@ def frontend_binding_counts(tokens: list[tuple[str, str]]) -> dict[str, int]:
     return counts
 
 
+def frontend_binding_declared_in_scope(
+    tokens: list[tuple[str, str]], name: str, request_index: int
+) -> bool:
+    """Require a resolved RPC binding to be visible at its request site."""
+
+    blocks = frontend_named_function_blocks(tokens)
+
+    def owner(index: int) -> str | None:
+        candidates = [
+            (function_name, start, end)
+            for function_name, (start, end) in blocks.items()
+            if start < index < end
+        ]
+        return min(candidates, key=lambda item: item[2] - item[1])[0] if candidates else None
+
+    request_owner = owner(request_index)
+    declarations: list[int] = []
+    for index in range(len(tokens) - 3):
+        if tokens[index:index + 3] == [
+            ("identifier", "const"),
+            ("identifier", name),
+            ("punctuation", "="),
+        ]:
+            declarations.append(index)
+    for index in range(len(tokens) - 3):
+        if tokens[index:index + 3] == [
+            ("identifier", "const"),
+            ("punctuation", "["),
+            ("identifier", name),
+        ]:
+            declarations.append(index)
+    if len(declarations) != 1:
+        return False
+    declaration_owner = owner(declarations[0])
+    return declaration_owner is None or declaration_owner == request_owner
+
+
 def _bracket_request_length(dense: list[tuple[str, str]], index: int) -> int:
     if (
         index + 2 < len(dense)
@@ -1811,27 +1901,56 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
     saw_request = False
     dense_source_indices = [index for index, token in enumerate(tokens) if token[0] != "newline"]
     for index in range(len(dense)):
-        if reachable is not None and dense_source_indices[index] not in reachable:
-            continue
+        is_reachable = reachable is None or dense_source_indices[index] in reachable
+        # Any reachable ``name.request(...)`` call whose receiver is not the
+        # activation host has unverifiable broker provenance (including a
+        # simple ``const broker = host`` alias).  Reject it instead of silently
+        # ignoring a dynamic RPC edge.
+        if (
+            dense[index][0] == "identifier"
+            and index + 3 < len(dense)
+            and dense[index + 1:index + 4] == [
+                ("punctuation", "."),
+                ("identifier", "request"),
+                ("punctuation", "("),
+            ]
+            and dense[index][1] != "host"
+        ):
+            if is_reachable:
+                fail(f"{label} contains a host RPC request through an unresolved receiver")
         argument_index = host_request_argument_index(dense, index)
         if argument_index is None:
             continue
-        saw_request = True
         argument_kind, argument_value = dense[argument_index]
-        if argument_kind == "string":
-            # The entire first argument must be this literal.  A continuation
-            # such as ``"xsec.method" + dynamic`` or ``.replace(...)`` is
-            # executable data and cannot satisfy a static declaration.
-            if argument_index + 1 >= len(dense) or dense[argument_index + 1] not in {
+        if argument_kind == "string" and (
+            argument_index + 1 >= len(dense)
+            or dense[argument_index + 1] not in {
                 ("punctuation", ","),
                 ("punctuation", ")"),
-            }:
+            }
+        ):
+            fail(f"{label} contains an unresolved host RPC request argument")
+        if not is_reachable:
+            # Uncalled code cannot contribute to the declared request set, but
+            # malformed dynamic broker calls still invalidate the source.
+            if argument_kind not in {"string", "identifier"} or (
+                argument_kind == "identifier"
+                and not (
+                    argument_value in bindings
+                    and binding_counts.get(argument_value, 0) == 1
+                    and frontend_binding_declared_in_scope(dense, argument_value, argument_index)
+                )
+            ):
                 fail(f"{label} contains an unresolved host RPC request argument")
+            continue
+        saw_request = True
+        if argument_kind == "string":
             requested.add(argument_value)
         elif (
             argument_kind == "identifier"
             and argument_value in bindings
             and binding_counts.get(argument_value, 0) == 1
+            and frontend_binding_declared_in_scope(dense, argument_value, argument_index)
         ):
             requested.update(bindings[argument_value])
         else:
@@ -1851,7 +1970,10 @@ def validate_frontend_host_requests(
 
 
 def validate_frontend_rpc_literals(
-    methods: dict[str, object], tokens: list[tuple[str, str]], label: str
+    methods: dict[str, object],
+    tokens: list[tuple[str, str]],
+    label: str,
+    requested: set[str] | None = None,
 ) -> None:
     reachable = frontend_reachable_token_indices(tokens)
     reachable_names = {
@@ -1879,9 +2001,11 @@ def validate_frontend_rpc_literals(
     undeclared = literals - set(methods)
     if undeclared:
         fail(f"{label} references undeclared RPC methods: {sorted(undeclared)}")
-    missing = set(methods) - literals
+    if requested is None:
+        requested = frontend_host_requests(tokens, label)
+    missing = set(methods) - requested
     if missing:
-        fail(f"{label} does not reference declared RPC methods: {sorted(missing)}")
+        fail(f"{label} does not reference declared RPC methods through an actual request: {sorted(missing)}")
 
 
 def validate_official_frontend(manifest: dict[str, object], source: str, label: str) -> None:
@@ -1925,7 +2049,8 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
             fail(f"{label} must implement lifecycle method {lifecycle_method}")
     tokens = javascript_contract_tokens(source, label)
     validate_frontend_host_requests(methods, tokens, label)
-    validate_frontend_rpc_literals(methods, tokens, label)
+    requested = frontend_host_requests(tokens, label)
+    validate_frontend_rpc_literals(methods, tokens, label, requested)
 
 
 def validate_official_settings_contract(manifest: dict[str, object], label: str) -> None:
