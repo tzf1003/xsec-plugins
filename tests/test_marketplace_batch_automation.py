@@ -60,6 +60,21 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, publisher)
 
+    def test_batch_caller_grants_write_scope_only_to_the_publisher(self) -> None:
+        workflow = BATCH_RECONCILE.read_text(encoding="utf-8")
+        top_level = workflow.split("concurrency:", maxsplit=1)[0]
+        publisher_job = workflow.split("  build-current-batch:", maxsplit=1)[1]
+
+        self.assertIn("permissions:\n  actions: read\n  contents: read", top_level)
+        self.assertNotIn("id-token: write", top_level)
+        self.assertIn(
+            "permissions:\n"
+            "      contents: write\n"
+            "      id-token: write\n"
+            "      pull-requests: write",
+            publisher_job,
+        )
+
     def test_only_successful_exact_generated_prs_enter_the_automatic_finalizer(self) -> None:
         workflow = AUTO_FINALIZER.read_text(encoding="utf-8")
         finalizer = FINALIZER.read_text(encoding="utf-8")
