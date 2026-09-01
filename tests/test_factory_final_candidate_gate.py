@@ -75,8 +75,9 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("coderabbitai", workflow.lower())
         self.assertIn("reviews(first:100,after:$endCursor)", workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
-        self.assertGreaterEqual(workflow.count("gh api graphql --paginate --slurp"), 2)
+        self.assertGreaterEqual(workflow.count("gh api graphql --paginate --slurp"), 4)
         self.assertIn("pageInfo{hasNextPage endCursor}", workflow)
+        self.assertGreaterEqual(workflow.count("shellcheck disable=SC2016"), 4)
         self.assertIn('.state == "COMMENTED"', workflow)
 
     def test_every_generated_candidate_requests_coderabbit_review_once(self) -> None:
@@ -155,9 +156,14 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             merge_step,
         )
         self.assertLess(merge_step.index(source_check), merge_step.index(token_assignment))
-        self.assertNotIn("GH_TOKEN", merge_step[: merge_step.index(token_assignment)])
-        self.assertEqual(merge_step.count("GH_TOKEN="), 1)
-        self.assertEqual(merge_step.count("gh api"), 1)
+        review_check = "require_current_review"
+        self.assertIn(review_check, merge_step)
+        self.assertLess(merge_step.rindex(review_check), merge_step.index(token_assignment))
+        self.assertNotIn("steps.finalizer.outputs.token", merge_step[: merge_step.index(token_assignment)])
+        self.assertEqual(merge_step.count('GH_TOKEN="${{ github.token }}"'), 2)
+        self.assertEqual(merge_step.count('GH_TOKEN="${{ steps.finalizer.outputs.token }}"'), 1)
+        self.assertEqual(merge_step.count("gh api graphql --paginate --slurp"), 2)
+        self.assertEqual(merge_step.count("gh api --method PUT"), 1)
 
     def test_final_gate_scopes_source_reader_to_exact_owner_repositories(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
