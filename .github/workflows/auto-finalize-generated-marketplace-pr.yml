@@ -4,6 +4,8 @@ on:
   workflow_run:
     workflows: [Validate marketplace, Verify generated Marketplace publication merge]
     types: [completed]
+  pull_request_review:
+    types: [submitted]
 
 permissions:
   actions: read
@@ -14,14 +16,18 @@ permissions:
 jobs:
   select-exact-generated-pr:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
       (
-        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/batch-') ||
-        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/default-set-') ||
-        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/external-beta-') ||
-        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/external-stable-')
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/')
+      ) || (
+        github.event_name == 'pull_request_review' &&
+        github.event.pull_request.state == 'open' &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        startsWith(github.event.pull_request.head.ref, 'xsec-marketplace/')
       )
     runs-on: ubuntu-latest
     outputs:
@@ -32,14 +38,14 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name || github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Validated workflow run has an invalid head SHA." >&2; exit 1; }
           case "$HEAD_BRANCH" in
-            xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*) ;;
+            xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
             *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
           esac
           prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
@@ -63,6 +69,18 @@ jobs:
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # shellcheck disable=SC2016
+          review_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          printf '%s' "$review_pages" | jq -e '
+            (type == "array" and length > 0)
+            and all(.[]?; .data.repository.pullRequest.reviewThreads.nodes | type == "array")
+            and (.[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
+            and all(.[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
+          ' >/dev/null || {
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
           echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
   final-revalidate-and-merge:
