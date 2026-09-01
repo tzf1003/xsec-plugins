@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.approvals",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-approvals",
+    "path": "plugins/com.xsec.workspace.approvals",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "b23aa334cbbab144b9439df1eaa492de778a427d",
+    "stableSha": null,
+    "mainGateSha": "b7dcd317297dc7d5dfdef4f02f85e36a4aaea693"
+  },
+  "release": {
+    "betaReleaseId": "sha256-eb7c8aaaabdf0ed7813972eda8920e8da84082f9cb327ac34bab6c0a83c13404",
+    "stableReleaseId": "sha256-603aac8b6981cc84069bf2e19888aa22d6a7454adfd98f45ddccf4a0dc6373ac"
+  },
+  "publication": {
+    "state": "waiting_for_smoke",
+    "deliveryId": "33467135093.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33467135093",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
+  }
+}
