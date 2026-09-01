@@ -105,6 +105,9 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "for name in source-gate; do",
             'creator.login == "coderabbitai[bot]"',
             'if length > 0 then .[0].state == "success"',
+            "reviews(first:100,after:$endCursor)",
+            '.author.login == "coderabbitai"',
+            '.commit.oid == $head',
             "reviewThreads(first:100,after:$endCursor)",
             "Verify the signed stale batch as data",
             "--verify-active-marketplace-signatures",
@@ -151,9 +154,12 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('if length > 0 then .[0].state == "success"', workflow)
         self.assertNotIn('sort_by(.created_at)', workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
+        self.assertIn("reviews(first:100,after:$endCursor)", workflow)
+        self.assertIn('.author.login == "coderabbitai"', workflow)
+        self.assertIn('.commit.oid == $head', workflow)
         self.assertIn("gh api graphql --paginate --slurp", workflow)
-        self.assertIn("all(.[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
-        self.assertIn(".[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false", workflow)
+        self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
+        self.assertIn("$threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false", workflow)
         self.assertIn("startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/')", workflow)
         self.assertIn("startsWith(github.event.pull_request.head.ref, 'xsec-marketplace/')", workflow)
         self.assertIn("checks: read", workflow)
@@ -181,13 +187,17 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn("outputs.eligible == 'true'", selected_finalizer)
         self.assertIn("!cancelled() && needs.select-exact-generated-pr.result == 'success'", selected_finalizer)
         self.assertNotIn("always()", selected_finalizer)
-        self.assertNotIn("reviews(first:100,after:$endCursor)", selected_finalizer)
+        self.assertIn("reviews(first:100,after:$endCursor)", selected_finalizer)
+        self.assertIn('.author.login == "coderabbitai"', selected_finalizer)
+        self.assertIn('.commit.oid == $head', selected_finalizer)
         self.assertNotIn("coderabbit_status_verified", selected_finalizer)
         self.assertIn("workflow_call:", finalizer)
         self.assertIn("requires a successful trusted CodeRabbit status", finalizer)
         self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', finalizer)
         self.assertNotIn("coderabbit_status_verified", finalizer)
-        self.assertNotIn("reviews(first:100,after:$endCursor)", finalizer)
+        self.assertIn("reviews(first:100,after:$endCursor)", finalizer)
+        self.assertIn('.author.login == "coderabbitai"', finalizer)
+        self.assertIn('.commit.oid == $head', finalizer)
         self.assertIn("workflow_dispatch|workflow_call|workflow_run", finalizer)
         self.assertIn("xsec-marketplace/batch-*", finalizer)
 

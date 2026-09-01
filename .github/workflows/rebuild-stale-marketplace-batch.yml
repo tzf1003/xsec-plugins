@@ -96,13 +96,20 @@ jobs:
             exit 0
           fi
           # shellcheck disable=SC2016
-          threads="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
+          reviews="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviews(first:100,after:$endCursor){nodes{author{login} state commit{oid}} pageInfo{hasNextPage endCursor}}}}}' \
             -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
-          if ! printf '%s' "$threads" | jq -e '
-            (type == "array" and length > 0)
-            and all(.[]?; .data.repository.pullRequest.reviewThreads.nodes | type == "array")
-            and (.[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
-            and all(.[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
+          # shellcheck disable=SC2016
+          threads="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          if ! jq -ne --arg head "$head_sha" --argjson reviews "$reviews" --argjson threads "$threads" '
+            ($reviews | type == "array" and length > 0)
+            and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
+            and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
+            and any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+            and ($threads | type == "array" and length > 0)
+            and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
+            and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
+            and all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
           ' >/dev/null; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
