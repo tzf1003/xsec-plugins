@@ -156,28 +156,29 @@ the external SHA lives only in immutable Factory provenance. The later Desktop
 smoke dispatch likewise identifies the Factory revision, not an untrusted
 external source revision.
 
-The protected `Publish immutable marketplace beta release` workflow runs after a normal main
-change. It preserves every existing record and artifact, appends a new record
-only when the current deterministic package is new, and moves **only** the
-`beta` pointer. This includes a newly added plugin: its first Beta release
-leaves `channels.stable` as `null`, so it cannot reach Stable without
-an explicit promotion. It then requests sidecars from the production Cloud KMS broker
-using a short-lived GitHub OIDC token, validates every broker response, and
-opens the generated metadata as a protected PR. It waits for `validate.yml` and
-intentionally never merges or dispatches Desktop smoke itself; the validated PR
-must be merged through protected `main`. The broker accepts
-only the protected `xsec-plugins` production workflow; it calculates the
-document digest itself.
+For the ten active first-party plugins, a protected source merge sends a Cloud
+webhook to `reconcile-marketplace-batch.yml`. It serializes bursts into one
+current source snapshot, stages all ten registered `beta` and `main` heads,
+rebuilds the immutable metadata once, KMS-signs the complete candidate and
+opens one `xsec-marketplace/batch-*` PR. A successful `Validate marketplace`
+run automatically invokes the exact-head Finalizer: it re-reads the live PR,
+Registry, source refs and KMS proofs, then merges only that verified head.
+The protected-main dispatcher sends the Desktop Beta smoke; its success enters
+the existing protected Stable path automatically. No maintainer needs to
+create, approve or manually merge a per-plugin Factory PR in this normal path.
 
-`Promote immutable marketplace release to stable` is a separate protected,
-manual workflow. Give it a plugin ID and an existing `releaseId` to promote or
-roll back. It changes only `channels.stable.releaseId`, never rebuilds an
-archive and never changes an artifact SHA-256. A fresh KMS sidecar is produced
-for the edited index and the update is again opened as a protected PR. It
-requires the source gate and a protected final merge before Desktop smoke can run.
-It remains the legacy built-in path: a registered external plugin must use the
-external Stable request to `publish.yml`, so its source-main proof cannot be
-bypassed.
+The older `Publish immutable marketplace beta release` workflow remains for
+explicit legacy/recovery transitions. It preserves every existing record and
+artifact, appends a new record only when the current deterministic package is
+new, and moves **only** the `beta` pointer. The broker calculates each document
+digest itself.
+
+`Promote immutable marketplace release to stable` remains a protected manual
+recovery/rollback workflow for retained legacy releases. Give it a plugin ID
+and an existing `releaseId`; it changes only `channels.stable.releaseId`, never
+rebuilds an archive or changes an artifact SHA-256. Normal first-party
+promotion is instead source-gated and initiated by the successful Desktop Beta
+smoke path, so its source-main proof cannot be bypassed.
 
 ### Retained KMS sidecar repair
 

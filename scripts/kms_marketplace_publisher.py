@@ -32,6 +32,7 @@ from build_market import SNAPSHOT_ROOT_RELATIVE_PATH, WINDOWS_RESERVED_DEVICE_NA
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE_INDEX_SUBJECT = ".agents/plugins/marketplace.json"
+MARKETPLACE_INDEX_PURPOSE = "xsec.plugin-marketplace.index"
 OFFICIAL_PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publications"
 OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-publication-proofs"
 OFFICIAL_ADOPTIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoptions"
@@ -419,7 +420,7 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     plugins = marketplace.get("plugins")
     if not isinstance(plugins, list):
         fail("marketplace.json plugins must be a list")
-    documents = [MarketplaceDocument("xsec.plugin-marketplace.index", MARKETPLACE_INDEX_SUBJECT, index_path)]
+    documents = [MarketplaceDocument(MARKETPLACE_INDEX_PURPOSE, MARKETPLACE_INDEX_SUBJECT, index_path)]
     subjects = {MARKETPLACE_INDEX_SUBJECT}
     for entry in plugins:
         if not isinstance(entry, dict):

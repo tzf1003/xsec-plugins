@@ -692,8 +692,8 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
                     beta_source=source,
                 )
         promoted.append(record)
-    if channel == "stable" and len(promoted) != 1:
-        fail("merged Stable promotion must change exactly one releases.json document")
+    if channel == "stable" and not promoted:
+        fail("merged Stable promotion must change at least one releases.json document")
     return {"kind": channel, "promotions": promoted}
 
 

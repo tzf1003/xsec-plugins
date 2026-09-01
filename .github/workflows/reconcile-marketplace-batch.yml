@@ -1,0 +1,91 @@
+name: Reconcile official Marketplace source batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      delivery_key:
+        description: Immutable Cloud delivery identity
+        required: true
+        type: string
+      plugin_id:
+        description: Source-event plugin ID
+        required: true
+        type: string
+      source_repository:
+        description: Source-event repository
+        required: true
+        type: string
+      source_ref:
+        description: Source-event beta or main ref
+        required: true
+        type: string
+      source_sha:
+        description: Source-event exact commit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  # All source webhooks converge after obtaining this one slot.  The worker
+  # reads every active Registry source *after* it owns the slot, so a burst of
+  # ten source merges produces one current candidate instead of ten PRs.
+  group: xsec-marketplace-source-batch
+  cancel-in-progress: false
+
+jobs:
+  validate-source-event:
+    runs-on: ubuntu-latest
+    outputs:
+      delivery_key: ${{ steps.request.outputs.delivery_key }}
+      event_plugin_id: ${{ steps.request.outputs.plugin_id }}
+    steps:
+      - name: Require the dedicated Cloud dispatcher App and protected Factory main
+        env:
+          ACTOR: ${{ github.actor }}
+          EXPECTED_ACTOR: ${{ vars.XSEC_FACTORY_DISPATCHER_ACTOR }}
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [ -n "$EXPECTED_ACTOR" ] || { echo "Configure XSEC_FACTORY_DISPATCHER_ACTOR." >&2; exit 1; }
+          [ "$ACTOR" = "$EXPECTED_ACTOR" ] || { echo "Only the Cloud dispatcher App may reconcile Marketplace sources." >&2; exit 1; }
+          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || { echo "Source batching requires protected Factory main." >&2; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate the exact Cloud delivery against the protected Registry
+        id: request
+        env:
+          DELIVERY_KEY: ${{ inputs.delivery_key }}
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-reconcile-source \
+            --delivery-key "$DELIVERY_KEY" --plugin-id "$PLUGIN_ID" --source-repository "$SOURCE_REPOSITORY" \
+            --source-ref "$SOURCE_REF" --source-sha "$SOURCE_SHA"
+      - name: Reject a stale event before it joins the current batch
+        env:
+          SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
+          SOURCE_REF: ${{ steps.request.outputs.source_ref }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          current="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_REF" | awk 'NR == 1 { print $1 }')"
+          [ "$current" = "$SOURCE_SHA" ] || { echo "Source delivery is stale; the registered ref advanced." >&2; exit 1; }
+  build-current-batch:
+    needs: validate-source-event
+    uses: ./.github/workflows/publish-marketplace-batch.yml
+    with:
+      delivery_key: ${{ needs.validate-source-event.outputs.delivery_key }}
+      event_plugin_id: ${{ needs.validate-source-event.outputs.event_plugin_id }}
+    secrets: inherit

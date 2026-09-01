@@ -1,6 +1,8 @@
 name: Publish immutable marketplace beta release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       maintenance:
@@ -64,8 +66,12 @@ concurrency:
 jobs:
   enforce-publish-ref:
     runs-on: ubuntu-latest
+    outputs:
+      maintenance: ${{ steps.request.outputs.maintenance }}
+      channel: ${{ steps.request.outputs.channel }}
     steps:
       - name: Require protected main and a complete publication request
+        id: request
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
@@ -82,16 +88,38 @@ jobs:
           RECONCILE_DISPATCH_NONCE: ${{ inputs.reconcile_dispatch_nonce }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
-            echo "Manual marketplace publishing is permitted only from refs/heads/main." >&2
-            exit 1
-          fi
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              [ "$REF" = "refs/heads/main" ] || {
+                echo "Manual marketplace publishing is permitted only from refs/heads/main." >&2
+                exit 1
+              }
+              channel="${CHANNEL:-beta}"
+              maintenance="${MAINTENANCE:-release}"
+              ;;
+            push)
+              [ "$REF" = "refs/heads/main" ] || {
+                echo "Automatic default-set maintenance accepts only refs/heads/main." >&2
+                exit 1
+              }
+              [ -z "$PLUGIN_ID" ] && [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] \
+                && [ -z "$EXPECTED_BETA_SHA" ] && [ -z "$SMOKE_RUN_URL" ] && [ -z "$SMOKE_MARKETPLACE_REVISION" ] \
+                && [ -z "$RECONCILE_DELIVERY_KEY" ] && [ -z "$RECONCILE_DISPATCH_NONCE" ] || {
+                  echo "Automatic default-set maintenance accepts no release, source, smoke, or reconcile inputs." >&2
+                  exit 1
+                }
+              channel=beta
+              maintenance=align_desktop_defaults
+              ;;
+            *)
+              echo "Marketplace publication event is unsupported." >&2
+              exit 1
+              ;;
+          esac
           if [ "$REF_PROTECTED" != "true" ]; then
             echo "Marketplace publication requires a protected main branch or ruleset." >&2
             exit 1
           fi
-          channel="${CHANNEL:-beta}"
-          maintenance="${MAINTENANCE:-release}"
           case "$channel" in
             beta|stable) ;;
             *) echo "channel must be beta or stable." >&2; exit 1 ;;
@@ -146,13 +174,14 @@ jobs:
               exit 1
             }
           fi
+          echo "maintenance=$maintenance" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
   classify-generated-main-change:
     needs: enforce-publish-ref
-    # Factory publication is driven only by an explicit protected-main
-    # dispatch from the source reconciler or a manual recovery operator.
-    # Merging Registry/adoption/generated metadata must never imply a new
-    # release build merely because it updates `main`.
-    if: ${{ needs.enforce-publish-ref.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected }}
+    # A protected main push maintains the Desktop default set. Explicit
+    # protected-main dispatches retain the normal release/recovery contract.
+    # Already signed Factory merges are classified before either path signs.
+    if: ${{ needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' && github.ref_protected }}
     runs-on: ubuntu-latest
     outputs:
       generated: ${{ steps.classify.outputs.generated }}
@@ -202,7 +231,7 @@ jobs:
   sign-and-publish:
     needs: [enforce-publish-ref, classify-generated-main-change]
     if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && needs.classify-generated-main-change.outputs.generated != 'true' }}
+      ${{ needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' && github.ref_protected && needs.classify-generated-main-change.outputs.generated != 'true' }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -236,7 +265,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
           PLUGIN_ID: ${{ inputs.plugin_id }}
-          MAINTENANCE: ${{ inputs.maintenance }}
+          MAINTENANCE: ${{ needs.enforce-publish-ref.outputs.maintenance }}
         run: |
           set -euo pipefail
           if [ -n "$PLUGIN_ID" ] && ! [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]]; then
@@ -292,9 +321,9 @@ jobs:
       - name: Resolve the publication mode from protected Factory main
         id: request
         env:
-          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_CHANNEL: ${{ needs.enforce-publish-ref.outputs.channel }}
           INPUT_PLUGIN_ID: ${{ inputs.plugin_id }}
-          INPUT_MAINTENANCE: ${{ inputs.maintenance }}
+          INPUT_MAINTENANCE: ${{ needs.enforce-publish-ref.outputs.maintenance }}
         run: |
           set -euo pipefail
           channel="${INPUT_CHANNEL:-beta}"

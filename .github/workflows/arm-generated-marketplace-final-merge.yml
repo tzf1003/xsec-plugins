@@ -58,7 +58,7 @@ jobs:
           # status would reflect only the final page and an ordinary PR sharing
           # this SHA could overwrite a Factory candidate's pending status.
           main_prs="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls?state=all&base=main&per_page=100")"
-          factory_for_sha="$(printf '%s' "$main_prs" | jq -e --arg repo "$REPOSITORY" --arg sha "$PR_HEAD_SHA" 'any(.[][]; .head.sha == $sha and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-") or startswith("xsec-marketplace/stage-first-party-adoption-") or startswith("xsec-marketplace/adopt-first-party-") or startswith("xsec-marketplace/refresh-retained-sidecar-") or startswith("xsec-marketplace/layout-signatures-") or startswith("xsec-marketplace/default-set-")))' >/dev/null && echo true || echo false)"
+          factory_for_sha="$(printf '%s' "$main_prs" | jq -e --arg repo "$REPOSITORY" --arg sha "$PR_HEAD_SHA" 'any(.[][]; .head.sha == $sha and .head.repo.full_name == $repo and (.head.ref | startswith("xsec-marketplace/publish-") or startswith("xsec-marketplace/batch-") or startswith("xsec-marketplace/external-beta-") or startswith("xsec-marketplace/external-stable-") or startswith("xsec-marketplace/promote-stable-") or startswith("xsec-marketplace/stage-first-party-adoption-") or startswith("xsec-marketplace/adopt-first-party-") or startswith("xsec-marketplace/refresh-retained-sidecar-") or startswith("xsec-marketplace/layout-signatures-") or startswith("xsec-marketplace/default-set-")))' >/dev/null && echo true || echo false)"
           # A Factory release diff may be cherry-picked onto a normally named
           # branch, with a no-op commit making its SHA distinct from every
           # generated branch.  Classify that *content* as privileged too.
@@ -143,7 +143,7 @@ jobs:
             ' >/dev/null && echo true || echo false)"
           fi
           case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in
-            "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/stage-first-party-adoption-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*|"$REPOSITORY":xsec-marketplace/layout-signatures-*|"$REPOSITORY":xsec-marketplace/default-set-*) event_factory=true ;;
+            "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/batch-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/stage-first-party-adoption-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*|"$REPOSITORY":xsec-marketplace/layout-signatures-*|"$REPOSITORY":xsec-marketplace/default-set-*) event_factory=true ;;
             *) event_factory=false ;;
           esac
           if [ "$layout_migration" = "true" ] || [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ] || [ "$gitlink_changed" = "true" ]; then

@@ -1,0 +1,201 @@
+name: Publish current Marketplace source batch
+
+on:
+  workflow_call:
+    inputs:
+      delivery_key:
+        required: true
+        type: string
+      event_plugin_id:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: xsec-marketplace-publish-main
+  cancel-in-progress: false
+
+jobs:
+  build-sign-and-open-pr:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+      - name: Record the current protected Factory revision after acquiring the publication slot
+        id: current-main
+        run: |
+          set -euo pipefail
+          source_revision="$(git rev-parse HEAD)"
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || {
+            echo "Current checkout is not protected main." >&2
+            exit 1
+          }
+          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Read the complete active Registry batch from protected main
+        id: registry
+        run: |
+          set -euo pipefail
+          batch="$(jq -cer '
+            [.plugins[]
+              | select(.status == "active" and .pluginId != "com.xsec.project-workspace")
+              | {plugin_id:.pluginId, repository:.source.repository, beta_ref:.source.refs.beta, stable_ref:.source.refs.stable}
+            ]
+            | if length == 10
+                and all(.[]; (.plugin_id | type == "string") and (.repository | type == "string")
+                  and .beta_ref == "refs/heads/beta" and .stable_ref == "refs/heads/main")
+              then sort_by(.plugin_id)
+              else error("Factory must have exactly ten active first-party plugin sources") end
+          ' .xsec-factory/official-registry.json)"
+          owners="$(printf '%s' "$batch" | jq -cer '[.[].repository | split("/")[0]] | unique | if length == 1 then .[0] else error("a Marketplace batch cannot span source owners") end')"
+          repositories="$(printf '%s' "$batch" | jq -cer '[.[].repository | split("/")[1]] | unique | join(",")')"
+          {
+            echo 'batch<<EOF'
+            echo "$batch"
+            echo EOF
+            echo "source_owner=$owners"
+            echo "source_repositories=$repositories"
+          } >> "$GITHUB_OUTPUT"
+      - name: Require the read-only Source App credentials
+        env:
+          APP_ID: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          APP_KEY: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "XSEC_MARKETPLACE_SOURCE_APP_ID is not configured." >&2; exit 1; }
+          [ -n "$APP_KEY" ] || { echo "XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY is not configured." >&2; exit 1; }
+      - name: Create one exact-scope source reader token
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.registry.outputs.source_owner }}
+          repositories: ${{ steps.registry.outputs.source_repositories }}
+          permission-contents: read
+          permission-checks: read
+      - name: Fetch, validate, and stage every current source ref
+        id: sources
+        env:
+          BATCH: ${{ steps.registry.outputs.batch }}
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          roots="$RUNNER_TEMP/xsec-marketplace-batch-sources"
+          records="$RUNNER_TEMP/xsec-marketplace-batch-sources.jsonl"
+          mkdir -p "$roots"
+          : > "$records"
+          token_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
+          unset SOURCE_TOKEN
+          while IFS= read -r item; do
+            plugin_id="$(printf '%s' "$item" | jq -er .plugin_id)"
+            repository="$(printf '%s' "$item" | jq -er .repository)"
+            beta_ref="$(printf '%s' "$item" | jq -er .beta_ref)"
+            stable_ref="$(printf '%s' "$item" | jq -er .stable_ref)"
+            root="$roots/$plugin_id"
+            git init --quiet "$root"
+            git -C "$root" config core.hooksPath /dev/null
+            git -C "$root" config core.autocrlf false
+            url="https://github.com/${repository}.git"
+            env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u GIT_SSL_NO_VERIFY \
+              -u GIT_HTTP_PROXY -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy -u GIT_EXEC_PATH \
+              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=https GIT_TERMINAL_PROMPT=0 \
+              git -C "$root" -c credential.helper= -c core.hooksPath=/dev/null -c http.sslVerify=true \
+                -c http.followRedirects=false -c protocol.allow=never -c protocol.https.allow=always \
+                -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" fetch --no-tags "$url" \
+                "$beta_ref:refs/remotes/xsec-batch/beta" "$stable_ref:refs/remotes/xsec-batch/main"
+            beta_sha="$(git -C "$root" rev-parse refs/remotes/xsec-batch/beta)"
+            main_sha="$(git -C "$root" rev-parse refs/remotes/xsec-batch/main)"
+            [[ "$beta_sha" =~ ^[a-f0-9]{40}$ && "$main_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Source heads are invalid for ${plugin_id}." >&2; exit 1; }
+            git -C "$root" -c core.hooksPath=/dev/null checkout --detach --quiet "$beta_sha"
+            git -C "$root" -c core.hooksPath=/dev/null worktree add --detach "$root-main" refs/remotes/xsec-batch/main
+            python scripts/external_source_factory.py prepare --plugin-id "$plugin_id" --channel beta --source-sha "$beta_sha" >/dev/null
+            python scripts/external_source_factory.py stage-beta --plugin-id "$plugin_id" --source-root "$root" >/dev/null
+            jq -cn --arg plugin_id "$plugin_id" --arg beta_sha "$beta_sha" --arg main_sha "$main_sha" --arg root "$root" \
+              '{plugin_id:$plugin_id,beta_sha:$beta_sha,main_sha:$main_sha,source_root:$root}' >> "$records"
+          done < <(printf '%s' "$BATCH" | jq -rc '.[]')
+          unset token_header
+          jq -ces . "$records" > "$RUNNER_TEMP/xsec-marketplace-batch-sources.json"
+          echo "records=$RUNNER_TEMP/xsec-marketplace-batch-sources.json" >> "$GITHUB_OUTPUT"
+      - name: Build immutable releases and bind the exact source batch
+        env:
+          RECORDS: ${{ steps.sources.outputs.records }}
+          DELIVERY_KEY: ${{ inputs.delivery_key }}
+        run: |
+          set -euo pipefail
+          python scripts/build_market.py --clean
+          while IFS= read -r item; do
+            plugin_id="$(printf '%s' "$item" | jq -er .plugin_id)"
+            beta_sha="$(printf '%s' "$item" | jq -er .beta_sha)"
+            main_sha="$(printf '%s' "$item" | jq -er .main_sha)"
+            source_root="$(printf '%s' "$item" | jq -er .source_root)"
+            python scripts/external_source_factory.py record-beta --plugin-id "$plugin_id" --source-sha "$beta_sha" --publisher xsec-marketplace-bot >/dev/null
+            gate="$(python scripts/external_source_factory.py --json check-main-rebuild --plugin-id "$plugin_id" --source-root "${source_root}-main")"
+            state="$(printf '%s' "$gate" | jq -er .state)"
+            python scripts/external_source_factory.py record-status --plugin-id "$plugin_id" --beta-sha "$beta_sha" \
+              --main-gate-sha "$main_sha" --state "$state" --delivery-id "batch-${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" \
+              --factory-run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
+          done < <(jq -rc '.[]' "$RECORDS")
+      - name: Skip an unchanged current batch
+        id: decision
+        run: |
+          set -euo pipefail
+          changed="$(git status --porcelain --untracked-files=all -- .agents/plugins .xsec-factory | rg -v '\.sig\.jws\.json$' || true)"
+          if [ -n "$changed" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            git restore --source=HEAD --worktree -- .agents/plugins .xsec-factory
+            test -z "$(git status --porcelain --untracked-files=all)" || { echo "Batch no-op left unexpected files." >&2; exit 1; }
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Remove only sidecars made stale by this immutable batch
+        if: ${{ steps.decision.outputs.publish == 'true' }}
+        run: |
+          set -euo pipefail
+          documents=(.agents/plugins/marketplace.json .xsec-factory/snapshots/*/.xsec-market/releases.json)
+          for document in "${documents[@]}"; do
+            [ -f "$document" ] || continue
+            git diff --quiet -- "$document" && continue
+            sidecar="${document}.sig.jws.json"
+            [ ! -L "$sidecar" ] || { echo "Marketplace sidecar may not be a symbolic link." >&2; exit 1; }
+            rm -f -- "$sidecar"
+          done
+      - name: Validate and sign the complete immutable Factory candidate
+        if: ${{ steps.decision.outputs.publish == 'true' }}
+        env:
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+          python scripts/validate_market.py source --source-root . --built-root .
+          python scripts/external_source_factory.py validate --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
+          python scripts/kms_marketplace_publisher.py --root .
+          python scripts/kms_marketplace_publisher.py --root . --validate-only
+          python scripts/external_source_factory.py validate
+      - name: Create one signed generated Factory PR
+        if: ${{ steps.decision.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          DELIVERY_KEY: ${{ inputs.delivery_key }}
+          EVENT_PLUGIN_ID: ${{ inputs.event_plugin_id }}
+        run: |
+          set -euo pipefail
+          [ -n "$GH_TOKEN" ] || { echo "XSEC_MARKETPLACE_PUBLISH_TOKEN is not configured." >&2; exit 1; }
+          git add -A .agents/plugins .xsec-factory
+          git diff --cached --quiet && { echo "Current batch was not staged." >&2; exit 1; }
+          git config user.name "xsec-marketplace[bot]"
+          git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
+          git commit -m "chore: synchronize current Marketplace source batch"
+          branch="xsec-marketplace/batch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch"
+          git push --set-upstream origin "$branch"
+          body="Generated from Cloud delivery ${DELIVERY_KEY} after reading all ten active Registry source heads. This PR contains one immutable, fully KMS-signed Factory batch. It is automatically source-gated and final-merged only while every recorded beta/main ref remains exact. Trigger plugin: ${EVENT_PLUGIN_ID}."
+          gh pr create --base main --head "$branch" --title "chore: synchronize Marketplace source batch" --body "$body"

@@ -1,0 +1,38 @@
+name: First-party source preflight
+
+on:
+  workflow_call:
+    inputs:
+      plugin_id:
+        description: Registered first-party plugin ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: source-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate the registered source manifest, release identity, and whitespace
+        env:
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PLUGIN_ID" =~ ^com\.xsec\.[a-z0-9.-]+$ ]] || { echo "plugin_id is not a first-party XSEC identifier." >&2; exit 1; }
+          manifest="plugins/${PLUGIN_ID}/plugin.json"
+          [ -f "$manifest" ] || { echo "Registered source manifest is missing." >&2; exit 1; }
+          node --input-type=module - "$manifest" "$PLUGIN_ID" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [manifestPath, expectedId] = process.argv.slice(2);
+          const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+          if (manifest.name !== expectedId || typeof manifest.version !== "string" || !manifest.version) process.exit(1);
+          const desktop = manifest.extensions?.["com.xsec.desktop"];
+          if (!desktop || typeof desktop !== "object" || !desktop.engines || typeof desktop.engines !== "object") process.exit(1);
+          NODE
+          git diff --check HEAD^
