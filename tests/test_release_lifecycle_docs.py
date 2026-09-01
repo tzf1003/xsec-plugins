@@ -270,6 +270,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
                     guard = workflow[guard_start:guard_end]
                     self.assertIn('/.xsec-market/releases.json', guard)
                     self.assertNotIn('/.xsec-market/releases.json.sig.jws.json', guard)
+                    self.assertNotIn('.xsec-factory/official-publication-proofs/', guard)
+                    self.assertNotIn('.xsec-factory/official-status-proofs/', guard)
                 else:
                     self.assertIn('select(startswith("xsec-marketplace/"))', workflow)
 

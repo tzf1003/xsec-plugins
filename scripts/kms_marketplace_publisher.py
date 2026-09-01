@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from functools import cache
 import hashlib
 import json
 import os
@@ -625,7 +626,7 @@ def validate_historical_sidecar(
     return source_revision
 
 
-def download_pinned_issuer_jwks() -> bytes:
+def _download_pinned_issuer_jwks() -> bytes:
     """Fetch only the fixed official Marketplace issuer JWKS, without redirects."""
 
     request = Request(PINNED_KMS_JWKS_URL, headers={"Accept": "application/json"})
@@ -643,6 +644,13 @@ def download_pinned_issuer_jwks() -> bytes:
     if not payload:
         fail("pinned KMS issuer JWKS is empty")
     return payload
+
+
+@cache
+def download_pinned_issuer_jwks() -> bytes:
+    """Use one immutable issuer-key snapshot for the current verifier process."""
+
+    return _download_pinned_issuer_jwks()
 
 
 def pinned_issuer_ed25519_key(jwks_bytes: bytes, kid: str) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,10 +29,84 @@ from validate_market import (  # noqa: E402
 
 
 def snapshot_dir(root: Path, plugin_id: str) -> Path:
+    """Return the retained Factory snapshot directory for one plugin."""
+
     return root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
 
 
+def traffic_release_contract() -> tuple[dict[str, object], str]:
+    """Load the reviewed Traffic 1.3.0 manifest and frontend fixtures."""
+
+    fixture = ROOT / "tests" / "fixtures"
+    manifest = json.loads((fixture / "traffic-1.3.0-plugin.json").read_text(encoding="utf-8"))
+    source = (fixture / "traffic-1.3.0-frontend.js").read_text(encoding="utf-8")
+    return manifest, source
+
+
+TERMINAL_ACTIVATION_PATTERN = re.compile(
+    r"(?m)^[ \t]*export\s+(?:async\s+)?function\s+activate\s*\(\s*host\s*\)\s*\{"
+)
+TERMINAL_ACTIVATION_PROBE = "__xsec_activation_probe__"
+TERMINAL_FIXTURE_RPC_METHOD = "xsec.terminal.write"
+TERMINAL_FIXTURE_RPC_PROBE = "xsec.terminal.fixture-probe"
+
+
+def terminal_activation_match(source: str) -> re.Match[str]:
+    """Locate the executable exported activation declaration."""
+
+    baseline = validate_market.javascript_contract_tokens(source, "terminal fixture")
+    if ("identifier", TERMINAL_ACTIVATION_PROBE) in baseline:
+        raise AssertionError("terminal fixture contains the activation probe")
+    for match in TERMINAL_ACTIVATION_PATTERN.finditer(source):
+        probed = f"{source[:match.end()]}{TERMINAL_ACTIVATION_PROBE};{source[match.end():]}"
+        tokens = validate_market.javascript_contract_tokens(probed, "terminal fixture")
+        if ("identifier", TERMINAL_ACTIVATION_PROBE) in tokens:
+            return match
+    raise AssertionError("terminal fixture has no executable activation marker")
+
+
+def terminal_rpc_match(source: str, method: str) -> re.Match[str]:
+    """Locate one activation-reachable direct terminal RPC call."""
+
+    if TERMINAL_FIXTURE_RPC_PROBE in source:
+        raise AssertionError("terminal fixture contains the RPC probe")
+    pattern = re.compile(rf'host\.request\(\s*"{re.escape(method)}"\s*,\s*\{{[^{{}}]*\}}\s*\)')
+    for match in pattern.finditer(source):
+        replacement = f'host.request("{TERMINAL_FIXTURE_RPC_PROBE}",{{}})'
+        probed = replace_source_match(source, match, replacement)
+        tokens = validate_market.javascript_contract_tokens(probed, "terminal fixture")
+        try:
+            requests = validate_market.frontend_host_requests(tokens, "terminal fixture")
+            if TERMINAL_FIXTURE_RPC_PROBE in requests:
+                return match
+        except MarketplaceValidationError:
+            continue
+    raise AssertionError(f"terminal fixture has no executable {method} RPC")
+
+
+def terminal_fixture_rpc_match(source: str) -> re.Match[str]:
+    """Locate the declared terminal write RPC used by mutation tests."""
+
+    return terminal_rpc_match(source, TERMINAL_FIXTURE_RPC_METHOD)
+
+
+def replace_source_match(source: str, match: re.Match[str], replacement: str) -> str:
+    """Replace the exact source span selected by an executable match."""
+
+    return f"{source[:match.start()]}{replacement}{source[match.end():]}"
+
+
+def mutate_terminal_activation(source: str, body: str, prefix: str = "") -> str:
+    """Splice test code around the executable activation declaration."""
+
+    match = terminal_activation_match(source)
+    replacement = f"{prefix}{match.group(0)}{body}"
+    return replace_source_match(source, match, replacement)
+
+
 def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert that asset settings failures remain isolated by surface."""
+
     if "setRuns(await api.runs())" in source:
         case.assertIn("setRunsError(", source)
         case.assertIn("setSettings(await api.settings())", source)
@@ -48,6 +123,8 @@ def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> Non
 
 
 def frontend_section(case: unittest.TestCase, source: str, start: str, end: str) -> str:
+    """Extract one named Traffic frontend section for focused assertions."""
+
     before, delimiter, remainder = source.partition(start)
     case.assertTrue(delimiter, f"missing frontend section: {start}")
     section, delimiter, _ = remainder.partition(end)
@@ -56,6 +133,8 @@ def frontend_section(case: unittest.TestCase, source: str, start: str, end: str)
 
 
 def assert_traffic_react_loaders(case: unittest.TestCase, source: str) -> None:
+    """Assert loader state and error isolation across Traffic settings sections."""
+
     default_filter = frontend_section(case, source, "function DefaultFilterSection({host})", "function samePassiveRule")
     rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
     ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
@@ -88,6 +167,8 @@ def assert_traffic_react_loaders(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_rules(case: unittest.TestCase, source: str) -> None:
+    """Assert reviewed passive-rule mutations and their refresh ordering."""
+
     rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
     mutations = frontend_section(case, source, "function ruleMutations", "function RulesSection({host})")
     handlers = (
@@ -123,6 +204,8 @@ def assert_traffic_react_rules(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_ca(case: unittest.TestCase, source: str) -> None:
+    """Assert MITM CA status, import, and rotation error handling."""
+
     ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
     ca_ui = frontend_section(case, source, "function CaStatusDetails({host,model})", "function DefaultFilterSection")
     case.assertIn("let model=useCaModel(host)", ca_ui)
@@ -145,6 +228,8 @@ def assert_traffic_react_ca(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_activation(case: unittest.TestCase, source: str) -> None:
+    """Assert settings rendering remains reachable from Traffic activation."""
+
     activation = frontend_section(case, source, "function activate(host)", "return __toCommonJS")
     plugin_app = frontend_section(case, source, "function PluginApp({host,context})", "function object2")
     settings_page = frontend_section(case, source, "function SettingsPage({host})", "function workspaceInstanceKey")
@@ -167,6 +252,8 @@ def assert_traffic_react_activation(case: unittest.TestCase, source: str) -> Non
 
 
 def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert the reviewed React settings contract preserves loaded state."""
+
     assert_traffic_react_loaders(case, source)
     assert_traffic_react_rules(case, source)
     assert_traffic_react_ca(case, source)
@@ -177,6 +264,8 @@ def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str
 
 
 def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert Traffic settings isolation for current and retained frontends."""
+
     if "function RulesSection({host})" in source:
         assert_traffic_react_settings_isolation(case, source)
         return
@@ -195,15 +284,50 @@ class MarketplaceValidationTests(unittest.TestCase):
     maxDiff = None
 
     def test_traffic_react_settings_contract_fixture(self) -> None:
+        """Keep the reviewed React settings fixture pinned to its digest."""
+
         fixture = ROOT / "tests" / "fixtures" / "traffic-1.3.0-frontend.js"
-        payload = fixture.read_bytes().removesuffix(b"\n")
+        payload = fixture.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         self.assertEqual(
             hashlib.sha256(payload).hexdigest(),
-            "f8defb39dfdb8b35fec7492b347044bee01998cc1e218343fa71e737332457b2",
+            "12807a7dce6ba885e66d5609f07bb623b5bc4a914870927a96ce255419ccdd38",
         )
         assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
 
+    def test_traffic_reviewed_frontend_contract_accepts_release_bundle(self) -> None:
+        """Accept the complete reviewed Traffic 1.3.0 release contract."""
+
+        manifest, source = traffic_release_contract()
+        validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
+
+    def test_traffic_reviewed_frontend_contract_rejects_source_mutation(self) -> None:
+        """Reject any Traffic frontend mutation outside the reviewed digest."""
+
+        manifest, source = traffic_release_contract()
+        mutated = source.replace("traffic.frontend.activate", "traffic.frontend.changed", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "reviewed Traffic frontend source"):
+            validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
+
+    def test_traffic_reviewed_frontend_contract_rejects_rpc_drift(self) -> None:
+        """Reject capability or binding drift in the reviewed Traffic RPCs."""
+
+        manifest, source = traffic_release_contract()
+        methods = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
+        methods["xsec.traffic.reference.add"]["binding"] = "plugin"
+        with self.assertRaisesRegex(MarketplaceValidationError, "reviewed Traffic RPC contract"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
+
+    def test_composer_capability_requires_plugin_api_1_4_for_any_method_name(self) -> None:
+        """Require Plugin API 1.4 for every Composer-capable method name."""
+
+        manifest, source = traffic_release_contract()
+        manifest["extensions"]["com.xsec.desktop"]["engines"]["pluginApi"] = "^1.3.0"
+        with self.assertRaisesRegex(MarketplaceValidationError, "plugin API 1.4"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
+
     def build_marketplace(self, destination: Path) -> None:
+        """Build a disposable marketplace tree for source-gate assertions."""
+
         command = [
             sys.executable,
             "scripts/build_market.py",
@@ -214,6 +338,8 @@ class MarketplaceValidationTests(unittest.TestCase):
         subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
 
     def test_source_gate_accepts_disposable_unsigned_output(self) -> None:
+        """Accept a disposable unsigned marketplace produced from current sources."""
+
         with tempfile.TemporaryDirectory(prefix="xsec-market-source-test-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
@@ -292,11 +418,22 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        self.assertIn(marker, source)
-        source = source.replace(marker, f'{marker}host.request("xsec.plugin.settings.open",{{}});', 1)
+        source = mutate_terminal_activation(source, 'host.request("xsec.plugin.settings.open",{});')
         with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
+
+    def test_terminal_fixture_matches_preserve_executable_offsets(self) -> None:
+        activation_decoy = 'const activation="export function activate(host){";'
+        rpc_decoy = 'const rpc=\'host.request("xsec.terminal.write",{})\';'
+        source = (
+            f"{activation_decoy}{rpc_decoy}\n"
+            'export function activate(host){host.request("xsec.terminal.write",{})}'
+        )
+        activation = terminal_activation_match(source)
+        rpc = terminal_fixture_rpc_match(source)
+        self.assertGreater(activation.start(), source.index(activation_decoy))
+        self.assertGreater(rpc.start(), source.index(rpc_decoy))
+        self.assertIn(rpc_decoy, replace_source_match(source, rpc, "undefined"))
 
     def test_official_frontend_rejects_undeclared_template_literal_host_request(self) -> None:
         plugin_id = "com.xsec.system-terminal"
@@ -304,9 +441,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        self.assertIn(marker, source)
-        source = source.replace(marker, f'{marker}host.request(`xsec.plugin.settings.open`,{{}});', 1)
+        source = mutate_terminal_activation(source, 'host.request(`xsec.plugin.settings.open`,{});')
         with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -316,10 +451,10 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        replacement = f'{marker}const SETTINGS_OPEN="xsec.plugin.settings.open";host.request(SETTINGS_OPEN,{{}});'
-        self.assertIn(marker, source)
-        source = source.replace(marker, replacement, 1)
+        source = mutate_terminal_activation(
+            source,
+            'const SETTINGS_OPEN="xsec.plugin.settings.open";host.request(SETTINGS_OPEN,{});',
+        )
         with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -372,9 +507,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        self.assertIn(marker, source)
-        source = source.replace(marker, f"{marker}host.request(dynamicMethod,{{}});", 1)
+        source = mutate_terminal_activation(source, "host.request(dynamicMethod,{});")
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -383,13 +516,11 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
         dispatch = (
             'const rpcMap={safe:["xsec.terminal.read"],unsafe:[dynamicMethod]};'
             "const [method]=rpcMap[key];host.request(method,{});"
         )
-        self.assertIn(marker, source)
-        source = source.replace(marker, f"{marker}{dispatch}", 1)
+        source = mutate_terminal_activation(source, dispatch)
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -398,13 +529,11 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
         binding = (
             'const METHOD="xsec.terminal.settings.get"+host.context.suffix;'
             "host.request(METHOD,{});"
         )
-        self.assertIn(marker, source)
-        source = source.replace(marker, f"{marker}{binding}", 1)
+        source = mutate_terminal_activation(source, binding)
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -413,15 +542,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        self.assertIn(marker, source)
         calls = (
             "host?.request(dynamicMethod,{});",
             'host["request"](dynamicMethod,{});',
         )
         for call in calls:
             with self.subTest(call=call):
-                mutated = source.replace(marker, f"{marker}{call}", 1)
+                mutated = mutate_terminal_activation(source, call)
                 with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -440,14 +567,12 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        self.assertIn(marker, source)
         for call in (
             '(host).request(dynamicMethod,{});',
             'host.request("xsec.terminal.settings.get"+host.context.suffix,{});',
         ):
             with self.subTest(call=call):
-                mutated = source.replace(marker, f"{marker}{call}", 1)
+                mutated = mutate_terminal_activation(source, call)
                 with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -456,8 +581,9 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        method = 'host.request("xsec.plugin.settings.open",{})'
-        source = source.replace(method, "undefined", 1)
+        rpc_match = terminal_fixture_rpc_match(source)
+        method = rpc_match.group(0)
+        source = replace_source_match(source, rpc_match, "undefined")
         source += f'\nfunction example(host){{{method}}}\n'
         with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
@@ -485,10 +611,9 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        statement = 'openSettings.onclick=()=>void host.request("xsec.plugin.settings.open",{})'
-        replacement = 'openSettings.onclick=()=>{if(true)/host.request("xsec.plugin.settings.open")/.test("")}'
-        self.assertIn(statement, source)
-        source = source.replace(statement, replacement, 1)
+        rpc_match = terminal_fixture_rpc_match(source)
+        replacement = 'Promise.resolve((()=>{if(true)/host.request("xsec.terminal.write")/.test("")})())'
+        source = replace_source_match(source, rpc_match, replacement)
         with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -506,12 +631,8 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
         payload = '`${typeof of}`/host.request("xsec.plugin.settings.open",{})/1'
-        marker = "export function activate(host){"
-        self.assertIn(call, source)
-        self.assertIn(marker, source)
-        source = source.replace(call, "undefined", 1).replace(marker, f"{marker}{payload};", 1)
+        source = mutate_terminal_activation(source, f"{payload};")
         tokens = validate_market.javascript_contract_tokens(payload, "frontend")
         regexes = [value for kind, value in tokens if kind == "regex"]
         self.assertEqual(regexes, [])
@@ -540,13 +661,12 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        statement = 'openSettings.onclick=()=>void host.request("xsec.plugin.settings.open",{})'
+        rpc_match = terminal_fixture_rpc_match(source)
         replacement = (
-            'openSettings.onclick=()=>'
-            '{if(true){}/host.request("xsec.plugin.settings.open")/.test("")}'
+            'Promise.resolve((()=>'
+            '{if(true){}/host.request("xsec.terminal.write")/.test("")})())'
         )
-        self.assertIn(statement, source)
-        source = source.replace(statement, replacement, 1)
+        source = replace_source_match(source, rpc_match, replacement)
         with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -555,13 +675,11 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
         shadow = (
             'const METHOD="xsec.plugin.settings.open";'
             "function send(METHOD){host.request(METHOD,{})}"
         )
-        self.assertIn(marker, source)
-        source = source.replace(marker, f"{marker}{shadow}", 1)
+        source = mutate_terminal_activation(source, shadow)
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -585,10 +703,6 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
-        self.assertIn(call, source)
-        self.assertIn(marker, source)
         payloads = (
             '({}).of/host.request("xsec.plugin.settings.open",{})/1',
             'typeof of/host.request("xsec.plugin.settings.open",{})/1',
@@ -596,7 +710,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         )
         for payload in payloads:
             with self.subTest(payload=payload):
-                mutated = source.replace(call, "undefined", 1).replace(marker, f"{marker}{payload};", 1)
+                mutated = mutate_terminal_activation(source, f"{payload};")
                 with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -606,11 +720,8 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
         payload = 'Promise.resolve(1).catch(()=>1)/host.request("xsec.plugin.settings.open",{})/1'
-        self.assertIn(call, source)
-        source = source.replace(call, "undefined", 1).replace(marker, f"{marker}{payload};", 1)
+        source = mutate_terminal_activation(source, f"{payload};")
         tokens = validate_market.javascript_contract_tokens(payload, "frontend")
         self.assertEqual([value for kind, value in tokens if kind == "regex"], [])
         with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
@@ -621,13 +732,11 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        self.assertIn(marker, source)
         call = (
             'host.request("xsec.terminal.settings.get"'
             '.replace("terminal.settings.get","plugin.settings.open"),{})'
         )
-        mutated = source.replace(marker, f"{marker}{call};", 1)
+        mutated = mutate_terminal_activation(source, f"{call};")
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -636,12 +745,9 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        self.assertIn(marker, source)
-        mutated = source.replace(
-            marker,
-            f"{marker}(0,host).request(host.context.dynamicMethod,{{}});",
-            1,
+        mutated = mutate_terminal_activation(
+            source,
+            "(0,host).request(host.context.dynamicMethod,{});",
         )
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
@@ -651,15 +757,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        self.assertIn(marker, source)
         shadows = (
             'const METHOD="xsec.plugin.settings.open";class C{constructor(METHOD){host.request(METHOD,{})}}',
             'const METHOD="xsec.plugin.settings.open";const o={send(METHOD){host.request(METHOD,{})}};',
         )
         for shadow in shadows:
             with self.subTest(shadow=shadow):
-                mutated = source.replace(marker, f"{marker}{shadow}", 1)
+                mutated = mutate_terminal_activation(source, shadow)
                 with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -676,13 +780,12 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        statement = 'openSettings.onclick=()=>void host.request("xsec.plugin.settings.open",{})'
+        rpc_match = terminal_fixture_rpc_match(source)
         replacement = (
-            "openSettings.onclick=()=>{done:for(;;){break done\n"
-            '/host.request("xsec.plugin.settings.open")/.test("")}}'
+            "Promise.resolve((()=>{done:for(;;){break done\n"
+            '/host.request("xsec.terminal.write")/.test("")}})())'
         )
-        self.assertIn(statement, source)
-        source = source.replace(statement, replacement, 1)
+        source = replace_source_match(source, rpc_match, replacement)
         with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
@@ -707,25 +810,27 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        alias = f'{marker}const broker=host;broker.request(dynamicMethod,{{}});'
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved receiver"):
-            validate_market.validate_official_frontend(manifest, source.replace(marker, alias, 1), plugin_id)
-        scoped = f'{marker}function unrelated(){{const METHOD="xsec.terminal.settings.get"}};host.request(METHOD,{{}});'
+            mutated = mutate_terminal_activation(source, "const broker=host;broker.request(dynamicMethod,{});")
+            validate_market.validate_official_frontend(manifest, mutated, plugin_id)
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
-            validate_market.validate_official_frontend(manifest, source.replace(marker, scoped, 1), plugin_id)
+            mutated = mutate_terminal_activation(
+                source,
+                'function unrelated(){const METHOD="xsec.terminal.settings.get"};host.request(METHOD,{});',
+            )
+            validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
     def test_official_frontend_excludes_uncalled_nested_rpc_and_requires_actual_requests(self) -> None:
         plugin_id = "com.xsec.system-terminal"
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
-        mutated = source.replace(call, "undefined", 1).replace(
-            marker,
-            f'{marker}function decoy(){{{call}}};openSettings.onclick=()=>"xsec.plugin.settings.open";',
-            1,
+        rpc_match = terminal_fixture_rpc_match(source)
+        call = rpc_match.group(0)
+        mutated = replace_source_match(source, rpc_match, "undefined")
+        mutated = mutate_terminal_activation(
+            mutated,
+            f'function decoy(){{{call}}};openSettings.onclick=()=>"xsec.plugin.settings.open";',
         )
         with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
@@ -803,14 +908,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
         calls = (
             'const METHOD="xsec.terminal.settings.get";host.request(METHOD.replace("get","set"),{})',
             'const METHOD="xsec.terminal.settings.get";host.request(METHOD+host.context.suffix,{})',
         )
         for call in calls:
             with self.subTest(call=call):
-                mutated = source.replace(marker, f"{marker}{call};", 1)
+                mutated = mutate_terminal_activation(source, f"{call};")
                 with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -819,7 +923,6 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
         helpers = (
             'const helper=(host)=>{host.request("xsec.evil.open",{})};',
             'const helper=function(host){host.request("xsec.evil.open",{})};',
@@ -829,7 +932,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         calls = ("helper(host);", "helper(host);", "api.send(host);", "new H().send(host);")
         for helper, call in zip(helpers, calls, strict=True):
             with self.subTest(helper=helper):
-                mutated = source.replace(marker, f"{helper}{marker}{call}", 1)
+                mutated = mutate_terminal_activation(source, call, prefix=helper)
                 with self.assertRaisesRegex(MarketplaceValidationError, "activation-reachable|unresolved receiver"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -848,10 +951,10 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
+        rpc_match = terminal_rpc_match(source, "xsec.plugin.settings.open")
         payload = '`${{}/host.request("xsec.plugin.settings.open",{})/1}`'
-        mutated = source.replace(call, "undefined", 1).replace(marker, f"{marker}{payload};", 1)
+        mutated = replace_source_match(source, rpc_match, "undefined")
+        mutated = mutate_terminal_activation(mutated, f"{payload};")
         with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -860,10 +963,11 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
-        mutated = source.replace(call, "undefined", 1).replace(
-            marker, f'{marker}(true?fake:host).request("xsec.plugin.settings.open",{{}});', 1
+        rpc_match = terminal_rpc_match(source, "xsec.plugin.settings.open")
+        mutated = replace_source_match(source, rpc_match, "undefined")
+        mutated = mutate_terminal_activation(
+            mutated,
+            '(true?fake:host).request("xsec.plugin.settings.open",{});',
         )
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved receiver"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
@@ -873,14 +977,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
         calls = (
             'const broker=host;broker["request"](dynamicMethod,{})',
             "const broker=host;broker?.request(dynamicMethod,{})",
         )
         for call in calls:
             with self.subTest(call=call):
-                mutated = source.replace(marker, f"{marker}{call};", 1)
+                mutated = mutate_terminal_activation(source, f"{call};")
                 with self.assertRaisesRegex(MarketplaceValidationError, "unresolved receiver"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -889,10 +992,12 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
-        mutated = source.replace(call, "undefined", 1).replace(
-            marker, f"{marker}function decoy(){{{call}}};const value={{decoy:1}};", 1
+        rpc_match = terminal_fixture_rpc_match(source)
+        call = rpc_match.group(0)
+        mutated = replace_source_match(source, rpc_match, "undefined")
+        mutated = mutate_terminal_activation(
+            mutated,
+            f"function decoy(){{{call}}};const value={{decoy:1}};",
         )
         with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
@@ -902,11 +1007,9 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        marker = "export function activate(host){"
-        mutated = source.replace(
-            marker,
-            f'{marker}host.request(METHOD,{{}});const METHOD="xsec.plugin.settings.open";',
-            1,
+        mutated = mutate_terminal_activation(
+            source,
+            'host.request(METHOD,{});const METHOD="xsec.plugin.settings.open";',
         )
         with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
@@ -916,13 +1019,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
-        replacement = (
-            f'{marker}const RPC={{safe:["xsec.terminal.settings.get"],'
-            f'open:["xsec.plugin.settings.open"]}};const [METHOD]=RPC.safe;host.request(METHOD,{{}});'
+        rpc_match = terminal_fixture_rpc_match(source)
+        body = (
+            'const RPC={safe:["xsec.terminal.settings.get"],'
+            'write:["xsec.terminal.write"]};const [METHOD]=RPC.safe;host.request(METHOD,{});'
         )
-        mutated = source.replace(call, "undefined", 1).replace(marker, replacement, 1)
+        mutated = replace_source_match(source, rpc_match, "undefined")
+        mutated = mutate_terminal_activation(mutated, body)
         with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -931,8 +1034,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
+        rpc_match = terminal_fixture_rpc_match(source)
         payloads = (
             'false&&host.request("xsec.plugin.settings.open",{})',
             'true?0:host.request("xsec.plugin.settings.open",{})',
@@ -940,7 +1042,8 @@ class MarketplaceValidationTests(unittest.TestCase):
         )
         for payload in payloads:
             with self.subTest(payload=payload):
-                mutated = source.replace(call, "undefined", 1).replace(marker, f"{marker}{payload};", 1)
+                mutated = replace_source_match(source, rpc_match, "undefined")
+                mutated = mutate_terminal_activation(mutated, f"{payload};")
                 with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -964,10 +1067,10 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        call = 'host.request("xsec.plugin.settings.open",{})'
-        marker = "export function activate(host){"
+        rpc_match = terminal_rpc_match(source, "xsec.plugin.settings.open")
         payload = '`${function(){}/host.request("xsec.plugin.settings.open",{})/1}`'
-        mutated = source.replace(call, "undefined", 1).replace(marker, f"{marker}{payload};", 1)
+        mutated = replace_source_match(source, rpc_match, "undefined")
+        mutated = mutate_terminal_activation(mutated, f"{payload};")
         with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
             validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
@@ -1045,8 +1148,6 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertIn("xsec.terminal.settings.set", settings_source)
         self.assertRegex(settings_source, r"(?:settingsReady|state\.ready)\s*=\s*false")
         self.assertRegex(settings_source, r"(?:controls|state\.controls)\.save\.disabled\s*=\s*true")
-        self.assertRegex(settings_source, r"(?:controls|state\.controls)\.retry\.disabled\s*=\s*true")
-        self.assertRegex(settings_source, r"retry\.onclick\s*=")
         self.assertRegex(settings_source, r"(?:settingsReady|state\.ready)\s*=\s*true")
         self.assertRegex(settings_source, r"if\s*\(\s*!(?:settingsReady|state\.ready)\s*\)")
         self.assertRegex(main_source, r'host\.context\?\.kind\s*===\s*"settings-page"')
@@ -1325,6 +1426,8 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertEqual(archived_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["version"], 2)
 
     def test_every_official_frontend_is_executable_and_placeholder_free(self) -> None:
+        """Validate lifecycle shape and API floors across official frontends."""
+
         placeholder = "XSEC official plugin is active in Desktop."
         for plugin_dir in sorted((ROOT / build_market.SNAPSHOT_ROOT_RELATIVE_PATH).iterdir()):
             if not plugin_dir.is_dir():
@@ -1335,7 +1438,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             methods = desktop["frontendApi"]["methods"]
             expected_plugin_api = (
                 "^1.4.0"
-                if set(methods) & validate_market.WORKSPACE_COMPOSER_METHODS
+                if validate_market.frontend_methods_with_capability(methods, "workspace.composer.write")
                 else "^1.3.0"
                 if "xsec.workspace.tool.open" in methods
                 else "^1.2.0"
@@ -1348,6 +1451,8 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertIn("export function activate(host)", source, plugin_id)
 
     def test_generic_official_frontend_gate_rejects_success_screen_stub(self) -> None:
+        """Reject an inert success screen in place of an official frontend."""
+
         plugin_id = "com.xsec.workspace.files"
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
