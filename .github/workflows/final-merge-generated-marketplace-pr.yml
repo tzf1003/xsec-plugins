@@ -176,6 +176,17 @@ jobs:
             python scripts/external_source_factory.py --root "$CANDIDATE" validate
             result='{"kind":"factory-layout-sidecar-migration","sources":[]}'
             sources='[]'
+          elif [[ "$HEAD_REF" == xsec-marketplace/default-set-* ]]; then
+            result="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" \
+              --before "$BEFORE" --after "$AFTER" --verify-default-set-transition-candidate)"
+            verification="$(python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-active-marketplace-signatures)"
+            source_sha="$(printf '%s' "$verification" | jq -er .source_revision)"
+            git -C "$CANDIDATE" merge-base --is-ancestor "$source_sha" "$AFTER" || {
+              echo "Default-set sidecars are not bound to a retained protected revision." >&2
+              exit 1
+            }
+            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
+            sources='[]'
           elif [[ "$HEAD_REF" == xsec-marketplace/refresh-retained-sidecar-* ]]; then
             # A sidecar repair is a privileged Factory candidate even though
             # it does not move a channel pointer. It must remain pending until
