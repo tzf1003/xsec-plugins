@@ -66,7 +66,7 @@ jobs:
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
           case "$head_branch" in
             xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
-            *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
+            *) echo "eligible=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
           check_runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100")"
           if ! printf '%s' "$check_runs" | jq -e '
@@ -88,9 +88,10 @@ jobs:
                     and .creator.login == "coderabbitai[bot]"
                     and .creator.type == "Bot"
                     and (.created_at | type == "string")
+                    and (.description | type == "string")
                   )
               ]
-              | if length > 0 then .[0].state == "success" else false end
+              | if length > 0 then (.[0].state == "success" and .[0].description == "Review completed") else false end
             )
           ' >/dev/null; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"

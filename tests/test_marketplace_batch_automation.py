@@ -97,6 +97,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
 
         for rule in (
             "name: Rebuild stale generated Marketplace batch",
+            "repository_dispatch:",
+            "types: [xsec-stale-marketplace-batch-rebuild]",
             "branches: [main]",
             "group: xsec-marketplace-stale-batch-recovery",
             "cancel-in-progress: false",
@@ -104,7 +106,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             'test("^xsec-marketplace/batch-[0-9]+-[0-9]+$")',
             "for name in source-gate; do",
             'creator.login == "coderabbitai[bot]"',
-            'if length > 0 then .[0].state == "success"',
+            '.[0].state == "success"',
+            '.[0].description == "Review completed"',
             "reviewThreads(first:100,after:$endCursor)",
             "Verify the signed stale batch as data",
             "--verify-active-marketplace-signatures",
@@ -113,6 +116,11 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "factory-stale-batch:",
             "Close unchanged stale batches replaced by the new candidate",
             'gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${old_number}" -f state=closed',
+            "request-protected-rebuild:",
+            "github.event_name != 'repository_dispatch'",
+            "github.event_name == 'repository_dispatch'",
+            'repos/${GITHUB_REPOSITORY}/dispatches',
+            "event_type=xsec-stale-marketplace-batch-rebuild",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, recovery)
@@ -148,7 +156,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', workflow)
         self.assertIn('creator.login == "coderabbitai[bot]"', workflow)
         self.assertIn('creator.type == "Bot"', workflow)
-        self.assertIn('if length > 0 then .[0].state == "success"', workflow)
+        self.assertIn('.[0].state == "success"', workflow)
+        self.assertIn('.[0].description == "Review completed"', workflow)
         self.assertNotIn('sort_by(.created_at)', workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertIn("gh api graphql --paginate --slurp", workflow)
@@ -161,6 +170,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('.name == "source-freshness-gate"', workflow)
         self.assertIn("expected at most one open exact-head generated PR", workflow)
         self.assertIn('($branch == "" or .head.ref == $branch)', workflow)
+        self.assertIn('*) echo "eligible=false" >> "$GITHUB_OUTPUT"; exit 0 ;;', workflow)
         self.assertNotIn("final-revalidate-and-merge:", workflow)
         self.assertNotIn("coderabbit_status_verified", workflow)
         self.assertIn("workflows: [Automatically finalize generated Marketplace PR]", selected_finalizer)
@@ -174,7 +184,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('commits/${head_sha}/statuses?per_page=100', selected_finalizer)
         self.assertIn('creator.login == "coderabbitai[bot]"', selected_finalizer)
         self.assertIn('creator.type == "Bot"', selected_finalizer)
-        self.assertIn('if length > 0 then .[0].state == "success"', selected_finalizer)
+        self.assertIn('.[0].state == "success"', selected_finalizer)
+        self.assertIn('.[0].description == "Review completed"', selected_finalizer)
         self.assertNotIn('sort_by(.created_at)', selected_finalizer)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", selected_finalizer)
         self.assertIn("needs.select-exact-generated-pr.result == 'success'", selected_finalizer)
