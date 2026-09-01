@@ -442,6 +442,57 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.assertEqual(result["kind"], "beta")
             self.assertEqual(result["promotions"][0]["source"]["sha"], source_sha)
 
+    def test_classifies_source_only_first_party_beta_beside_a_release_batch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-mixed-batch-source-only-beta-") as directory:
+            root = Path(directory)
+            _, stable, beta = self.make_repository(root, registered=True)
+            registry_path = root / ".xsec-factory/official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"][0]["trustTier"] = "first-party"
+            write_json(registry_path, registry)
+            self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            write_json(root / ".agents/plugins/marketplace.json", marketplace_index(PLUGIN_ID))
+            primary_sidecar = root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json"
+            primary_sidecar.write_text("baseline primary release signature\n", encoding="utf-8")
+            secondary_id = "com.example.secondary"
+            secondary_stable = release("1.0.0", "secondary-stable")
+            secondary_beta = release("1.1.0", "secondary-beta")
+            write_json(
+                root / snapshot_path(secondary_id) / ".xsec-market/releases.json",
+                {"schemaVersion": 2, "pluginId": secondary_id, "releases": [secondary_stable], "channels": {"beta": {"releaseId": secondary_stable["releaseId"]}, "stable": {"releaseId": secondary_stable["releaseId"]}}},
+            )
+            secondary_sidecar = root / snapshot_path(secondary_id) / ".xsec-market/releases.json.sig.jws.json"
+            secondary_sidecar.write_text("baseline secondary release signature\n", encoding="utf-8")
+            before = self.commit_with_gitlink(root, "first-party source-only beta baseline", "b" * 40)
+
+            source_sha = "c" * 40
+            event = {
+                "channel": "beta",
+                "releaseId": beta["releaseId"],
+                "source": {"repository": "example/plugin", "path": f"plugins/{PLUGIN_ID}", "ref": "refs/heads/beta", "sha": source_sha},
+                "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+                "publisher": "factory",
+            }
+            write_json(root / f".xsec-factory/official-publications/{PLUGIN_ID}.json", {"schemaVersion": 1, "pluginId": PLUGIN_ID, "events": [event]})
+            proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            proof.write_text("source-only beta provenance signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(root, beta, beta_sha=source_sha, main_gate_sha="d" * 40)
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
+            primary_sidecar.write_text("refreshed primary release signature\n", encoding="utf-8")
+            write_json(
+                root / snapshot_path(secondary_id) / ".xsec-market/releases.json",
+                {"schemaVersion": 2, "pluginId": secondary_id, "releases": [secondary_stable, secondary_beta], "channels": {"beta": {"releaseId": secondary_beta["releaseId"]}, "stable": {"releaseId": secondary_stable["releaseId"]}}},
+            )
+            secondary_sidecar.write_text("refreshed secondary release signature\n", encoding="utf-8")
+            after = self.commit_with_gitlink(root, "mixed generated beta batch", source_sha)
+
+            result = verifier.classify_merged_change(root, before, after)
+
+            self.assertEqual(result["kind"], "beta")
+            self.assertEqual({record["plugin_id"] for record in result["promotions"]}, {PLUGIN_ID, secondary_id})
+            self.assertEqual(result["promotions"][-1]["source"]["sha"], source_sha)
+
     def test_classifies_no_pointer_registered_beta_when_main_newly_rebuilds_it(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-smoke-ready-") as directory:
             root = Path(directory)
