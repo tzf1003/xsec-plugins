@@ -243,7 +243,7 @@ jobs:
               echo "KMS source revision is not retained by the exact PR head." >&2
               exit 1
             }
-            sources="$(printf '%s' "$result" | jq -c '[.promotions[] | select(.source != null) | .source, (.main_source // empty)]')"
+            sources="$(printf '%s' "$result" | jq -c '[(.promotions // [])[] | select(.source != null) | .source, (.main_source // empty)]')"
           fi
           printf '%s\n' "$result" > "$RUNNER_TEMP/factory-publication.json"
           printf '%s\n' "$sources" > "$RUNNER_TEMP/factory-publication-sources.json"
