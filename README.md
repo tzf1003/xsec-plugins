@@ -186,7 +186,7 @@ bypassed.
 a release sidecar whose KMS envelope no longer matches the *unchanged* retained
 `releases.json` bytes. It is a manual `workflow_dispatch` that accepts one
 current Marketplace plugin ID and is permitted only on protected `main`, in
-the reviewer-gated `production` environment, with the Factory publisher token
+the protected-branch-only `production` environment, with the Factory publisher token
 and GitHub Actions OIDC. It shares the normal publication queue, re-reads
 current protected `main`, validates the immutable release records, artifacts
 and deterministic source build before signing, and asks the Cloud broker to
@@ -257,9 +257,9 @@ current external `main` ref and may merge, but it never dispatches a second
 Desktop smoke.
 
 Run `enforce-factory-main-protection.yml` once from protected `main` after
-installing this code and whenever protection is audited. Its reviewer-gated
-`production` job needs only the repository-scoped administration secret
-`XSEC_MARKETPLACE_ADMIN_TOKEN`; it sets strict, GitHub-Actions-app-pinned
+installing this code and whenever protection is audited. Its protected-branch-only
+`production` job needs the repository-scoped administration secret
+`XSEC_MARKETPLACE_ADMIN_TOKEN` and `XSEC_MARKETPLACE_FINALIZER_APP_ID`; it sets strict, GitHub-Actions-app-pinned
 `source-gate` in classic protection, enforces that check for administrators,
 preserves unrelated protection settings, and requires resolved conversations.
 Before it changes classic protection, it creates and verifies the separate
@@ -272,13 +272,13 @@ no Publisher credential. It creates a short-lived, repository-scoped
 only for the exact-head merge API request. The Finalizer App is distinct from
 the Publisher, has only `contents: write`, and is
 the sole protected-main Ruleset bypass identity for this operation. Missing
-production approval, Finalizer configuration, or a rejected merge leaves the
+production policy, Finalizer configuration, or a rejected merge leaves the
 generated PR pending; repair and re-run the gate—never loosen protection or
 merge it manually.
 Before either the protection or final-merge workflow can proceed, `production`
-must have at least one required reviewer and must not allow administrator
-bypass; both workflows query this server-side and fail closed if either setting
-is absent.
+must accept protected branches only, have no required reviewers, and disallow
+administrator bypass; both workflows query this server-side and fail closed if
+that policy differs.
 The protection workflow normalizes GET-only user/team/app response objects to
 the REST PUT request shape before updating, so existing review dismissals,
 bypass allowances, and branch restrictions are preserved rather than causing a
