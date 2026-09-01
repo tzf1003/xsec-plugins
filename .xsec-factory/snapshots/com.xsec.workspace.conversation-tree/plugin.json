@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "com.xsec.workspace.conversation-tree", "version": "1.2.2",
+  "name": "com.xsec.workspace.conversation-tree", "version": "1.3.2",
   "description": "XSEC conversation-tree workspace tool", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "对话树", "publisher": "XSEC", "icon": "message-circle",
