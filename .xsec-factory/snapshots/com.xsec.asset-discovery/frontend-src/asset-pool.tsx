@@ -54,23 +54,22 @@ export function AssetPool({ api, runs, selectedRunId, onSelectedRunId }: AssetPo
   const projectRequestGeneration = useRef(0);
   latestFilters.current = filters;
 
-  const load = useCallback(async () => {
-    if (latestFilters.current !== filters) return;
+  const load = useCallback(async (requestedFilters = filters) => {
     setLoading(true); setError(undefined); setPage(undefined); setSelected([]);
     try {
-      const next = await api.assets(filters);
-      if (latestFilters.current !== filters) return;
-      const lastPage = Math.max(1, Math.ceil(next.total / filters.pageSize));
-      if (!next.items.length && filters.page > lastPage) {
+      const next = await api.assets(requestedFilters);
+      if (latestFilters.current !== requestedFilters) return;
+      const lastPage = Math.max(1, Math.ceil(next.total / requestedFilters.pageSize));
+      if (!next.items.length && requestedFilters.page > lastPage) {
         setFilters((current) => ({ ...current, page: lastPage }));
         return;
       }
       setPage(next);
       setSelected([]);
     } catch (reason) {
-      if (latestFilters.current === filters) setError(`读取资产池失败：${String(reason)}`);
+      if (latestFilters.current === requestedFilters) setError(`读取资产池失败：${String(reason)}`);
     } finally {
-      if (latestFilters.current === filters) setLoading(false);
+      if (latestFilters.current === requestedFilters) setLoading(false);
     }
   }, [api, filters]);
 
@@ -91,7 +90,7 @@ export function AssetPool({ api, runs, selectedRunId, onSelectedRunId }: AssetPo
   const confirmImport = async () => {
     if (!projectId) { setProjectsError("请选择目标项目。"); return; }
     setMutating(true);
-    try { const result = await api.importAssets(selected, projectId); setImportOpen(false); setProjectId(""); await load(); setNotice(`导入完成：新增 ${result.created}，跳过 ${result.skipped}，失败 ${result.failed}`); } catch (reason) { setProjectsError(`导入失败：${String(reason)}`); } finally { setMutating(false); }
+    try { const result = await api.importAssets(selected, projectId); setImportOpen(false); setProjectId(""); await load(latestFilters.current); setNotice(`导入完成：新增 ${result.created}，跳过 ${result.skipped}，失败 ${result.failed}`); } catch (reason) { setProjectsError(`导入失败：${String(reason)}`); } finally { setMutating(false); }
   };
   const remove = async () => {
     const selectedCount = selected.length;
@@ -100,7 +99,7 @@ export function AssetPool({ api, runs, selectedRunId, onSelectedRunId }: AssetPo
     try {
       const result = await api.deleteAssets(selected);
       setDeleteOpen(false);
-      await load();
+      await load(latestFilters.current);
       console.info("asset-discovery.assets.delete.completed", { selectedCount, deleted: result.deleted });
       setNotice(`已删除 ${result.deleted} 条资产。`);
     } catch (reason) {
