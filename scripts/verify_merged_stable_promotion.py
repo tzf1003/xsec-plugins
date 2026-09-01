@@ -304,10 +304,12 @@ def allowed_paths(
     renewable_sidecars: set[str],
     first_party_gitlink_ids: set[str] | None = None,
     source_only_ids: set[str] | None = None,
+    beta_smoke_ready_ids: set[str] | None = None,
 ) -> None:
     """Permit only the generated Factory surfaces for a signed release PR."""
 
     authenticated_ids = promoted_ids | (source_only_ids or set())
+    authenticated_status_ids = authenticated_ids | (beta_smoke_ready_ids or set())
     for path in paths:
         if path in renewable_sidecars or RELEASE_PATH_PATTERN.fullmatch(path):
             continue
@@ -334,10 +336,10 @@ def allowed_paths(
         if adoption_proof and adoption_proof.group(1) in promoted_ids:
             continue
         status_path = STATUS_PATH_PATTERN.fullmatch(path)
-        if status_path and status_path.group(1) in authenticated_ids:
+        if status_path and status_path.group(1) in authenticated_status_ids:
             continue
         status_proof = STATUS_PROOF_PATTERN.fullmatch(path)
-        if status_proof and status_proof.group(1) in authenticated_ids:
+        if status_proof and status_proof.group(1) in authenticated_status_ids:
             continue
         fail(f"merged {channel} publication changed an unauthorized path: {path}")
 
@@ -710,6 +712,31 @@ def source_only_publication_ids(paths: list[str], promoted_ids: set[str]) -> set
     }
 
 
+def no_pointer_beta_smoke_ids(paths: list[str], authenticated_ids: set[str]) -> set[str]:
+    """Find no-pointer Beta status changes beside independently verified releases."""
+
+    return {
+        match.group(1)
+        for path in paths
+        if (match := STATUS_PATH_PATTERN.fullmatch(path)) and match.group(1) not in authenticated_ids
+    }
+
+
+def beta_smoke_candidate_paths(paths: list[str], plugin_id: str) -> list[str]:
+    """Keep one no-pointer Beta recheck independent from a release batch."""
+
+    shared = {
+        path
+        for path in paths
+        if path == MARKETPLACE_SIDECAR
+        or RELEASE_SIDECAR_PATTERN.fullmatch(path)
+        or PUBLICATION_PROOF_PATTERN.fullmatch(path)
+        or STATUS_PROOF_PATTERN.fullmatch(path)
+    }
+    owned = {f".xsec-factory/official-status/{plugin_id}.json", f"plugins/{plugin_id}"}
+    return [path for path in paths if path in shared or path in owned]
+
+
 def require_merged_publication_paths(root: Path, before: str, after: str) -> tuple[list[str], list[tuple[str, str]]]:
     if not SHA_PATTERN.fullmatch(before) or not SHA_PATTERN.fullmatch(after):
         fail("before and after must be lowercase 40-character Git SHAs")
@@ -796,6 +823,20 @@ def source_only_batch_promotions(
     ]
 
 
+def beta_smoke_batch_promotions(
+    root: Path,
+    before: str,
+    after: str,
+    *,
+    paths: list[str],
+    beta_smoke_ids: set[str],
+) -> list[dict[str, object]]:
+    return [
+        verify_beta_smoke_ready(root, before, after, beta_smoke_candidate_paths(paths, plugin_id))["promotions"][0]
+        for plugin_id in sorted(beta_smoke_ids)
+    ]
+
+
 def verify_merged_publication(root: Path, before: str, after: str, channel: str) -> dict[str, object]:
     if channel not in {"beta", "stable"}:
         fail("channel must be beta or stable")
@@ -803,9 +844,10 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
 
     promoted_ids = {plugin_id for plugin_id, _ in release_paths}
     source_only_ids = source_only_publication_ids(paths, promoted_ids) if channel == "beta" else set()
+    smoke_ready_ids = no_pointer_beta_smoke_ids(paths, promoted_ids | source_only_ids) if channel == "beta" else set()
     first_party_gitlink_ids = {
         plugin_id
-        for plugin_id in promoted_ids | source_only_ids
+        for plugin_id in promoted_ids | source_only_ids | smoke_ready_ids
         if (identity := active_registered_source(root, after, plugin_id=plugin_id)) is not None
         and identity["trust_tier"] == "first-party"
     }
@@ -816,12 +858,14 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         renewable_sidecars=renewable_sidecars(root, promoted_ids),
         first_party_gitlink_ids=first_party_gitlink_ids,
         source_only_ids=source_only_ids,
+        beta_smoke_ready_ids=smoke_ready_ids,
     )
     promoted = [
         authenticated_release_record(root, before, after, channel=channel, plugin_id=plugin_id, release_path=release_path, paths=paths)
         for plugin_id, release_path in release_paths
     ]
     promoted.extend(source_only_batch_promotions(root, before, after, paths=paths, source_only_ids=source_only_ids))
+    promoted.extend(beta_smoke_batch_promotions(root, before, after, paths=paths, beta_smoke_ids=smoke_ready_ids))
     if channel == "stable" and not promoted:
         fail("merged Stable promotion must change at least one releases.json document")
     return {"kind": channel, "promotions": promoted}
