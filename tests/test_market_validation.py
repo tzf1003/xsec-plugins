@@ -1272,7 +1272,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             frontend = snapshot_dir(ROOT, plugin_id) / "com.xsec.desktop" / "frontend" / "index.js"
             settings_source = frontend.read_text(encoding="utf-8")
             self.assertRegex(settings_source, r"settingsReady\s*=\s*false", plugin_id)
-            self.assertRegex(settings_source, r"if\s*\(!settingsReady\)", plugin_id)
+            self.assertRegex(settings_source, r"if\s*\(!(?:this\.)?settingsReady\)", plugin_id)
             self.assertRegex(settings_source, r"\bretry(?:Button)?\.onclick", plugin_id)
             self.assertRegex(settings_source, r"\.disabled\s*=\s*true", plugin_id)
 
