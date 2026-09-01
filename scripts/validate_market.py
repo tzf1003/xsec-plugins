@@ -390,6 +390,10 @@ def javascript_statement_brace_closed(
         # starts an object literal.  Treating it as a statement block would
         # let `${{}/host.request(...)/1}` swallow the call as a regex.
         return not expression_context
+    if expression_context:
+        # Function/class expressions such as `${function(){}/...}` close an
+        # expression, not a statement.  Their `}` must not start a regex.
+        return False
     previous = tokens[opening - 1]
     if previous[1] in STATEMENT_BOUNDARY_PUNCTUATION:
         return True
@@ -408,6 +412,17 @@ def javascript_statement_brace_closed(
     if javascript_function_declaration_before_brace(tokens, opening):
         return True
     return javascript_class_declaration_before_brace(tokens, opening)
+
+
+def javascript_object_property_key(tokens: list[tuple[str, str]], index: int) -> bool:
+    """Return whether tokens[index] is an object-literal property name."""
+
+    if index + 1 >= len(tokens) or tokens[index + 1] != ("punctuation", ":"):
+        return False
+    previous = index - 1
+    while previous >= 0 and tokens[previous][0] == "newline":
+        previous -= 1
+    return previous >= 0 and tokens[previous][1] in {"{", ","}
 
 
 def javascript_for_of_keyword(tokens: list[tuple[str, str]]) -> bool:
@@ -1502,8 +1517,8 @@ def matching_square_bracket(tokens: list[tuple[str, str]], opening_index: int) -
 
 def static_rpc_array_values(
     tokens: list[tuple[str, str]], opening: int, closing: int
-) -> set[str] | None:
-    values: set[str] = set()
+) -> dict[str, set[str]] | None:
+    values: dict[str, set[str]] = {}
     cursor = opening + 1
     while cursor < closing:
         if tokens[cursor] == ("punctuation", ","):
@@ -1525,13 +1540,14 @@ def static_rpc_array_values(
             ("punctuation", "]"),
         }:
             return None
-        values.add(value[1])
+        key = tokens[cursor][1]
+        values.setdefault(key, set()).add(value[1])
         cursor = array_closing + 1
     return values or None
 
 
-def static_rpc_array_objects(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
-    objects: dict[str, set[str]] = {}
+def static_rpc_array_objects(tokens: list[tuple[str, str]]) -> dict[str, dict[str, set[str]]]:
+    objects: dict[str, dict[str, set[str]]] = {}
     for index in range(len(tokens) - 3):
         if (
             tokens[index] != ("identifier", "const")
@@ -1560,23 +1576,40 @@ def frontend_rpc_bindings(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
         source_index = closing + 2
         source = tokens[source_index][1] if tokens[source_index][0] == "identifier" else ""
         rhs_end = source_index + 1
+        property_name: str | None = None
         if (
             rhs_end + 1 < len(tokens)
             and tokens[rhs_end] == ("punctuation", ".")
             and tokens[rhs_end + 1][0] == "identifier"
         ):
+            property_name = tokens[rhs_end + 1][1]
             rhs_end += 2
         elif rhs_end < len(tokens) and tokens[rhs_end] == ("punctuation", "["):
-            rhs_end = matching_square_bracket(tokens, rhs_end) or rhs_end
-            rhs_end += 1
+            bracket_close = matching_square_bracket(tokens, rhs_end)
+            if bracket_close is None:
+                continue
+            inner = tokens[rhs_end + 1:bracket_close]
+            rhs_end = bracket_close + 1
+            if len(inner) == 1 and inner[0][0] == "string":
+                property_name = inner[0][1]
+        else:
+            continue
         if rhs_end >= len(tokens) or tokens[rhs_end] not in {
             ("punctuation", ";"),
             ("punctuation", ","),
             ("punctuation", "}"),
         }:
             continue
-        if source in objects:
-            bindings[tokens[index + 2][1]] = objects[source]
+        properties = objects.get(source, {})
+        if not properties:
+            continue
+        if property_name is None:
+            # Dynamic ``RPC[key]`` cannot name one property.  Bind the union so
+            # official dispatch tables such as ``specs[key]`` still resolve;
+            # a static ``RPC.safe`` never sees sibling keys.
+            bindings[tokens[index + 2][1]] = set().union(*properties.values())
+        elif property_name in properties:
+            bindings[tokens[index + 2][1]] = set(properties[property_name])
     return bindings
 
 
@@ -1700,12 +1733,14 @@ def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] 
     # Event/timer APIs often receive a named helper as a callback rather than
     # invoking it directly (``setTimeout(resize, 100)``).  Only references in
     # the currently reachable activation statements may enqueue that helper.
+    # An object-literal property key is not a callback reference.
     for name, (start, end) in blocks.items():
         if name == "activate" or not (activation[0] <= start < end <= activation[1]):
             continue
         if any(
             tokens[index] == ("identifier", name)
             and not (start <= index <= end)
+            and not javascript_object_property_key(tokens, index)
             for index in reachable
         ):
             queued.append(name)
@@ -1724,6 +1759,7 @@ def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] 
             if any(
                 tokens[index] == ("identifier", candidate)
                 and not (candidate_start <= index <= candidate_end)
+                and not javascript_object_property_key(tokens, index)
                 for index in range(start, end + 1)
             ):
                 queued.append(candidate)
@@ -1852,6 +1888,10 @@ def frontend_binding_declared_in_scope(
             declarations.append(index)
     if len(declarations) != 1:
         return False
+    # ``const`` is in the temporal dead zone until its initializer runs, so a
+    # request that appears earlier in the same function cannot resolve it.
+    if declarations[0] > request_index:
+        return False
     declaration_owner = owner(declarations[0])
     return declaration_owner is None or declaration_owner == request_owner
 
@@ -1867,27 +1907,31 @@ def _bracket_request_length(dense: list[tuple[str, str]], index: int) -> int:
     return 0
 
 
-def host_request_argument_index(dense: list[tuple[str, str]], index: int) -> int | None:
-    """Return the first-argument index of host.request / host?.request / host["request"]."""
+def parenthesized_host_receiver(inner: list[tuple[str, str]]) -> bool:
+    """Return whether a parenthesized receiver is grouping or a comma list ending in host.
 
-    if index >= len(dense):
-        return None
-    # Parenthesized receivers are semantically equivalent to the bare broker
-    # binding.  Accept a simple comma expression whose final value is ``host``
-    # as well (for example ``(0, host).request(...)``); any other expression is
-    # left unresolved and therefore fails closed in the caller.
-    if dense[index] == ("identifier", "host"):
-        cursor = index + 1
-    elif dense[index] == ("punctuation", "("):
-        closing = matching_parenthesis(dense, index)
-        if closing is None:
-            return None
-        inner = dense[index + 1:closing]
-        if not inner or inner[-1] != ("identifier", "host"):
-            return None
-        cursor = closing + 1
-    else:
-        return None
+    A trailing ``host`` token is not enough: ``(true ? fake : host)`` evaluates
+    the ternary, not a host grouping.
+    """
+
+    if not inner:
+        return False
+    depth = 0
+    last_comma = -1
+    for index, token in enumerate(inner):
+        value = token[1]
+        if value in {"(", "[", "{"}:
+            depth += 1
+        elif value in {")", "]", "}"}:
+            depth -= 1
+        elif depth == 0 and token == ("punctuation", ","):
+            last_comma = index
+    return inner[last_comma + 1:] == [("identifier", "host")]
+
+
+def request_member_argument_index(dense: list[tuple[str, str]], cursor: int) -> int | None:
+    """Return the first-argument index after ``.request`` / ``?.request`` / ``["request"]``."""
+
     if (
         cursor + 1 < len(dense)
         and dense[cursor] == ("punctuation", "?")
@@ -1925,6 +1969,29 @@ def host_request_argument_index(dense: list[tuple[str, str]], index: int) -> int
     return argument
 
 
+def host_request_argument_index(dense: list[tuple[str, str]], index: int) -> int | None:
+    """Return the first-argument index of host.request / host?.request / host["request"]."""
+
+    if index >= len(dense):
+        return None
+    # Parenthesized receivers are semantically equivalent to the bare broker
+    # binding only for grouping and comma expressions whose operand is
+    # exactly ``host`` (for example ``(0, host).request(...)``).
+    if dense[index] == ("identifier", "host"):
+        cursor = index + 1
+    elif dense[index] == ("punctuation", "("):
+        closing = matching_parenthesis(dense, index)
+        if closing is None:
+            return None
+        inner = dense[index + 1:closing]
+        if not parenthesized_host_receiver(inner):
+            return None
+        cursor = closing + 1
+    else:
+        return None
+    return request_member_argument_index(dense, cursor)
+
+
 def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str]:
     dense = [token for token in tokens if token[0] != "newline"]
     bindings = frontend_rpc_bindings(dense)
@@ -1943,19 +2010,21 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
         is_reachable = reachable is None or source_index in reachable
         # Any reachable ``name.request(...)`` call whose receiver is not the
         # activation host has unverifiable broker provenance (including a
-        # simple ``const broker = host`` alias).  Reject it instead of silently
-        # ignoring a dynamic RPC edge.  The same rule applies to helpers the
-        # call graph does not follow (const/arrow/object/class methods).
-        if (
+        # simple ``const broker = host`` alias and optional/bracket members).
+        # Reject it instead of silently ignoring a dynamic RPC edge.
+        unresolved_receiver = (
             dense[index][0] == "identifier"
-            and index + 3 < len(dense)
-            and dense[index + 1:index + 4] == [
-                ("punctuation", "."),
-                ("identifier", "request"),
-                ("punctuation", "("),
-            ]
             and dense[index][1] != "host"
-        ):
+            and request_member_argument_index(dense, index + 1) is not None
+        )
+        if dense[index] == ("punctuation", "("):
+            closing = matching_parenthesis(dense, index)
+            unresolved_receiver = unresolved_receiver or (
+                closing is not None
+                and request_member_argument_index(dense, closing + 1) is not None
+                and not parenthesized_host_receiver(dense[index + 1:closing])
+            )
+        if unresolved_receiver:
             if is_reachable or not in_named_function(source_index):
                 fail(f"{label} contains a host RPC request through an unresolved receiver")
         argument_index = host_request_argument_index(dense, index)
@@ -1970,6 +2039,19 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
             }
         ):
             fail(f"{label} contains an unresolved host RPC request argument")
+        if is_in_statically_unreachable_expression(tokens, source_index):
+            # Literal ``false && request`` / unselected ternary must not prove
+            # that a declared method is used.  Dynamic arguments still fail.
+            if argument_kind not in {"string", "identifier"} or (
+                argument_kind == "identifier"
+                and not (
+                    argument_value in bindings
+                    and binding_counts.get(argument_value, 0) == 1
+                    and frontend_binding_declared_in_scope(dense, argument_value, argument_index)
+                )
+            ):
+                fail(f"{label} contains an unresolved host RPC request argument")
+            continue
         if not is_reachable:
             if not in_named_function(source_index):
                 fail(f"{label} contains a host RPC request that is not reachable from activate(host)")
