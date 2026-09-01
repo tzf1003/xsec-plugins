@@ -101,10 +101,9 @@ jobs:
   final-revalidate-and-merge:
     needs: select-exact-generated-pr
     # The selector can complete successfully after a review/status event while
-    # GitHub evaluates a preceding event in the same workflow graph.  Make
-    # this dependency explicit so a successful selector's exact-head output
-    # is the sole condition that decides whether the reusable final gate runs.
-    if: ${{ always() && needs.select-exact-generated-pr.result == 'success' && needs.select-exact-generated-pr.outputs.eligible == 'true' }}
+    # GitHub evaluates a preceding event in the same workflow graph. Keep its
+    # exact-head output as the final-gate predicate while honoring cancellation.
+    if: ${{ !cancelled() && needs.select-exact-generated-pr.result == 'success' && needs.select-exact-generated-pr.outputs.eligible == 'true' }}
     uses: ./.github/workflows/final-merge-generated-marketplace-pr.yml
     with:
       pull_number: ${{ needs.select-exact-generated-pr.outputs.pull_number }}
