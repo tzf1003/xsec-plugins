@@ -12,6 +12,7 @@ type StreamEntry =
 
 type ProcessProps = {
   execution?: ExecutionSnapshot;
+  loading: boolean;
   error?: string;
   live: boolean;
   onRefresh: () => void;
@@ -32,16 +33,40 @@ function isNearBottom(node: HTMLElement): boolean {
   return node.scrollHeight - node.clientHeight - node.scrollTop <= BOTTOM_TOLERANCE_PX;
 }
 
+function displayedMessagePart(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
+}
+
+function entryVersion(entry: StreamEntry): string {
+  if (entry.kind === "message") {
+    return JSON.stringify([displayedMessagePart(entry.message.thought), displayedMessagePart(entry.message.text)]);
+  }
+  const output = entry.tool.content ?? entry.tool.raw_output;
+  return JSON.stringify([
+    toolLabel(entry.tool),
+    entry.tool.status?.trim() || "进行中",
+    entry.tool.raw_input === undefined ? undefined : printableToolValue(entry.tool.raw_input),
+    output === undefined ? undefined : printableToolValue(output),
+  ]);
+}
+
 function entryFingerprint(entries: StreamEntry[]): string {
-  return entries.map((entry) => entry.kind === "message"
-    ? `${entry.key}:${entry.message.thought}:${entry.message.text}:${entry.message.completed}`
-    : `${entry.key}:${entry.tool.status}:${printableToolValue(entry.tool.raw_input)}:${printableToolValue(entry.tool.content)}:${printableToolValue(entry.tool.raw_output)}`)
-    .join(ENTRY_FINGERPRINT_SEPARATOR);
+  return entries.map((entry) => `${entry.key}\u0000${entryVersion(entry)}`).join(ENTRY_FINGERPRINT_SEPARATOR);
+}
+
+function prunePendingKeys(pendingKeys: Set<string>, entries: StreamEntry[]): boolean {
+  const currentKeys = new Set(entries.map((entry) => entry.key));
+  const count = pendingKeys.size;
+  pendingKeys.forEach((key) => {
+    if (!currentKeys.has(key)) pendingKeys.delete(key);
+  });
+  return pendingKeys.size !== count;
 }
 
 function ToolDisclosure({ tool }: { tool: ToolCall }) {
   const output = tool.content ?? tool.raw_output;
-  return <details className="ad-tool"><summary>{toolLabel(tool)} · {tool.status || "已完成"}</summary>
+  const status = tool.status?.trim() || "进行中";
+  return <details className="ad-tool"><summary>{toolLabel(tool)} · {status}</summary>
     {tool.raw_input !== undefined ? <ToolValue label="输入" value={tool.raw_input} /> : null}
     {output !== undefined ? <ToolValue label="结果" value={output} /> : null}
   </details>;
@@ -62,31 +87,50 @@ function useFollowLatest(entries: StreamEntry[], fingerprint: string, sessionId:
   const streamRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const priorFingerprintRef = useRef<string>();
-  const priorKeysRef = useRef<Set<string>>(new Set());
+  const priorVersionsRef = useRef<Map<string, string>>(new Map());
+  const pendingKeysRef = useRef(new Set<string>());
   const [pendingCount, setPendingCount] = useState(0);
 
   useLayoutEffect(() => {
     followingRef.current = true;
     priorFingerprintRef.current = undefined;
-    priorKeysRef.current = new Set();
+    priorVersionsRef.current = new Map();
+    pendingKeysRef.current = new Set();
     setPendingCount(0);
   }, [sessionId]);
 
   useLayoutEffect(() => {
     const changed = priorFingerprintRef.current !== fingerprint;
     const initial = priorFingerprintRef.current === undefined;
-    const newCount = entries.filter((entry) => !priorKeysRef.current.has(entry.key)).length;
+    const updatedKeys = entries
+      .filter((entry) => priorVersionsRef.current.get(entry.key) !== entryVersion(entry))
+      .map((entry) => entry.key);
     priorFingerprintRef.current = fingerprint;
-    priorKeysRef.current = new Set(entries.map((entry) => entry.key));
-    if (!changed || !entries.length) return;
+    priorVersionsRef.current = new Map(entries.map((entry) => [entry.key, entryVersion(entry)]));
+    const pruned = prunePendingKeys(pendingKeysRef.current, entries);
+    if (!changed) {
+      if (pruned) setPendingCount(pendingKeysRef.current.size);
+      return;
+    }
+    if (!entries.length) {
+      if (pruned) setPendingCount(0);
+      return;
+    }
     const stream = streamRef.current;
     if (live && followingRef.current && stream) stream.scrollTop = stream.scrollHeight;
-    if (live && !initial && !followingRef.current && newCount) setPendingCount((count) => count + newCount);
+    const shouldCountUpdates = live && !initial && !followingRef.current;
+    if (shouldCountUpdates && updatedKeys.length) {
+      updatedKeys.forEach((key) => pendingKeysRef.current.add(key));
+    }
+    if (pruned || (shouldCountUpdates && updatedKeys.length)) {
+      setPendingCount(pendingKeysRef.current.size);
+    }
   }, [entries, fingerprint, live]);
 
   const jumpToLatest = () => {
     if (streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight;
     followingRef.current = true;
+    pendingKeysRef.current = new Set();
     setPendingCount(0);
   };
   const onScroll = (event: UIEvent<HTMLDivElement>) => {
@@ -111,14 +155,15 @@ function ProcessStream({ entries, live, process }: {
   </>;
 }
 
-export function ExecutionProcess({ execution, error, live, onRefresh }: ProcessProps) {
+export function ExecutionProcess({ execution, loading, error, live, onRefresh }: ProcessProps) {
   const entries = useMemo(() => entriesFor(execution), [execution]);
   const fingerprint = useMemo(() => entryFingerprint(entries), [entries]);
   const sessionId = execution?.session?.session_id ?? execution?.run.session_id ?? undefined;
   const process = useFollowLatest(entries, fingerprint, sessionId, live);
 
   if (error) return <ErrorState error={error} onRetry={onRefresh} />;
-  if (!sessionId) return <EmptyState>{live ? "正在创建执行会话…" : "该任务未生成可用的执行会话。"}</EmptyState>;
+  if (loading && !execution) return <EmptyState>正在读取执行记录…</EmptyState>;
+  if (!execution?.session) return <EmptyState>{live ? "正在创建执行会话…" : "该任务未生成可用的执行会话。"}</EmptyState>;
   if (!entries.length) return <EmptyState>{live ? "会话已连接，等待执行过程…" : "暂无可用执行记录"}</EmptyState>;
   return <div className="ad-process-wrap">
     {execution?.truncated ? <Notice>执行记录已按隔离通道大小截断；刷新或读取日志可查看后续内容。</Notice> : null}
