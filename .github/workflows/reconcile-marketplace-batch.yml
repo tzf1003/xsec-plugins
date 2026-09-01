@@ -91,5 +91,5 @@ jobs:
     uses: ./.github/workflows/publish-marketplace-batch.yml
     with:
       delivery_key: ${{ needs.validate-source-event.outputs.delivery_key }}
-      trigger_label: source-event:${{ needs.validate-source-event.outputs.event_plugin_id }}
+      trigger_label: ${{ needs.validate-source-event.outputs.trigger_label }}
     secrets: inherit

@@ -69,6 +69,16 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertNotIn("| rg -v", publisher)
         self.assertNotIn("| grep -v", publisher)
 
+    def test_batch_reconcile_forwards_the_validated_source_trigger_label(self) -> None:
+        workflow = BATCH_RECONCILE.read_text(encoding="utf-8")
+
+        self.assertIn("trigger_label: source-event:${{ steps.request.outputs.plugin_id }}", workflow)
+        self.assertIn(
+            "trigger_label: ${{ needs.validate-source-event.outputs.trigger_label }}",
+            workflow,
+        )
+        self.assertNotIn("outputs.event_plugin_id", workflow)
+
     def test_batch_caller_grants_write_scope_only_to_the_publisher(self) -> None:
         """Keep write authority on the reusable publication job."""
 
