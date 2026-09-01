@@ -126,7 +126,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.marketplace_revision || github.sha }}", dispatcher)
         self.assertIn("merge_group:", merge_guard)
         self.assertIn("Registered ${repository} ${ref} advanced", merge_guard)
-        self.assertIn("Refuse to sign while any generated Factory PR awaits protected final merge", publisher)
+        self.assertIn("Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge", publisher)
         self.assertNotIn("github.event.head_commit.message", publisher)
 
     def test_final_merge_gate_is_trusted_revalidating_and_does_not_deadlock_normal_prs(self) -> None:
@@ -254,12 +254,24 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         for workflow_path in workflows:
             workflow = workflow_path.read_text(encoding="utf-8")
             with self.subTest(workflow=workflow_path.name):
-                self.assertIn('gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100"', workflow)
+                self.assertIn('gh api --paginate', workflow)
+                self.assertIn('"repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100"', workflow)
                 self.assertIn('--arg repository "$GITHUB_REPOSITORY"', workflow)
                 self.assertIn('select(.head.repo.full_name == $repository)', workflow)
-                self.assertIn('select(startswith("xsec-marketplace/"))', workflow)
                 self.assertNotIn('.[] | .head.ref | select(startswith("xsec-marketplace/"))', workflow)
                 self.assertNotIn('gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open', workflow)
+                if workflow_path in (PUBLISH_WORKFLOW, ROOT / ".github" / "workflows" / "promote-stable.yml"):
+                    self.assertIn('.head.ref | startswith("xsec-marketplace/")', workflow)
+                    self.assertIn('--paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${number}/files?per_page=100"', workflow)
+                    self.assertIn('Cannot completely inspect generated Factory PR', workflow)
+                    self.assertIn('.xsec-factory/official-status/', workflow)
+                    guard_start = workflow.index("Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge")
+                    guard_end = workflow.index("\n      - uses:", guard_start)
+                    guard = workflow[guard_start:guard_end]
+                    self.assertIn('/.xsec-market/releases.json', guard)
+                    self.assertNotIn('/.xsec-market/releases.json.sig.jws.json', guard)
+                else:
+                    self.assertIn('select(startswith("xsec-marketplace/"))', workflow)
 
     def test_retained_sidecar_refresh_is_manual_narrow_and_never_auto_merges(self) -> None:
         workflow = REFRESH_SIDECAR_WORKFLOW.read_text(encoding="utf-8")
