@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import hashlib
 import json
 import subprocess
 import sys
@@ -122,6 +123,7 @@ def assert_traffic_react_ca(case: unittest.TestCase, source: str) -> None:
     ca_ui = frontend_section(case, source, "function CaStatusDetails({host,model})", "function DefaultFilterSection")
     case.assertIn("let model=useCaModel(host)", ca_ui)
     case.assertIn("u2(CaError,{model})", ca_ui)
+    case.assertIn("u2(CaStatusDetails,{host,model})", ca_ui)
     case.assertIn("model.run(()=>importCa(host),", ca_ui)
     case.assertIn("model.run(()=>rotateCa(host),", ca_ui)
     case.assertRegex(
@@ -177,6 +179,15 @@ def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> N
 
 class MarketplaceValidationTests(unittest.TestCase):
     maxDiff = None
+
+    def test_traffic_react_settings_contract_fixture(self) -> None:
+        fixture = ROOT / "tests" / "fixtures" / "traffic-1.3.0-frontend.js"
+        payload = fixture.read_bytes().removesuffix(b"\n")
+        self.assertEqual(
+            hashlib.sha256(payload).hexdigest(),
+            "f8defb39dfdb8b35fec7492b347044bee01998cc1e218343fa71e737332457b2",
+        )
+        assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
 
     def build_marketplace(self, destination: Path) -> None:
         command = [
