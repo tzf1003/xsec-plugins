@@ -125,6 +125,10 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertNotIn("reviewThreads", dispatcher)
         self.assertIn("ref: ${{ inputs.marketplace_revision || github.sha }}", dispatcher)
         self.assertIn("merge_group:", merge_guard)
+        self.assertEqual(
+            merge_guard.count('git diff --quiet "$BEFORE" "$AFTER" -- .agents/plugins .xsec-factory plugins .gitmodules'),
+            2,
+        )
         self.assertIn("Registered ${repository} ${ref} advanced", merge_guard)
         self.assertIn("Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge", publisher)
         self.assertNotIn("github.event.head_commit.message", publisher)

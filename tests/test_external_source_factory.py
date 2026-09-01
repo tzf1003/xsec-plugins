@@ -2396,7 +2396,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn('main_gate_sha="$(git -C .xsec-factory-source rev-parse refs/remotes/xsec-factory-source/registered-main)"', publisher_workflow)
         self.assertIn("MAIN_GATE_SHA: ${{ steps.main-gate.outputs.main_gate_sha }}", publisher_workflow)
         self.assertIn('--main-gate-sha "$MAIN_GATE_SHA"', publisher_workflow)
-        self.assertIn("Stable source does not yet deterministically rebuild Beta", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
+        self.assertIn("No registered Beta promotion is currently waiting for Desktop smoke", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
         self.assertIn("waiting_for_beta", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
         self.assertIn("Factory status is not bound to the validated Beta source/release tuple", (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8"))
         self.assertIn("complete-smoke-status", publisher_workflow)

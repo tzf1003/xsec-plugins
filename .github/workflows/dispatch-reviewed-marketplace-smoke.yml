@@ -176,29 +176,14 @@ jobs:
           printf '%s\n' "$result" > "$RUNNER_TEMP/marketplace-publication.json"
           manual_recovery=false
           recovery_tuples='[]'
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            # A manual retry must never manufacture a dispatch for a legacy
-            # built-in transition. Every validated promotion needs an exact
-            # registered source/release tuple that can later be revalidated
-            # against the current protected Factory state.
-            recovery_tuples="$(printf '%s' "$result" | jq -cer '
-              [ .promotions[]
-                | if (.source | type) == "object" then
-                    {
-                      plugin_id: .plugin_id,
-                      beta_sha: .source.sha,
-                      beta_release_id: .release_id
-                    }
-                  else
-                    error("manual Desktop smoke recovery requires every promotion to have a registered source")
-                  end
-              ]
-              | if length > 0 then . else error("manual Desktop smoke recovery requires at least one source-backed promotion") end
-            ')"
-            manual_recovery=true
-          fi
-          sources="$(printf '%s' "$result" | jq -c '[.promotions[] | select(.source != null) | .source, (.main_source // empty)]')"
-          if { [ "$kind" = "beta" ] || [ "$kind" = "beta-smoke-ready" ]; } && [ "$(printf '%s' "$sources" | jq -r length)" -gt 0 ]; then
+          # A mixed generated batch is valid: source events can leave some
+          # registered plugins waiting for a reproducible main while another
+          # plugin is already ready for Desktop smoke. Start with every
+          # source-backed promotion, then reduce Beta batches to the exact
+          # waiting-for-smoke subset before requesting source credentials or
+          # contacting Desktop.
+          selected_promotions="$(printf '%s' "$result" | jq -cer '[.promotions[] | select(.source != null)]')"
+          if { [ "$kind" = "beta" ] || [ "$kind" = "beta-smoke-ready" ]; } && [ "$(printf '%s' "$selected_promotions" | jq -r length)" -gt 0 ]; then
             # A source-main event may have rebuilt the selected immutable
             # Beta byte-for-byte, or it may be ahead/behind it.  The Beta PR
             # itself is valid in either case, but only the former gets a
@@ -206,6 +191,7 @@ jobs:
             # before treating its wait state as a dispatch decision.
             python scripts/external_source_factory.py validate
             waiting_for_beta=()
+            smoke_promotions=()
             while IFS= read -r promotion; do
               plugin_id="$(printf '%s' "$promotion" | jq -er .plugin_id)"
               release_id="$(printf '%s' "$promotion" | jq -er .release_id)"
@@ -232,20 +218,46 @@ jobs:
               fi
               status_state="$(printf '%s' "$status" | jq -er .publication.state)"
               case "$status_state" in
-                waiting_for_smoke) ;;
+                waiting_for_smoke) smoke_promotions+=("$promotion") ;;
                 waiting_for_beta) waiting_for_beta+=("$plugin_id") ;;
                 *)
                   echo "Validated Beta publication ${plugin_id} has an invalid smoke state: ${status_state}." >&2
                   exit 1
                   ;;
               esac
-            done < <(printf '%s' "$result" | jq -rc '.promotions[] | select(.source != null)')
-            if [ "${#waiting_for_beta[@]}" -gt 0 ]; then
+            done < <(printf '%s' "$selected_promotions" | jq -rc '.[]')
+            if [ "${#smoke_promotions[@]}" -eq 0 ]; then
               echo "eligible=false" >> "$GITHUB_OUTPUT"
-              echo "Stable source does not yet deterministically rebuild Beta for: ${waiting_for_beta[*]}. Desktop smoke is intentionally deferred."
+              echo "No registered Beta promotion is currently waiting for Desktop smoke; still awaiting a reproducible main for: ${waiting_for_beta[*]:-none}."
               exit 0
             fi
+            selected_promotions="$(printf '%s\n' "${smoke_promotions[@]}" | jq -sc '.')"
           fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # A manual retry must never manufacture a dispatch for a legacy
+            # built-in transition. Use only the already-selected smoke subset,
+            # and retain every exact source/release tuple for the final
+            # current-Factory revalidation immediately before dispatch.
+            recovery_tuples="$(printf '%s' "$selected_promotions" | jq -cer '
+              [ .[]
+                | if (.source | type) == "object" then
+                    {
+                      plugin_id: .plugin_id,
+                      beta_sha: .source.sha,
+                      beta_release_id: .release_id
+                    }
+                  else
+                    error("manual Desktop smoke recovery requires every promotion to have a registered source")
+                  end
+              ]
+              | if length > 0 then . else error("manual Desktop smoke recovery requires at least one source-backed promotion") end
+            ')"
+            manual_recovery=true
+          fi
+          # The source token and source revalidation are scoped only to the
+          # selected waiting-for-smoke promotions. A waiting_for_beta sibling
+          # cannot block, broaden, or be advanced by this Desktop smoke run.
+          sources="$(printf '%s' "$selected_promotions" | jq -c '[.[] | .source, (.main_source // empty)]')"
           # Use a single source-owner scope and an exact, deduplicated
           # repository list. A candidate that crosses owners fails closed;
           # this dispatcher must never request an owner-wide source token.

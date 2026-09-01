@@ -40,6 +40,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         publisher = BATCH_PUBLISH.read_text(encoding="utf-8")
         for rule in (
             "group: xsec-marketplace-source-batch",
+            "cancel-in-progress: true",
             "Only the Cloud dispatcher App may reconcile Marketplace sources.",
             "prepare-reconcile-source",
             "uses: ./.github/workflows/publish-marketplace-batch.yml",
@@ -93,6 +94,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn("startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/batch-')", workflow)
         self.assertIn("checks: read", workflow)
         self.assertIn("source-freshness-gate", workflow)
+        self.assertIn('.name == "source-freshness-gate"', workflow)
+        self.assertNotIn('commits/${HEAD_SHA}/status', workflow)
         self.assertIn("needs.select-exact-generated-pr.result == 'success'", workflow)
         self.assertIn("outputs.eligible == 'true'", workflow)
         self.assertIn("expected at most one open exact-head generated PR", workflow)
