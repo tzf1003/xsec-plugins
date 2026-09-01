@@ -62,7 +62,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("activation PR later adds only the matching sidecar", workflow)
         self.assertIn("xsec-marketplace/refresh-retained-sidecar-*", workflow)
         self.assertIn("beta-smoke-ready", workflow)
-        self.assertIn("Only external Beta branches may reopen a no-pointer Desktop smoke cycle", workflow)
+        self.assertIn("Only external Beta or signed batch branches may reopen a no-pointer Desktop smoke cycle", workflow)
         self.assertIn("--verify-first-party-adoption-candidate", workflow)
         self.assertIn("--verify-retained-sidecar-refresh-candidate", workflow)
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
@@ -213,6 +213,26 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             "--json needs-smoke-redispatch",
             "--beta-release-id \"$beta_release_id\"",
             "MARKETPLACE_REVISION: ${{ needs.verify-reviewed-publication.outputs.marketplace_revision }}",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, dispatcher)
+
+    def test_dispatcher_smokes_only_the_ready_subset_of_a_mixed_beta_batch(self) -> None:
+        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
+
+        # A later source-main event may make one sibling reproducible while
+        # another remains waiting_for_beta. The ready tuple still needs an
+        # exact status binding, but the waiting sibling must never widen the
+        # Source App token, source revalidation, manual recovery tuple, or
+        # Desktop request.
+        for rule in (
+            "selected_promotions=\"$(printf '%s' \"$result\" | jq -cer '[.promotions[] | select(.source != null)]')\"",
+            'waiting_for_smoke) smoke_promotions+=("$promotion") ;;',
+            "done < <(printf '%s' \"$selected_promotions\" | jq -rc '.[]')",
+            'selected_promotions="$(printf \'%s\\n\' "${smoke_promotions[@]}" | jq -sc \'.\')"',
+            'sources="$(printf \'%s\' "$selected_promotions" | jq -c \'[.[] | .source, (.main_source // empty)]\')"',
+            "No registered Beta promotion is currently waiting for Desktop smoke",
+            "Use only the already-selected smoke subset",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)

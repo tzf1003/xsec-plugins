@@ -55,11 +55,10 @@ jobs:
           pull_number="$(printf '%s' "$matches" | jq -er '.[0].number')"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
           check_runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100")"
-          freshness="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status")"
           if ! printf '%s' "$check_runs" | jq -e '
             any(.check_runs[]?; .name == "source-gate" and .status == "completed" and .conclusion == "success")
-          ' >/dev/null || ! printf '%s' "$freshness" | jq -e '
-            any(.statuses[]?; .context == "source-freshness-gate" and .state == "success")
+          ' >/dev/null || ! printf '%s' "$check_runs" | jq -e '
+            any(.check_runs[]?; .name == "source-freshness-gate" and .status == "completed" and .conclusion == "success")
           ' >/dev/null; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
