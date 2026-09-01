@@ -1581,7 +1581,10 @@ def traffic_frontend_rpc_methods(
     for receiver, argument, _ in calls:
         source_index = source_indices[receiver]
         owner = frontend_function_owner(blocks, source_index)
-        if owner is None or host_is_reassigned_before(tokens, source_index, blocks[owner][0]):
+        if owner is None or (
+            host_is_reassigned_before(tokens, source_index, blocks[owner][0])
+            or frontend_destructuring_writes_host(tokens, blocks[owner][0], source_index)
+        ):
             fail(f"{label} cannot prove the Traffic host broker contract")
         methods = frontend_request_methods(dense, argument, proof)
         if methods is None:
@@ -1958,15 +1961,21 @@ def frontend_destructures_request_from_host(tokens: list[tuple[str, str]]) -> bo
     return False
 
 
-def frontend_destructuring_writes_host(tokens: list[tuple[str, str]]) -> bool:
-    for closing, token in enumerate(tokens[:-1]):
+def frontend_destructuring_writes_host(
+    tokens: list[tuple[str, str]], start: int = 0, end: int | None = None
+) -> bool:
+    """Detect a destructuring assignment that writes the broker binding."""
+
+    limit = len(tokens) if end is None else end
+    for closing in range(start, limit - 1):
+        token = tokens[closing]
         if token not in {("punctuation", "}"), ("punctuation", "]")}:
             continue
         if tokens[closing + 1] != ("punctuation", "="):
             continue
         opening_token = "{" if token[1] == "}" else "["
         opening = matching_opening_delimiter(tokens, closing, opening_token, token[1])
-        if opening is not None and ("identifier", "host") in tokens[opening + 1:closing]:
+        if opening is not None and opening >= start and ("identifier", "host") in tokens[opening + 1:closing]:
             return True
     return False
 

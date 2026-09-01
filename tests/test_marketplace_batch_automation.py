@@ -93,6 +93,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn("Verify generated Marketplace publication merge", workflow)
         self.assertIn("pull_request_review:", workflow)
         self.assertIn("types: [submitted]", workflow)
+        self.assertNotIn("pull_request_review:\n    branches:", workflow)
         self.assertIn("startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/')", workflow)
         self.assertIn("startsWith(github.event.pull_request.head.ref, 'xsec-marketplace/')", workflow)
         self.assertIn("checks: read", workflow)

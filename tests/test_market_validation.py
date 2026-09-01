@@ -337,6 +337,18 @@ class MarketplaceValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(MarketplaceValidationError, "Traffic host broker contract"):
             validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
 
+    def test_traffic_contract_rejects_destructured_rpc_host(self) -> None:
+        """Reject a helper that replaces its broker by destructuring."""
+
+        manifest, source = traffic_release_contract()
+        mutated = source.replace(
+            "function listTraffic(host,cursor,filter){",
+            "function listTraffic(host,cursor,filter){({host}={host:{request(){return Promise.resolve({})}}});",
+            1,
+        )
+        with self.assertRaisesRegex(MarketplaceValidationError, "Traffic host broker contract"):
+            validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
+
     def test_traffic_reviewed_frontend_contract_rejects_rpc_drift(self) -> None:
         """Reject capability or binding drift in the reviewed Traffic RPCs."""
 
