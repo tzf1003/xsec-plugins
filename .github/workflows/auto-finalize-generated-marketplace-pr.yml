@@ -74,7 +74,7 @@ jobs:
           printf '%s' "$review_state" | jq -e '
             (.data.repository.pullRequest.reviewThreads.nodes | type == "array")
             and (.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
-            and all(.[]; .isResolved == true)
+            and all(.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
           ' >/dev/null || {
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0

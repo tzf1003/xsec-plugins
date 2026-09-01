@@ -188,8 +188,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('select(.type == "required_reviewers")', final_merge)
         self.assertIn("length == 0", final_merge)
         self.assertIn("coderabbitai", final_merge.lower())
-        self.assertIn("reviewThreads(first:100)", final_merge)
-        self.assertIn("pageInfo{hasNextPage}", final_merge)
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", final_merge)
+        self.assertIn("pageInfo{hasNextPage endCursor}", final_merge)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
         self.assertIn("can_admins_bypass == false", protection)
         self.assertIn("deployment_branch_policy.protected_branches == true", protection)
@@ -357,8 +357,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
     def test_final_gate_requires_coderabbit_and_resolved_threads(self) -> None:
         workflow = FINAL_MERGE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("coderabbitai", workflow.lower())
-        self.assertIn("reviewThreads(first:100)", workflow)
-        self.assertIn("pageInfo{hasNextPage}", workflow)
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
+        self.assertIn("pageInfo{hasNextPage endCursor}", workflow)
         self.assertNotIn("review_request_at=", workflow)
 
 

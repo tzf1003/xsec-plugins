@@ -73,8 +73,10 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("Require a current source gate", workflow)
         self.assertIn("Require the completed CodeRabbit review and resolved threads", workflow)
         self.assertIn("coderabbitai", workflow.lower())
-        self.assertIn("reviewThreads(first:100)", workflow)
-        self.assertIn("pageInfo{hasNextPage}", workflow)
+        self.assertIn("reviews(first:100,after:$endCursor)", workflow)
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
+        self.assertGreaterEqual(workflow.count("gh api graphql --paginate --slurp"), 2)
+        self.assertIn("pageInfo{hasNextPage endCursor}", workflow)
         self.assertIn('.state == "COMMENTED"', workflow)
 
     def test_every_generated_candidate_requests_coderabbit_review_once(self) -> None:
@@ -315,9 +317,9 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
 
     def test_finalizer_requires_resolved_review_threads(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("reviewThreads(first:100)", workflow)
-        self.assertIn("all($pr.reviewThreads.nodes[]?; .isResolved == true)", workflow)
-        self.assertIn("$pr.reviewThreads.pageInfo.hasNextPage == false", workflow)
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
+        self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
+        self.assertIn("$threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false", workflow)
 
 
 if __name__ == "__main__":
