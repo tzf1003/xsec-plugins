@@ -375,14 +375,21 @@ def javascript_class_declaration_before_brace(tokens: list[tuple[str, str]], ope
     return javascript_declaration_boundary(tokens, cursor - 1)
 
 
-def javascript_statement_brace_closed(tokens: list[tuple[str, str]]) -> bool:
+def javascript_statement_brace_closed(
+    tokens: list[tuple[str, str]],
+    *,
+    expression_context: bool = False,
+) -> bool:
     """Return whether the last `}` closes a statement, so a regex may follow."""
 
     opening = matching_opening_brace(tokens, len(tokens) - 1)
     if opening is None:
         return False
     if opening == 0:
-        return True
+        # A leading `{` in an expression (template interpolation, grouping)
+        # starts an object literal.  Treating it as a statement block would
+        # let `${{}/host.request(...)/1}` swallow the call as a regex.
+        return not expression_context
     previous = tokens[opening - 1]
     if previous[1] in STATEMENT_BOUNDARY_PUNCTUATION:
         return True
@@ -425,7 +432,11 @@ def javascript_for_of_keyword(tokens: list[tuple[str, str]]) -> bool:
     return False
 
 
-def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
+def javascript_regex_allowed(
+    tokens: list[tuple[str, str]],
+    *,
+    expression_context: bool = False,
+) -> bool:
     """Return whether the next slash can begin a JavaScript regex literal."""
 
     cursor = len(tokens) - 1
@@ -462,7 +473,10 @@ def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
     if kind in {"number", "regex", "string", "template"} or value == "]":
         return False
     if value == "}":
-        return javascript_statement_brace_closed(tokens[: cursor + 1])
+        return javascript_statement_brace_closed(
+            tokens[: cursor + 1],
+            expression_context=expression_context,
+        )
     if value == ")":
         return javascript_control_header_closed(tokens[: cursor + 1])
     previous = cursor - 1
@@ -486,7 +500,13 @@ def consume_javascript_template(source: str, index: int, label: str) -> tuple[in
             return cursor + 1, interpolated, has_interpolation
         if source.startswith("${", cursor):
             has_interpolation = True
-            inner, cursor = tokenize_javascript(source, cursor + 2, label, stop_at_unmatched_brace=True)
+            inner, cursor = tokenize_javascript(
+                source,
+                cursor + 2,
+                label,
+                stop_at_unmatched_brace=True,
+                expression_context=True,
+            )
             interpolated.extend(inner)
             continue
         cursor += 1
@@ -499,12 +519,14 @@ def tokenize_javascript(
     label: str,
     *,
     stop_at_unmatched_brace: bool = False,
+    expression_context: bool = False,
 ) -> tuple[list[tuple[str, str]], int]:
     """Tokenize source from index, optionally stopping at an unmatched `}`."""
 
     tokens: list[tuple[str, str]] = []
     length = len(source)
     depth = 1 if stop_at_unmatched_brace else 0
+    expression_context = expression_context or stop_at_unmatched_brace
     while index < length:
         character = source[index]
         if character in {"\n", "\r"}:
@@ -528,7 +550,7 @@ def tokenize_javascript(
                 fail(f"{label} contains an unterminated JavaScript block comment")
             index = end + 2
             continue
-        if character == "/" and javascript_regex_allowed(tokens):
+        if character == "/" and javascript_regex_allowed(tokens, expression_context=expression_context):
             end = consume_javascript_regex(source, index)
             if end is not None:
                 tokens.append(("regex", source[index:end]))
@@ -1643,9 +1665,20 @@ def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] 
 
     def enqueue_calls(start: int, end: int) -> None:
         for index in range(start, end - 1):
-            if tokens[index][0] != "identifier" or tokens[index + 1] != ("punctuation", "("):
+            if tokens[index][0] != "identifier":
                 continue
             name = tokens[index][1]
+            if index + 1 < end and tokens[index + 1] == ("punctuation", "("):
+                call_paren = index + 1
+            elif (
+                index + 3 < end
+                and tokens[index + 1] == ("punctuation", "?")
+                and tokens[index + 2] == ("punctuation", ".")
+                and tokens[index + 3] == ("punctuation", "(")
+            ):
+                call_paren = index + 3
+            else:
+                continue
             spread_call = (
                 index >= 3
                 and tokens[index - 3:index] == [
@@ -1658,7 +1691,7 @@ def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] 
                 index and tokens[index - 1] == ("punctuation", ".") and not spread_call
             ):
                 continue
-            closing = matching_parenthesis(tokens, index + 1)
+            closing = matching_parenthesis(tokens, call_paren)
             if closing is not None and closing + 1 < len(tokens) and tokens[closing + 1] == ("punctuation", "{"):
                 continue
             queued.append(name)
@@ -1897,15 +1930,22 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
     bindings = frontend_rpc_bindings(dense)
     binding_counts = frontend_binding_counts(dense)
     reachable = frontend_reachable_token_indices(tokens)
+    named_blocks = frontend_named_function_blocks(tokens)
     requested: set[str] = set()
     saw_request = False
     dense_source_indices = [index for index, token in enumerate(tokens) if token[0] != "newline"]
+
+    def in_named_function(source_index: int) -> bool:
+        return any(start <= source_index <= end for start, end in named_blocks.values())
+
     for index in range(len(dense)):
-        is_reachable = reachable is None or dense_source_indices[index] in reachable
+        source_index = dense_source_indices[index]
+        is_reachable = reachable is None or source_index in reachable
         # Any reachable ``name.request(...)`` call whose receiver is not the
         # activation host has unverifiable broker provenance (including a
         # simple ``const broker = host`` alias).  Reject it instead of silently
-        # ignoring a dynamic RPC edge.
+        # ignoring a dynamic RPC edge.  The same rule applies to helpers the
+        # call graph does not follow (const/arrow/object/class methods).
         if (
             dense[index][0] == "identifier"
             and index + 3 < len(dense)
@@ -1916,13 +1956,13 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
             ]
             and dense[index][1] != "host"
         ):
-            if is_reachable:
+            if is_reachable or not in_named_function(source_index):
                 fail(f"{label} contains a host RPC request through an unresolved receiver")
         argument_index = host_request_argument_index(dense, index)
         if argument_index is None:
             continue
         argument_kind, argument_value = dense[argument_index]
-        if argument_kind == "string" and (
+        if argument_kind in {"string", "identifier"} and (
             argument_index + 1 >= len(dense)
             or dense[argument_index + 1] not in {
                 ("punctuation", ","),
@@ -1931,6 +1971,8 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
         ):
             fail(f"{label} contains an unresolved host RPC request argument")
         if not is_reachable:
+            if not in_named_function(source_index):
+                fail(f"{label} contains a host RPC request that is not reachable from activate(host)")
             # Uncalled code cannot contribute to the declared request set, but
             # malformed dynamic broker calls still invalidate the source.
             if argument_kind not in {"string", "identifier"} or (
