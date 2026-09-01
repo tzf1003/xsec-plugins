@@ -29,7 +29,18 @@ from validate_market import (  # noqa: E402
 
 
 def snapshot_dir(root: Path, plugin_id: str) -> Path:
+    """Return the retained Factory snapshot directory for one plugin."""
+
     return root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
+
+
+def traffic_release_contract() -> tuple[dict[str, object], str]:
+    """Load the reviewed Traffic 1.3.0 manifest and frontend fixtures."""
+
+    fixture = ROOT / "tests" / "fixtures"
+    manifest = json.loads((fixture / "traffic-1.3.0-plugin.json").read_text(encoding="utf-8"))
+    source = (fixture / "traffic-1.3.0-frontend.js").read_text(encoding="utf-8")
+    return manifest, source
 
 
 TERMINAL_ACTIVATION_PATTERN = re.compile(
@@ -94,6 +105,8 @@ def mutate_terminal_activation(source: str, body: str, prefix: str = "") -> str:
 
 
 def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert that asset settings failures remain isolated by surface."""
+
     if "setRuns(await api.runs())" in source:
         case.assertIn("setRunsError(", source)
         case.assertIn("setSettings(await api.settings())", source)
@@ -110,6 +123,8 @@ def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> Non
 
 
 def frontend_section(case: unittest.TestCase, source: str, start: str, end: str) -> str:
+    """Extract one named Traffic frontend section for focused assertions."""
+
     before, delimiter, remainder = source.partition(start)
     case.assertTrue(delimiter, f"missing frontend section: {start}")
     section, delimiter, _ = remainder.partition(end)
@@ -118,6 +133,8 @@ def frontend_section(case: unittest.TestCase, source: str, start: str, end: str)
 
 
 def assert_traffic_react_loaders(case: unittest.TestCase, source: str) -> None:
+    """Assert loader state and error isolation across Traffic settings sections."""
+
     default_filter = frontend_section(case, source, "function DefaultFilterSection({host})", "function samePassiveRule")
     rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
     ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
@@ -150,6 +167,8 @@ def assert_traffic_react_loaders(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_rules(case: unittest.TestCase, source: str) -> None:
+    """Assert reviewed passive-rule mutations and their refresh ordering."""
+
     rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
     mutations = frontend_section(case, source, "function ruleMutations", "function RulesSection({host})")
     handlers = (
@@ -185,6 +204,8 @@ def assert_traffic_react_rules(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_ca(case: unittest.TestCase, source: str) -> None:
+    """Assert MITM CA status, import, and rotation error handling."""
+
     ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
     ca_ui = frontend_section(case, source, "function CaStatusDetails({host,model})", "function DefaultFilterSection")
     case.assertIn("let model=useCaModel(host)", ca_ui)
@@ -207,6 +228,8 @@ def assert_traffic_react_ca(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_activation(case: unittest.TestCase, source: str) -> None:
+    """Assert settings rendering remains reachable from Traffic activation."""
+
     activation = frontend_section(case, source, "function activate(host)", "return __toCommonJS")
     plugin_app = frontend_section(case, source, "function PluginApp({host,context})", "function object2")
     settings_page = frontend_section(case, source, "function SettingsPage({host})", "function workspaceInstanceKey")
@@ -229,6 +252,8 @@ def assert_traffic_react_activation(case: unittest.TestCase, source: str) -> Non
 
 
 def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert the reviewed React settings contract preserves loaded state."""
+
     assert_traffic_react_loaders(case, source)
     assert_traffic_react_rules(case, source)
     assert_traffic_react_ca(case, source)
@@ -239,6 +264,8 @@ def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str
 
 
 def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert Traffic settings isolation for current and retained frontends."""
+
     if "function RulesSection({host})" in source:
         assert_traffic_react_settings_isolation(case, source)
         return
@@ -257,15 +284,50 @@ class MarketplaceValidationTests(unittest.TestCase):
     maxDiff = None
 
     def test_traffic_react_settings_contract_fixture(self) -> None:
+        """Keep the reviewed React settings fixture pinned to its digest."""
+
         fixture = ROOT / "tests" / "fixtures" / "traffic-1.3.0-frontend.js"
-        payload = fixture.read_bytes().removesuffix(b"\n")
+        payload = fixture.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         self.assertEqual(
             hashlib.sha256(payload).hexdigest(),
-            "f8defb39dfdb8b35fec7492b347044bee01998cc1e218343fa71e737332457b2",
+            "12807a7dce6ba885e66d5609f07bb623b5bc4a914870927a96ce255419ccdd38",
         )
         assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
 
+    def test_traffic_reviewed_frontend_contract_accepts_release_bundle(self) -> None:
+        """Accept the complete reviewed Traffic 1.3.0 release contract."""
+
+        manifest, source = traffic_release_contract()
+        validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
+
+    def test_traffic_reviewed_frontend_contract_rejects_source_mutation(self) -> None:
+        """Reject any Traffic frontend mutation outside the reviewed digest."""
+
+        manifest, source = traffic_release_contract()
+        mutated = source.replace("traffic.frontend.activate", "traffic.frontend.changed", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "reviewed Traffic frontend source"):
+            validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
+
+    def test_traffic_reviewed_frontend_contract_rejects_rpc_drift(self) -> None:
+        """Reject capability or binding drift in the reviewed Traffic RPCs."""
+
+        manifest, source = traffic_release_contract()
+        methods = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
+        methods["xsec.traffic.reference.add"]["binding"] = "plugin"
+        with self.assertRaisesRegex(MarketplaceValidationError, "reviewed Traffic RPC contract"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
+
+    def test_composer_capability_requires_plugin_api_1_4_for_any_method_name(self) -> None:
+        """Require Plugin API 1.4 for every Composer-capable method name."""
+
+        manifest, source = traffic_release_contract()
+        manifest["extensions"]["com.xsec.desktop"]["engines"]["pluginApi"] = "^1.3.0"
+        with self.assertRaisesRegex(MarketplaceValidationError, "plugin API 1.4"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
+
     def build_marketplace(self, destination: Path) -> None:
+        """Build a disposable marketplace tree for source-gate assertions."""
+
         command = [
             sys.executable,
             "scripts/build_market.py",
@@ -276,6 +338,8 @@ class MarketplaceValidationTests(unittest.TestCase):
         subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
 
     def test_source_gate_accepts_disposable_unsigned_output(self) -> None:
+        """Accept a disposable unsigned marketplace produced from current sources."""
+
         with tempfile.TemporaryDirectory(prefix="xsec-market-source-test-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
@@ -1362,6 +1426,8 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertEqual(archived_manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["version"], 2)
 
     def test_every_official_frontend_is_executable_and_placeholder_free(self) -> None:
+        """Validate lifecycle shape and API floors across official frontends."""
+
         placeholder = "XSEC official plugin is active in Desktop."
         for plugin_dir in sorted((ROOT / build_market.SNAPSHOT_ROOT_RELATIVE_PATH).iterdir()):
             if not plugin_dir.is_dir():
@@ -1372,7 +1438,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             methods = desktop["frontendApi"]["methods"]
             expected_plugin_api = (
                 "^1.4.0"
-                if set(methods) & validate_market.WORKSPACE_COMPOSER_METHODS
+                if validate_market.frontend_methods_with_capability(methods, "workspace.composer.write")
                 else "^1.3.0"
                 if "xsec.workspace.tool.open" in methods
                 else "^1.2.0"
@@ -1385,6 +1451,8 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertIn("export function activate(host)", source, plugin_id)
 
     def test_generic_official_frontend_gate_rejects_success_screen_stub(self) -> None:
+        """Reject an inert success screen in place of an official frontend."""
+
         plugin_id = "com.xsec.workspace.files"
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))

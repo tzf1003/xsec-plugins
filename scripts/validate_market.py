@@ -52,6 +52,7 @@ WINDOWS_DEVICE_SUPERSCRIPT_DIGITS = str.maketrans({
 })
 ENTRYPOINT_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
 APPROVALS_PLUGIN_ID = "com.xsec.workspace.approvals"
+TRAFFIC_PLUGIN_ID = "com.xsec.workspace.traffic"
 APPROVALS_FRONTEND_METHODS = frozenset({
     "xsec.approvals.list",
     "xsec.approvals.statistics",
@@ -63,6 +64,23 @@ APPROVALS_FRONTEND_METHOD_CONTRACT = {
     "xsec.approvals.statistics": ("workspace.session.read", "session"),
     "xsec.approvals.settings.get": ("pluginData.read", "plugin"),
     "xsec.approvals.settings.set": ("pluginData.write", "plugin"),
+}
+TRAFFIC_FRONTEND_METHOD_CONTRACT = {
+    "xsec.traffic.list": ("workspace.session.read", "session"),
+    "xsec.traffic.get": ("workspace.session.read", "session"),
+    "xsec.traffic.replay-attempts": ("workspace.session.read", "session"),
+    "xsec.traffic.replay": ("workspace.session.write", "session"),
+    "xsec.traffic.reference.add": ("workspace.composer.write", "session"),
+    "xsec.workspace.tool.open": ("workspace.tool.open", "context"),
+    "xsec.traffic.settings.get": ("pluginData.read", "plugin"),
+    "xsec.traffic.settings.set": ("pluginData.write", "plugin"),
+    "xsec.traffic.ca.status": ("pluginData.read", "plugin"),
+    "xsec.traffic.ca.import": ("pluginData.write", "plugin"),
+    "xsec.traffic.ca.rotate": ("pluginData.write", "plugin"),
+    "xsec.traffic.passive-rules.list": ("pluginData.read", "plugin"),
+    "xsec.traffic.passive-rules.upsert": ("pluginData.write", "plugin"),
+    "xsec.traffic.passive-rules.toggle": ("pluginData.write", "plugin"),
+    "xsec.traffic.passive-rules.delete": ("pluginData.write", "plugin"),
 }
 APPROVALS_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT = "onWorkspaceTool:approvals"
@@ -86,10 +104,6 @@ APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
 OFFICIAL_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE = "^1.3.0"
 WORKSPACE_COMPOSER_PLUGIN_API_RANGE = "^1.4.0"
-WORKSPACE_COMPOSER_METHODS = frozenset({
-    "xsec.workspace.composer.line-comment.add",
-    "xsec.workspace.composer.path.add",
-})
 OFFICIAL_FRONTEND_MIN_BYTES = 1_000
 OFFICIAL_PLUGIN_SETTINGS_CONTRACT: dict[str, dict[str, object]] = {
     "com.xsec.asset-discovery": {
@@ -187,6 +201,9 @@ APPROVALS_FRONTEND_SOURCE_SHA256_BY_VERSION = {
     "1.2.2": "5508a16c22e704d9a366abe60112edf20e7f0a9478d44e9d0048973501fcf00b",
     "1.3.0": "f2a7d1673b7117e7bb44398ed4ae62f08bb702f960463318260546819b0742df",
     "1.3.2": "209e8f2eb043a777a77235bdb4985d7d74f951a86162c913be80c27d9a4dcf18",
+}
+TRAFFIC_FRONTEND_SOURCE_SHA256_BY_VERSION = {
+    "1.3.0": "12807a7dce6ba885e66d5609f07bb623b5bc4a914870927a96ce255419ccdd38",
 }
 
 
@@ -1527,7 +1544,28 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
         fail(f"{label} must match the approved official approvals frontend structure")
 
 
+def validate_traffic_frontend(manifest: dict[str, object], source: str, label: str) -> None:
+    """Bind the reviewed Traffic React bundle to its complete broker contract."""
+
+    frontend_api = manifest["extensions"]["com.xsec.desktop"].get("frontendApi")
+    methods = frontend_api.get("methods") if isinstance(frontend_api, dict) else None
+    if not isinstance(methods, dict) or set(methods) != set(TRAFFIC_FRONTEND_METHOD_CONTRACT):
+        fail(f"{label} must declare the reviewed Traffic RPC surface")
+    for method, (capability, binding) in TRAFFIC_FRONTEND_METHOD_CONTRACT.items():
+        descriptor = methods.get(method)
+        if not isinstance(descriptor, dict) or descriptor.get("capability") != capability or descriptor.get("binding") != binding:
+            fail(f"{label} must bind the reviewed Traffic RPC contract ({method})")
+    normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    expected_source_sha256 = TRAFFIC_FRONTEND_SOURCE_SHA256_BY_VERSION.get(manifest.get("version"))
+    if expected_source_sha256 is None:
+        fail(f"{label} uses a Traffic version without an approved frontend source digest")
+    if hashlib.sha256(normalized_source.encode("utf-8")).hexdigest() != expected_source_sha256:
+        fail(f"{label} must match the reviewed Traffic frontend source")
+
+
 def frontend_string_constants(tokens: list[tuple[str, str]]) -> dict[str, str]:
+    """Collect unambiguous top-level string constants for RPC resolution."""
+
     dense = [token for token in tokens if token[0] != "newline"]
     constants: dict[str, str] = {}
     ambiguous: set[str] = set()
@@ -2553,6 +2591,8 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
 def validate_frontend_host_requests(
     methods: dict[str, object], tokens: list[tuple[str, str]], label: str
 ) -> set[str]:
+    """Validate reachable broker calls and return their declared method names."""
+
     requested = frontend_host_requests(tokens, label)
     undeclared = requested - set(methods)
     if undeclared:
@@ -2566,6 +2606,8 @@ def validate_frontend_rpc_literals(
     label: str,
     requested: set[str] | None = None,
 ) -> None:
+    """Reject undeclared RPC literals and declarations without real requests."""
+
     reachable = frontend_reachable_token_indices(tokens)
     reachable_names = {
         value
@@ -2599,6 +2641,18 @@ def validate_frontend_rpc_literals(
         fail(f"{label} does not reference declared RPC methods through an actual request: {sorted(missing)}")
 
 
+def frontend_methods_with_capability(
+    methods: dict[str, object], capability: str
+) -> set[str]:
+    """Return frontend method names bound to one declared capability."""
+
+    return {
+        method
+        for method, descriptor in methods.items()
+        if isinstance(descriptor, dict) and descriptor.get("capability") == capability
+    }
+
+
 def validate_official_frontend(manifest: dict[str, object], source: str, label: str) -> None:
     """Reject empty official UIs and require an executable API-v2 contract."""
 
@@ -2621,7 +2675,7 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
     methods = frontend_api.get("methods")
     if not isinstance(methods, dict) or not methods:
         fail(f"{label} must declare at least one host RPC method")
-    composer_methods = set(methods) & WORKSPACE_COMPOSER_METHODS
+    composer_methods = frontend_methods_with_capability(methods, "workspace.composer.write")
     if composer_methods and engines.get("pluginApi") != WORKSPACE_COMPOSER_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.4 for workspace Composer writes")
     if "xsec.workspace.tool.open" in methods and not composer_methods and engines.get("pluginApi") != WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE:
@@ -2641,6 +2695,12 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
         fail(f"{label} must return executable mount/update/dispose lifecycle methods")
     if frontend_contains_dynamic_evaluator(tokens):
         fail(f"{label} contains a dynamic JavaScript evaluator")
+    if (
+        manifest.get("name") == TRAFFIC_PLUGIN_ID
+        and manifest.get("version") in TRAFFIC_FRONTEND_SOURCE_SHA256_BY_VERSION
+    ):
+        validate_traffic_frontend(manifest, source, label)
+        return
     requested = validate_frontend_host_requests(methods, tokens, label)
     validate_frontend_rpc_literals(methods, tokens, label, requested)
 
