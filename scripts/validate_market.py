@@ -104,6 +104,9 @@ APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
 OFFICIAL_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE = "^1.3.0"
 WORKSPACE_COMPOSER_PLUGIN_API_RANGE = "^1.4.0"
+BROWSER_SURFACE_PLUGIN_API_RANGE = "^1.4.0"
+BROWSER_SURFACE_METHOD_PREFIX = "xsec.browser.surface."
+BROWSER_PRESENTATION_METHOD = "xsec.browser.presentation.set"
 OFFICIAL_FRONTEND_MIN_BYTES = 1_000
 OFFICIAL_PLUGIN_SETTINGS_CONTRACT: dict[str, dict[str, object]] = {
     "com.xsec.asset-discovery": {
@@ -2653,6 +2656,16 @@ def frontend_methods_with_capability(
     }
 
 
+def frontend_methods_require_browser_surface_api(methods: dict[str, object]) -> bool:
+    """Return whether frontend methods require Browser Surface API support."""
+
+    return any(
+        method.startswith(BROWSER_SURFACE_METHOD_PREFIX)
+        or method == BROWSER_PRESENTATION_METHOD
+        for method in methods
+    )
+
+
 def validate_official_frontend(manifest: dict[str, object], source: str, label: str) -> None:
     """Reject empty official UIs and require an executable API-v2 contract."""
 
@@ -2667,6 +2680,7 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
         OFFICIAL_FRONTEND_PLUGIN_API_RANGE,
         WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE,
         WORKSPACE_COMPOSER_PLUGIN_API_RANGE,
+        BROWSER_SURFACE_PLUGIN_API_RANGE,
     }:
         fail(f"{label} must require plugin API 1.2")
     frontend_api = desktop.get("frontendApi")
@@ -2676,9 +2690,12 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
     if not isinstance(methods, dict) or not methods:
         fail(f"{label} must declare at least one host RPC method")
     composer_methods = frontend_methods_with_capability(methods, "workspace.composer.write")
+    browser_surface_methods = frontend_methods_require_browser_surface_api(methods)
+    if browser_surface_methods and engines.get("pluginApi") != BROWSER_SURFACE_PLUGIN_API_RANGE:
+        fail(f"{label} must require plugin API 1.4 for browser surface methods")
     if composer_methods and engines.get("pluginApi") != WORKSPACE_COMPOSER_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.4 for workspace Composer writes")
-    if "xsec.workspace.tool.open" in methods and not composer_methods and engines.get("pluginApi") != WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE:
+    if "xsec.workspace.tool.open" in methods and not composer_methods and not browser_surface_methods and engines.get("pluginApi") != WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.3 for workspace tool navigation")
     lowered = source.lower()
     for marker in FORBIDDEN_OFFICIAL_FRONTEND_MARKERS:
