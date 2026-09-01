@@ -46,26 +46,47 @@ def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> Non
     case.assertIn('const provider=settings.value?.provider==="fofa"?"fofa":"hunter";const missing=provider==="fofa"?!settings.value?.fofaApiKeyConfigured:!settings.value?.hunterApiKeyConfigured;', source)
 
 
+def frontend_section(case: unittest.TestCase, source: str, start: str, end: str) -> str:
+    before, delimiter, remainder = source.partition(start)
+    case.assertTrue(delimiter, f"missing frontend section: {start}")
+    section, delimiter, _ = remainder.partition(end)
+    case.assertTrue(delimiter, f"missing frontend section boundary: {end}")
+    return section
+
+
+def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    default_filter = frontend_section(case, source, "function DefaultFilterSection({host})", "function samePassiveRule")
+    rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
+    mutations = frontend_section(case, source, "function ruleMutations", "function RulesSection({host})")
+    ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
+    ca_section = frontend_section(case, source, "function CaSection({host})", "function DefaultFilterSection({host})")
+    case.assertRegex(default_filter, r"loadSettings\(host\)\.then\([^;]*\)\.catch\(reason=>\{active&&setError\([^;]*\)\}\)\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)")
+    case.assertIn("error?u2(Notice,{action:", default_filter)
+    case.assertIn("children:error", default_filter)
+    case.assertIn("u2(DefaultFilterSection,{host})", source)
+    case.assertRegex(rules, r"loadRules\(host\)\.then\([^;]*\)\.catch\(reason=>\{active&&setError\([^;]*\)\}\)\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)")
+    case.assertIn("error?u2(Notice,{action:", rules)
+    case.assertIn("children:error", rules)
+    case.assertIn("let reload=async()=>{setRules(await loadRules(host))}", rules)
+    case.assertIn("function refreshRules(reload,setError,completed){try{await reload()}catch(reason){setError(", source)
+    handlers = (
+        ("save:async()=>{", "},toggle:async"),
+        ("toggle:async", "},remove:async"),
+        ("remove:async()=>{", "}}}"),
+    )
+    for start, end in handlers:
+        handler_source = frontend_section(case, mutations, start, end)
+        case.assertIn("await refreshRules(reload,setError,", handler_source)
+    case.assertIn("loadCaStatus(host).then(value=>{active&&setStatus(value)}).catch(reason=>{active&&setError(", ca_model)
+    case.assertIn("u2(CaError,{model})", ca_section)
+    for setter in ("setFilter", "setRules", "setStatus"):
+        for cleared_value in ("void 0", "null", "undefined", "[]"):
+            case.assertNotIn(f"{setter}({cleared_value})", source)
+
+
 def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> None:
     if "function RulesSection({host})" in source:
-        required = (
-            "function DefaultFilterSection({host})",
-            "loadSettings(host).then(value=>{active&&editRevision.current===startedAtEdit&&"
-            "(filterRef.current=value,setFilter(value))}).catch(reason=>{active&&setError(",
-            "u2(DefaultFilterSection,{host})",
-            "loadRules(host).then(value=>{active&&setRules(value)}).catch(reason=>{active&&setError(",
-            "finally(()=>{active&&setLoading(!1)})",
-            "let reload=async()=>{setRules(await loadRules(host))}",
-            "function refreshRules(reload,setError,completed){try{await reload()}catch(reason){setError(",
-            "function useCaModel(host)",
-            "loadCaStatus(host).then(value=>{active&&setStatus(value)}).catch(reason=>{active&&setError(",
-            "function CaError({model})",
-        )
-        for required_source in required:
-            case.assertIn(required_source, source)
-        case.assertNotIn("setFilter(void 0)", source)
-        case.assertNotIn("setRules(void 0)", source)
-        case.assertNotIn("setStatus(void 0)", source)
+        assert_traffic_react_settings_isolation(case, source)
         return
     case.assertIn('async function loadRules(){renderRules(await host.request("xsec.traffic.passive-rules.list",{}))}', source)
     case.assertIn('async function loadCa(){const view=await host.request("xsec.traffic.ca.status",{});', source)
