@@ -1267,12 +1267,12 @@ class MarketplaceValidationTests(unittest.TestCase):
         assert_traffic_settings_isolation(self, traffic_source)
 
         for plugin_id in validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT:
-            if plugin_id == "com.xsec.system-terminal":
+            if plugin_id in {"com.xsec.system-terminal", "com.xsec.workspace.traffic"}:
                 continue
             frontend = snapshot_dir(ROOT, plugin_id) / "com.xsec.desktop" / "frontend" / "index.js"
             settings_source = frontend.read_text(encoding="utf-8")
             self.assertRegex(settings_source, r"settingsReady\s*=\s*false", plugin_id)
-            self.assertRegex(settings_source, r"if\s*\(!settingsReady\)", plugin_id)
+            self.assertRegex(settings_source, r"if\s*\(!(?:this\.)?settingsReady\)", plugin_id)
             self.assertRegex(settings_source, r"\bretry(?:Button)?\.onclick", plugin_id)
             self.assertRegex(settings_source, r"\.disabled\s*=\s*true", plugin_id)
 
