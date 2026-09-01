@@ -283,12 +283,14 @@ REGEX_PREFIX_KEYWORDS = {
     "void",
     "yield",
 }
-CONTROL_HEADER_KEYWORDS = {"if", "for", "while", "with", "switch"}
+CONTROL_HEADER_KEYWORDS = {"if", "for", "while", "with", "switch", "catch"}
 CONST_INITIALIZER_TERMINATORS = {";", ",", "}"}
+STATEMENT_BLOCK_KEYWORDS = {"else", "finally", "try", "do", "catch"}
+STATEMENT_BOUNDARY_PUNCTUATION = {";", "{", "}"}
 
 
 def javascript_control_header_closed(tokens: list[tuple[str, str]]) -> bool:
-    """Return whether the last token closes if/for/while/with/switch (...)."""
+    """Return whether the last token closes if/for/while/with/switch/catch (...)."""
 
     opening = matching_opening_parenthesis(tokens, len(tokens) - 1)
     if opening is None or opening == 0:
@@ -303,6 +305,122 @@ def javascript_control_header_closed(tokens: list[tuple[str, str]]) -> bool:
     )
 
 
+def matching_opening_brace(tokens: list[tuple[str, str]], closing_index: int) -> int | None:
+    """Find the opening brace paired with a tokenized closing one."""
+
+    depth = 0
+    for index in range(closing_index, -1, -1):
+        if tokens[index] == ("punctuation", "}"):
+            depth += 1
+        elif tokens[index] == ("punctuation", "{"):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def javascript_declaration_boundary(tokens: list[tuple[str, str]], cursor: int) -> bool:
+    if cursor < 0:
+        return True
+    if tokens[cursor] == ("identifier", "default"):
+        cursor -= 1
+    if cursor >= 0 and tokens[cursor] == ("identifier", "export"):
+        cursor -= 1
+    if cursor < 0:
+        return True
+    return tokens[cursor][1] in STATEMENT_BOUNDARY_PUNCTUATION
+
+
+def javascript_function_declaration_before_brace(tokens: list[tuple[str, str]], opening: int) -> bool:
+    paren = matching_opening_parenthesis(tokens, opening - 1)
+    if paren is None or paren == 0:
+        return False
+    cursor = paren - 1
+    if tokens[cursor][0] == "identifier" and tokens[cursor][1] != "function":
+        cursor -= 1
+        if cursor < 0:
+            return False
+    if tokens[cursor] == ("punctuation", "*"):
+        cursor -= 1
+        if cursor < 0:
+            return False
+    if tokens[cursor] != ("identifier", "function"):
+        return False
+    cursor -= 1
+    if cursor >= 0 and tokens[cursor] == ("identifier", "async"):
+        cursor -= 1
+    return javascript_declaration_boundary(tokens, cursor)
+
+
+def javascript_class_declaration_before_brace(tokens: list[tuple[str, str]], opening: int) -> bool:
+    cursor = opening - 1
+    if tokens[cursor] == ("punctuation", ")"):
+        paren = matching_opening_parenthesis(tokens, cursor)
+        if paren is None or paren == 0:
+            return False
+        cursor = paren - 1
+        if cursor < 0 or tokens[cursor] != ("identifier", "extends"):
+            return False
+        cursor -= 1
+    elif cursor >= 1 and tokens[cursor][0] == "identifier" and tokens[cursor - 1] == ("identifier", "extends"):
+        cursor -= 2
+    if cursor >= 0 and tokens[cursor][0] == "identifier" and tokens[cursor][1] != "class":
+        cursor -= 1
+    if cursor < 0 or tokens[cursor] != ("identifier", "class"):
+        return False
+    return javascript_declaration_boundary(tokens, cursor - 1)
+
+
+def javascript_statement_brace_closed(tokens: list[tuple[str, str]]) -> bool:
+    """Return whether the last `}` closes a statement, so a regex may follow."""
+
+    opening = matching_opening_brace(tokens, len(tokens) - 1)
+    if opening is None:
+        return False
+    if opening == 0:
+        return True
+    previous = tokens[opening - 1]
+    if previous[1] in STATEMENT_BOUNDARY_PUNCTUATION:
+        return True
+    if previous[0] == "identifier" and previous[1] in STATEMENT_BLOCK_KEYWORDS:
+        return True
+    if (
+        previous == ("punctuation", ">")
+        and opening >= 2
+        and tokens[opening - 2] == ("punctuation", "=")
+    ):
+        return True
+    if previous != ("punctuation", ")"):
+        return javascript_class_declaration_before_brace(tokens, opening)
+    if javascript_control_header_closed(tokens[:opening]):
+        return True
+    if javascript_function_declaration_before_brace(tokens, opening):
+        return True
+    return javascript_class_declaration_before_brace(tokens, opening)
+
+
+def javascript_for_of_keyword(tokens: list[tuple[str, str]]) -> bool:
+    """Return whether the last identifier is the `of` keyword in `for (... of`."""
+
+    depth = 0
+    for index in range(len(tokens) - 2, -1, -1):
+        value = tokens[index][1]
+        if value == ")":
+            depth += 1
+        elif value == "(":
+            if depth == 0:
+                previous = tokens[index - 1] if index else None
+                if previous == ("identifier", "for"):
+                    return True
+                return (
+                    index >= 2
+                    and tokens[index - 1] == ("identifier", "await")
+                    and tokens[index - 2] == ("identifier", "for")
+                )
+            depth -= 1
+    return False
+
+
 def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
     """Return whether the next slash can begin a JavaScript regex literal."""
 
@@ -311,9 +429,17 @@ def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
         return True
     kind, value = significant[-1]
     if kind == "identifier":
-        return value in REGEX_PREFIX_KEYWORDS
-    if kind in {"number", "regex", "string", "template"} or value in {"]", "}"}:
+        if value not in REGEX_PREFIX_KEYWORDS:
+            return False
+        if len(significant) >= 2 and significant[-2] == ("punctuation", "."):
+            return False
+        if value == "of":
+            return javascript_for_of_keyword(significant)
+        return True
+    if kind in {"number", "regex", "string", "template"} or value == "]":
         return False
+    if value == "}":
+        return javascript_statement_brace_closed(significant)
     if value == ")":
         return javascript_control_header_closed(significant)
     if value in {"+", "-"} and len(significant) > 1 and significant[-2] == significant[-1]:
@@ -1383,6 +1509,65 @@ def frontend_rpc_bindings(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
     return bindings
 
 
+def frontend_binding_counts(tokens: list[tuple[str, str]]) -> dict[str, int]:
+    """Count const/let/var, function, and parameter bindings by identifier."""
+
+    counts: dict[str, int] = {}
+
+    def add(name: str) -> None:
+        counts[name] = counts.get(name, 0) + 1
+
+    index = 0
+    while index < len(tokens):
+        kind, value = tokens[index]
+        if kind == "identifier" and value in {"const", "let", "var"}:
+            index += 1
+            if index < len(tokens) and tokens[index][0] == "identifier":
+                add(tokens[index][1])
+            elif index < len(tokens) and tokens[index] == ("punctuation", "["):
+                closing = matching_square_bracket(tokens, index)
+                if closing is not None:
+                    for token in tokens[index + 1:closing]:
+                        if token[0] == "identifier":
+                            add(token[1])
+                    index = closing
+            index += 1
+            continue
+        if kind == "identifier" and value == "function":
+            index += 1
+            if index < len(tokens) and tokens[index] == ("punctuation", "*"):
+                index += 1
+            if index < len(tokens) and tokens[index][0] == "identifier":
+                add(tokens[index][1])
+                index += 1
+            if index < len(tokens) and tokens[index] == ("punctuation", "("):
+                closing = matching_parenthesis(tokens, index)
+                if closing is not None:
+                    for token in tokens[index + 1:closing]:
+                        if token[0] == "identifier":
+                            add(token[1])
+                    index = closing
+            index += 1
+            continue
+        if (
+            kind == "punctuation"
+            and value == ">"
+            and index > 0
+            and tokens[index - 1] == ("punctuation", "=")
+        ):
+            cursor = index - 2
+            if cursor >= 0 and tokens[cursor] == ("punctuation", ")"):
+                opening = matching_opening_parenthesis(tokens, cursor)
+                if opening is not None:
+                    for token in tokens[opening + 1:cursor]:
+                        if token[0] == "identifier":
+                            add(token[1])
+            elif cursor >= 0 and tokens[cursor][0] == "identifier":
+                add(tokens[cursor][1])
+        index += 1
+    return counts
+
+
 def _bracket_request_length(dense: list[tuple[str, str]], index: int) -> int:
     if (
         index + 2 < len(dense)
@@ -1440,6 +1625,7 @@ def host_request_argument_index(dense: list[tuple[str, str]], index: int) -> int
 def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str]:
     dense = [token for token in tokens if token[0] != "newline"]
     bindings = frontend_rpc_bindings(dense)
+    binding_counts = frontend_binding_counts(dense)
     requested: set[str] = set()
     saw_request = False
     for index in range(len(dense)):
@@ -1450,7 +1636,11 @@ def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str
         argument_kind, argument_value = dense[argument_index]
         if argument_kind == "string":
             requested.add(argument_value)
-        elif argument_kind == "identifier" and argument_value in bindings:
+        elif (
+            argument_kind == "identifier"
+            and argument_value in bindings
+            and binding_counts.get(argument_value, 0) == 1
+        ):
             requested.update(bindings[argument_value])
         else:
             fail(f"{label} contains an unresolved host RPC request argument")
