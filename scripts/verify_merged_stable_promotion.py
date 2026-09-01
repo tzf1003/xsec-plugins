@@ -293,11 +293,11 @@ def allowed_paths(
     *,
     renewable_sidecars: set[str],
     first_party_gitlink_ids: set[str] | None = None,
-    generated_metadata_ids: set[str] | None = None,
+    source_only_ids: set[str] | None = None,
 ) -> None:
     """Permit only the generated Factory surfaces for a signed release PR."""
 
-    authorized_ids = promoted_ids | (generated_metadata_ids or set())
+    authenticated_ids = promoted_ids | (source_only_ids or set())
     for path in paths:
         if path in renewable_sidecars or RELEASE_PATH_PATTERN.fullmatch(path):
             continue
@@ -312,36 +312,24 @@ def allowed_paths(
         if channel == "beta" and gitlink_path and first_party_gitlink_ids and gitlink_path.group(1) in first_party_gitlink_ids:
             continue
         publication_path = PUBLICATION_PATH_PATTERN.fullmatch(path)
-        if publication_path and publication_path.group(1) in authorized_ids:
+        if publication_path and publication_path.group(1) in authenticated_ids:
             continue
         publication_proof = PUBLICATION_PROOF_PATTERN.fullmatch(path)
-        if publication_proof and publication_proof.group(1) in authorized_ids:
+        if publication_proof and publication_proof.group(1) in authenticated_ids:
             continue
         adoption_path = ADOPTION_PATH_PATTERN.fullmatch(path)
-        if adoption_path and adoption_path.group(1) in authorized_ids:
+        if adoption_path and adoption_path.group(1) in promoted_ids:
             continue
         adoption_proof = ADOPTION_PROOF_PATTERN.fullmatch(path)
-        if adoption_proof and adoption_proof.group(1) in authorized_ids:
+        if adoption_proof and adoption_proof.group(1) in promoted_ids:
             continue
         status_path = STATUS_PATH_PATTERN.fullmatch(path)
-        if status_path and status_path.group(1) in authorized_ids:
+        if status_path and status_path.group(1) in authenticated_ids:
             continue
         status_proof = STATUS_PROOF_PATTERN.fullmatch(path)
-        if status_proof and status_proof.group(1) in authorized_ids:
+        if status_proof and status_proof.group(1) in authenticated_ids:
             continue
         fail(f"merged {channel} publication changed an unauthorized path: {path}")
-
-
-def generated_metadata_plugin_ids(paths: list[str]) -> set[str]:
-    """Collect plugin ids represented by generated Factory metadata paths."""
-
-    patterns = (PUBLICATION_PATH_PATTERN, PUBLICATION_PROOF_PATTERN, STATUS_PATH_PATTERN, STATUS_PROOF_PATTERN)
-    return {
-        match.group(1)
-        for path in paths
-        for pattern in patterns
-        if (match := pattern.fullmatch(path))
-    }
 
 
 def renewable_sidecars(root: Path, promoted_ids: set[str]) -> set[str]:
@@ -688,11 +676,34 @@ def beta_main_gate_binding(
     return {"repository": identity["repository"], "ref": identity["stable_ref"], "sha": source["mainGateSha"]}
 
 
-def verify_merged_publication(root: Path, before: str, after: str, channel: str) -> dict[str, object]:
+def source_only_candidate_paths(paths: list[str], plugin_id: str) -> list[str]:
+    """Keep one source-only transition independent from its batch peers."""
+
+    relevant = {
+        MARKETPLACE_SIDECAR,
+        f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json",
+        f".xsec-factory/official-publications/{plugin_id}.json",
+        f".xsec-factory/official-publication-proofs/{plugin_id}.json",
+        f".xsec-factory/official-status/{plugin_id}.json",
+        f".xsec-factory/official-status-proofs/{plugin_id}.json",
+        f"plugins/{plugin_id}",
+    }
+    return [path for path in paths if path in relevant]
+
+
+def source_only_publication_ids(paths: list[str], promoted_ids: set[str]) -> set[str]:
+    """Find source-only provenance documents beside pointer-moving releases."""
+
+    return {
+        match.group(1)
+        for path in paths
+        if (match := PUBLICATION_PATH_PATTERN.fullmatch(path)) and match.group(1) not in promoted_ids
+    }
+
+
+def require_merged_publication_paths(root: Path, before: str, after: str) -> tuple[list[str], list[tuple[str, str]]]:
     if not SHA_PATTERN.fullmatch(before) or not SHA_PATTERN.fullmatch(after):
         fail("before and after must be lowercase 40-character Git SHAs")
-    if channel not in {"beta", "stable"}:
-        fail("channel must be beta or stable")
     if not git_succeeds(root, ["merge-base", "--is-ancestor", before, after]):
         fail("protected main push must retain the prior protected revision")
     paths = changed_paths(root, before, after)
@@ -701,16 +712,91 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         fail("merged publication did not change any Factory files")
     if MARKETPLACE_SIDECAR not in paths or not release_paths:
         fail("merged publication must refresh the Marketplace sidecar and at least one release index")
+    return paths, release_paths
 
-    promoted: list[dict[str, object]] = []
+
+def release_transition_id(before_document: dict[str, object], after_document: dict[str, object], channel: str) -> str:
+    before_stable = release_pointer(before_document, "stable")
+    after_stable = release_pointer(after_document, "stable")
+    before_beta = release_pointer(before_document, "beta")
+    after_beta = release_pointer(after_document, "beta")
+    if channel == "stable":
+        if before_document.get("releases") != after_document.get("releases"):
+            fail("merged Stable promotion rewrote immutable release history")
+        if before_beta != after_beta:
+            fail("merged Stable promotion changed the Beta pointer")
+        if after_stable is None or after_stable == before_stable:
+            fail("merged Stable promotion did not move the Stable pointer")
+        return after_stable
+    before_records = before_document.get("releases")
+    after_records = after_document.get("releases")
+    if not isinstance(before_records, list) or not isinstance(after_records, list):
+        fail("merged Beta publication has invalid immutable release history")
+    if after_records[: len(before_records)] != before_records:
+        fail("merged Beta publication rewrote immutable release history")
+    if after_stable != before_stable:
+        fail("merged Beta publication changed the Stable pointer")
+    if after_beta is None or after_beta == before_beta:
+        fail("merged Beta publication did not move the Beta pointer")
+    if not after_records or not isinstance(after_records[-1], dict) or after_records[-1].get("releaseId") != after_beta:
+        fail("merged Beta publication must select its appended immutable release")
+    return after_beta
+
+
+def authenticated_release_record(
+    root: Path,
+    before: str,
+    after: str,
+    *,
+    channel: str,
+    plugin_id: str,
+    release_path: str,
+    paths: list[str],
+) -> dict[str, object]:
+    sidecar = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json"
+    if sidecar not in paths:
+        fail("merged publication must refresh every changed release KMS sidecar")
+    if git_succeeds(root, ["cat-file", "-e", f"{before}:{release_path}"]):
+        before_document = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{before}:{release_path}"]))
+    else:
+        before_document = empty_release_document(plugin_id)
+    after_document = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{after}:{release_path}"]))
+    release_id = release_transition_id(before_document, after_document, channel)
+    source = registry_source_binding(root, before, after, plugin_id=plugin_id, channel=channel, release_id=release_id)
+    record: dict[str, object] = {"plugin_id": plugin_id, "release_id": release_id}
+    if source is None:
+        return record
+    record["source"] = source
+    if channel == "beta":
+        require_first_party_gitlink(root, before, after, plugin_id=plugin_id, source=source)
+        record["main_source"] = beta_main_gate_binding(root, after, plugin_id=plugin_id, release_id=release_id, beta_source=source)
+    return record
+
+
+def source_only_batch_promotions(
+    root: Path,
+    before: str,
+    after: str,
+    *,
+    paths: list[str],
+    source_only_ids: set[str],
+) -> list[dict[str, object]]:
+    return [
+        verify_source_only_beta(root, before, after, source_only_candidate_paths(paths, plugin_id))["promotions"][0]
+        for plugin_id in sorted(source_only_ids)
+    ]
+
+
+def verify_merged_publication(root: Path, before: str, after: str, channel: str) -> dict[str, object]:
+    if channel not in {"beta", "stable"}:
+        fail("channel must be beta or stable")
+    paths, release_paths = require_merged_publication_paths(root, before, after)
+
     promoted_ids = {plugin_id for plugin_id, _ in release_paths}
-    metadata_ids = generated_metadata_plugin_ids(paths)
-    for plugin_id in metadata_ids:
-        if active_registered_source(root, after, plugin_id=plugin_id) is None:
-            fail("generated Factory metadata must belong to an active registered plugin")
+    source_only_ids = source_only_publication_ids(paths, promoted_ids) if channel == "beta" else set()
     first_party_gitlink_ids = {
         plugin_id
-        for plugin_id in promoted_ids
+        for plugin_id in promoted_ids | source_only_ids
         if (identity := active_registered_source(root, after, plugin_id=plugin_id)) is not None
         and identity["trust_tier"] == "first-party"
     }
@@ -720,58 +806,13 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         promoted_ids,
         renewable_sidecars=renewable_sidecars(root, promoted_ids),
         first_party_gitlink_ids=first_party_gitlink_ids,
-        generated_metadata_ids=metadata_ids,
+        source_only_ids=source_only_ids,
     )
-    for plugin_id, release_path in release_paths:
-        sidecar = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json"
-        if sidecar not in paths:
-            fail("merged publication must refresh every changed release KMS sidecar")
-        if git_succeeds(root, ["cat-file", "-e", f"{before}:{release_path}"]):
-            before_document = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{before}:{release_path}"]))
-        else:
-            before_document = empty_release_document(plugin_id)
-        after_document = release_document_from_blob(plugin_id, git_bytes(root, ["show", f"{after}:{release_path}"]))
-        before_stable = release_pointer(before_document, "stable")
-        after_stable = release_pointer(after_document, "stable")
-        before_beta = release_pointer(before_document, "beta")
-        after_beta = release_pointer(after_document, "beta")
-        if channel == "stable":
-            if before_document.get("releases") != after_document.get("releases"):
-                fail("merged Stable promotion rewrote immutable release history")
-            if before_beta != after_beta:
-                fail("merged Stable promotion changed the Beta pointer")
-            if after_stable is None or after_stable == before_stable:
-                fail("merged Stable promotion did not move the Stable pointer")
-            release_id = after_stable
-        else:
-            before_records = before_document.get("releases")
-            after_records = after_document.get("releases")
-            if not isinstance(before_records, list) or not isinstance(after_records, list):
-                fail("merged Beta publication has invalid immutable release history")
-            if after_records[: len(before_records)] != before_records:
-                fail("merged Beta publication rewrote immutable release history")
-            if after_stable != before_stable:
-                fail("merged Beta publication changed the Stable pointer")
-            if after_beta is None or after_beta == before_beta:
-                fail("merged Beta publication did not move the Beta pointer")
-            if not after_records or not isinstance(after_records[-1], dict) or after_records[-1].get("releaseId") != after_beta:
-                fail("merged Beta publication must select its appended immutable release")
-            release_id = after_beta
-        source = registry_source_binding(root, before, after, plugin_id=plugin_id, channel=channel, release_id=release_id)
-        record: dict[str, object] = {"plugin_id": plugin_id, "release_id": release_id}
-        if source is not None:
-            record["source"] = source
-            if channel == "beta":
-                if f"plugins/{plugin_id}" in paths:
-                    require_first_party_gitlink(root, before, after, plugin_id=plugin_id, source=source)
-                record["main_source"] = beta_main_gate_binding(
-                    root,
-                    after,
-                    plugin_id=plugin_id,
-                    release_id=release_id,
-                    beta_source=source,
-                )
-        promoted.append(record)
+    promoted = [
+        authenticated_release_record(root, before, after, channel=channel, plugin_id=plugin_id, release_path=release_path, paths=paths)
+        for plugin_id, release_path in release_paths
+    ]
+    promoted.extend(source_only_batch_promotions(root, before, after, paths=paths, source_only_ids=source_only_ids))
     if channel == "stable" and not promoted:
         fail("merged Stable promotion must change at least one releases.json document")
     return {"kind": channel, "promotions": promoted}

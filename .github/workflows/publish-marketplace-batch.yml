@@ -119,6 +119,7 @@ jobs:
             git -C "$root" -c core.hooksPath=/dev/null worktree add --detach "$root-main" refs/remotes/xsec-batch/main
             python scripts/external_source_factory.py prepare --plugin-id "$plugin_id" --channel beta --source-sha "$beta_sha" >/dev/null
             python scripts/external_source_factory.py stage-beta --plugin-id "$plugin_id" --source-root "$root" >/dev/null
+            git update-index --add --cacheinfo "160000,${beta_sha},plugins/${plugin_id}"
             jq -cn --arg plugin_id "$plugin_id" --arg beta_sha "$beta_sha" --arg main_sha "$main_sha" --arg root "$root" \
               '{plugin_id:$plugin_id,beta_sha:$beta_sha,main_sha:$main_sha,source_root:$root}' >> "$records"
           done < <(printf '%s' "$BATCH" | jq -rc '.[]')
@@ -188,7 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$GH_TOKEN" ] || { echo "XSEC_MARKETPLACE_PUBLISH_TOKEN is not configured." >&2; exit 1; }
-          git add -A .agents/plugins .xsec-factory
+          git add -A .agents/plugins .xsec-factory plugins
           git diff --cached --quiet && { echo "Current batch was not staged." >&2; exit 1; }
           git config user.name "xsec-marketplace[bot]"
           git config user.email "xsec-marketplace[bot]@users.noreply.github.com"
