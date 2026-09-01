@@ -293,12 +293,15 @@ signature protocol.
 ## Publication queue and Agent evidence
 
 Beta publication, Stable promotion, retained-sidecar repair, and first-party
-adoption share one serialized publication slot. Before any of them calls KMS,
-it refuses to sign if an `xsec-marketplace/*` generated PR is still open.
-This makes the open-PR interval part of the queue: a second candidate cannot be
-signed against the same Factory base, then become stale or conflict when the
-first PR merges. After merge, the diff/sidecar classifier makes that generated
-transition a no-op for `publish.yml`, independent of the merge subject.
+adoption share one serialized publication slot while KMS writes the shared
+index and signatures. Once a generated PR exists, external Beta publication
+and Stable promotion block only another open transition for the same plugin.
+They identify that transition from its Factory status, provenance, release, and
+snapshot paths; an incomplete GitHub file listing fails closed. This permits
+unrelated plugins to be reviewed in parallel while preserving one active
+transition per plugin. Every final merge still revalidates its exact head,
+protected-main base, source refs, immutable artifacts, and KMS proofs; a
+candidate made stale by a prior merge must be refreshed and reviewed again.
 
 If a registered source `main` event arrives after its same-plugin Beta PR was
 generated, the protected Cloud Dispatcher re-reads the exact Registry source,

@@ -49,9 +49,9 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # All candidates share one queue. A pending generated PR is additionally
-  # rejected before KMS below, so ending a source-gated run cannot free a slot
-  # for another stale/re-signed candidate.
+  # All KMS mutations share one queue. A candidate leaves this queue after its
+  # immutable documents are created, so an unrelated plugin can be reviewed
+  # and published without waiting for that review to finish.
   group: xsec-marketplace-publish-main
   cancel-in-progress: false
 
@@ -213,22 +213,53 @@ jobs:
           source_revision="$(git rev-parse HEAD)"
           [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not protected main." >&2; exit 1; }
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
-      - name: Refuse to sign while any generated Factory PR awaits protected final merge
+      - name: Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
+          PLUGIN_ID: ${{ inputs.plugin_id }}
         run: |
           set -euo pipefail
-          pending="$(
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" |
-              jq -r --arg repository "$GITHUB_REPOSITORY" '
-                .[] |
-                select(.head.repo.full_name == $repository) |
-                .head.ref |
-                select(startswith("xsec-marketplace/"))
-              '
-          )"
-          if [ -n "$pending" ]; then
-            printf 'A generated Marketplace PR is still awaiting source validation and protected final merge:\n%s\n' "$pending" >&2
+          if [ -n "$PLUGIN_ID" ] && ! [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]]; then
+            echo "plugin_id is unsafe." >&2
+            exit 1
+          fi
+          candidates="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" | jq -cer --arg repository "$GITHUB_REPOSITORY" '
+            [ .[][]
+              | select(.head.repo.full_name == $repository)
+              | select(.head.ref | startswith("xsec-marketplace/"))
+            ]
+          ')"
+          pending=()
+          while IFS= read -r candidate; do
+            number="$(printf '%s' "$candidate" | jq -er .number)"
+            branch="$(printf '%s' "$candidate" | jq -er .head.ref)"
+            if [ -z "$PLUGIN_ID" ]; then
+              [[ "$branch" == xsec-marketplace/publish-* ]] && pending+=("#${number}:${branch}")
+              continue
+            fi
+            metadata="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}")"
+            changed_file_count="$(printf '%s' "$metadata" | jq -er '.changed_files | if type == "number" and floor == . and . >= 0 then . else error("invalid changed_files") end')"
+            files="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${number}/files?per_page=100")"
+            returned_file_count="$(printf '%s' "$files" | jq -er '[.[][] | .filename] | if all(.[]; type == "string") then length else error("invalid PR filename") end')"
+            [ "$returned_file_count" -eq "$changed_file_count" ] || {
+              echo "Cannot completely inspect generated Factory PR #${number}; refusing to sign ${PLUGIN_ID}." >&2
+              exit 1
+            }
+            if printf '%s' "$files" | jq -e --arg plugin_id "$PLUGIN_ID" '
+              any(.[][];
+                .filename == ("plugins/" + $plugin_id)
+                or .filename == (".xsec-factory/official-publications/" + $plugin_id + ".json")
+                or .filename == (".xsec-factory/official-publication-proofs/" + $plugin_id + ".json")
+                or .filename == (".xsec-factory/official-status/" + $plugin_id + ".json")
+                or .filename == (".xsec-factory/official-status-proofs/" + $plugin_id + ".json")
+                or .filename == (".xsec-factory/snapshots/" + $plugin_id + "/.xsec-market/releases.json")
+              )
+            ' >/dev/null; then
+              pending+=("#${number}:${branch}")
+            fi
+          done < <(printf '%s' "$candidates" | jq -rc '.[]')
+          if [ "${#pending[@]}" -gt 0 ]; then
+            printf 'The requested Marketplace transition is still awaiting source validation and protected final merge:\n%s\n' "${pending[*]}" >&2
             exit 1
           fi
       - uses: actions/setup-python@v5
