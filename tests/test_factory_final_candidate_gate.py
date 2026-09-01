@@ -71,8 +71,26 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
         self.assertIn("exact PR head has no successful Factory source gate", workflow)
         self.assertIn("Require a current source gate", workflow)
-        self.assertNotIn("coderabbit", workflow.lower())
-        self.assertNotIn("reviewThreads", workflow)
+        self.assertIn("Require the completed CodeRabbit review and resolved threads", workflow)
+        self.assertIn("coderabbitai", workflow.lower())
+        self.assertIn("reviewThreads(first:100)", workflow)
+        self.assertIn("pageInfo{hasNextPage}", workflow)
+        self.assertIn('.state == "COMMENTED"', workflow)
+
+    def test_every_generated_candidate_requests_coderabbit_review_once(self) -> None:
+        workflows = (
+            "publish.yml",
+            "publish-marketplace-batch.yml",
+            "promote-stable.yml",
+            "stage-first-party-adoption.yml",
+            "adopt-first-party.yml",
+            "refresh-retained-sidecars.yml",
+            "migrate-factory-layout-sidecars.yml",
+        )
+        for workflow_name in workflows:
+            workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+            with self.subTest(workflow=workflow_name):
+                self.assertEqual(workflow.count("@coderabbitai review"), 1)
 
     def test_adoption_signer_uses_the_retained_protected_pre_staging_revision(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
@@ -295,11 +313,11 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         )
         self.assertLess(dispatcher.index(stable_skip), dispatcher.index("source_scope=\"$(printf '%s' \"$sources\""))
 
-    def test_finalizer_and_dispatcher_do_not_query_review_threads(self) -> None:
+    def test_finalizer_requires_resolved_review_threads(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
-        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
-        for protected_workflow in (workflow, dispatcher):
-            self.assertNotIn("reviewThreads", protected_workflow)
+        self.assertIn("reviewThreads(first:100)", workflow)
+        self.assertIn("all($pr.reviewThreads.nodes[]?; .isResolved == true)", workflow)
+        self.assertIn("$pr.reviewThreads.pageInfo.hasNextPage == false", workflow)
 
 
 if __name__ == "__main__":

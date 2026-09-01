@@ -340,6 +340,26 @@ jobs:
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }
+      - name: Require the completed CodeRabbit review and resolved threads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          review_state="$(gh api graphql -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviews(first:100){nodes{author{login} state commit{oid}}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER")"
+          printf '%s' "$review_state" | jq -e --arg head "$HEAD_SHA" '
+            .data.repository.pullRequest as $pr
+            | ($pr.headRefOid == $head)
+              and any($pr.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+              and ($pr.reviewThreads.nodes | type == "array")
+              and ($pr.reviewThreads.pageInfo.hasNextPage == false)
+              and all($pr.reviewThreads.nodes[]?; .isResolved == true)
+          ' >/dev/null || {
+            echo "The exact Factory PR head requires a completed CodeRabbit review with all review threads resolved." >&2
+            exit 1
+          }
       - name: Recheck the live PR/source boundary before the isolated final merge
         env:
           GH_TOKEN: ${{ github.token }}

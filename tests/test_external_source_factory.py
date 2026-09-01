@@ -2423,7 +2423,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("--baseline-root \"$baseline_root\"", adoption_workflow)
         self.assertIn("--factory-revision \"$baseline_revision\"", adoption_workflow)
         self.assertIn("git worktree add --detach", adoption_workflow)
-        self.assertNotIn("coderabbit", adoption_workflow.lower())
+        self.assertEqual(adoption_workflow.count("@coderabbitai review"), 1)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', adoption_workflow)
 
 
