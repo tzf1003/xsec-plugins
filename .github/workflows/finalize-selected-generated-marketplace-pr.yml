@@ -1,0 +1,120 @@
+name: Finalize selected generated Marketplace PR
+
+on:
+  workflow_run:
+    workflows: [Automatically finalize generated Marketplace PR]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: xsec-marketplace-final-merge-main
+  cancel-in-progress: false
+
+jobs:
+  select-exact-generated-pr:
+    # `workflow_run` executes this workflow from protected default-branch
+    # configuration. The preceding selector stays unprivileged on the PR
+    # event; this second selector re-reads every live fact before production
+    # secrets and the Finalizer App become available.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'workflow_run' ||
+       github.event.workflow_run.event == 'pull_request' ||
+       github.event.workflow_run.event == 'pull_request_review' ||
+       github.event.workflow_run.event == 'status') &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/')
+    runs-on: ubuntu-latest
+    outputs:
+      pull_number: ${{ steps.pr.outputs.pull_number }}
+      eligible: ${{ steps.pr.outputs.eligible }}
+    steps:
+      - name: Require the preceding unprivileged selector to have run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          jobs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${UPSTREAM_RUN_ID}/jobs?per_page=100")"
+          printf '%s' "$jobs" | jq -e '
+            any(.jobs[]?; .name == "select-exact-generated-pr" and .conclusion == "success")
+          ' >/dev/null || {
+            echo "The preceding Marketplace selector did not complete." >&2
+            exit 1
+          }
+      - name: Resolve one exact ready generated Factory PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Finalizer handoff has an invalid head SHA." >&2; exit 1; }
+          prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
+          matches="$(printf '%s' "$prs" | jq -cer --arg repository "$HEAD_REPOSITORY" --arg branch "$HEAD_BRANCH" --arg sha "$HEAD_SHA" '
+            [.[][] | select(.head.repo.full_name == $repository and .head.ref == $branch and .head.sha == $sha)]
+          ')"
+          count="$(printf '%s' "$matches" | jq -er 'length')"
+          if [ "$count" = "0" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$count" = "1" ] || { echo "expected one exact open generated PR" >&2; exit 1; }
+          pull_number="$(printf '%s' "$matches" | jq -er '.[0].number')"
+          [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
+          case "$HEAD_BRANCH" in
+            xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
+            *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
+          esac
+          check_runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100")"
+          if ! printf '%s' "$check_runs" | jq -e '
+            any(.check_runs[]?; .name == "source-gate" and .status == "completed" and .conclusion == "success")
+          ' >/dev/null || ! printf '%s' "$check_runs" | jq -e '
+            any(.check_runs[]?; .name == "source-freshness-gate" and .status == "completed" and .conclusion == "success")
+          ' >/dev/null; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The protected finalizer re-reads this state immediately before its
+          # App-token merge. Keep the handoff unqueued until the same exact
+          # candidate already has a formal CodeRabbit review and no open
+          # threads, so source-gate completion alone cannot consume production
+          # credentials for an unreviewed candidate.
+          # shellcheck disable=SC2016
+          review_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviews(first:100,after:$endCursor){nodes{author{login} state commit{oid}} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          # shellcheck disable=SC2016
+          thread_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          jq -ne --arg head "$HEAD_SHA" --argjson reviews "$review_pages" --argjson threads "$thread_pages" '
+            ($reviews | type == "array" and length > 0)
+            and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
+            and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
+            and any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+            and ($threads | type == "array" and length > 0)
+            and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
+            and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
+            and all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
+          ' >/dev/null || {
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+  final-revalidate-and-merge:
+    needs: select-exact-generated-pr
+    if: ${{ !cancelled() && needs.select-exact-generated-pr.result == 'success' && needs.select-exact-generated-pr.outputs.eligible == 'true' }}
+    uses: ./.github/workflows/final-merge-generated-marketplace-pr.yml
+    with:
+      pull_number: ${{ needs.select-exact-generated-pr.outputs.pull_number }}
+      # The protected finalizer re-reads the exact formal CodeRabbit review
+      # and every review thread before it requests its narrow App token.
+      coderabbit_status_verified: false
+    secrets: inherit
