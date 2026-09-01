@@ -182,6 +182,37 @@ class MarketplaceValidationTests(unittest.TestCase):
             with self.subTest(example=example):
                 validate_market.validate_official_frontend(manifest, f"{source}\n{example}\n", plugin_id)
 
+    def test_javascript_contract_tokens_distinguish_division_from_regex_literals(self) -> None:
+        source = (
+            'const ratio=value/"path/segment".length;'
+            'const scaled=1/"path/segment".length;'
+            'value++/"path/segment".length;'
+            'const matcher=/host\\.request\\("xsec\\.example"/;'
+            'return /host\\.request\\("xsec\\.example"/;'
+        )
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        regexes = [value for kind, value in tokens if kind == "regex"]
+        strings = [value for kind, value in tokens if kind == "string"]
+
+        self.assertEqual(len(regexes), 2)
+        self.assertEqual(strings, ["path/segment", "path/segment", "path/segment"])
+
+    def test_javascript_contract_tokens_parse_only_executable_template_expressions(self) -> None:
+        source = (
+            '`host.request("xsec.example.text", {})`;'
+            '`${host.request("xsec.example.executable", {})}`;'
+            '`${value /* denominator */ / "path/segment"}`;'
+            '`${/}/.test(value) ? `nested:${value}` : "plain"}`/"path/segment";'
+        )
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        requested = validate_market.frontend_host_requests(tokens, "frontend")
+        regexes = [value for kind, value in tokens if kind == "regex"]
+        strings = [value for kind, value in tokens if kind == "string"]
+
+        self.assertEqual(requested, {"xsec.example.executable"})
+        self.assertIn("/}/", regexes)
+        self.assertEqual(strings.count("path/segment"), 2)
+
     def test_official_frontend_rejects_unresolved_host_request_argument(self) -> None:
         plugin_id = "com.xsec.system-terminal"
         plugin_dir = snapshot_dir(ROOT, plugin_id)
@@ -803,7 +834,7 @@ export function renderPlaceholder() {}
                 "rpc-after-template-host-write",
                 lambda value: None,
                 "export function activate(host) { `${host = { request() {} }}`; host.request(\"xsec.approvals.list\", {}); host.request(\"xsec.approvals.statistics\", {}); return {}; }\n",
-                "unsupported executable template interpolation",
+                "host broker contract",
             ),
             (
                 "rpc-after-escaped-host-write",

@@ -267,16 +267,123 @@ def consume_javascript_regex(source: str, index: int) -> int | None:
     return None
 
 
+REGEX_PREFIX_KEYWORDS = {
+    "await",
+    "case",
+    "delete",
+    "do",
+    "else",
+    "in",
+    "instanceof",
+    "new",
+    "of",
+    "return",
+    "throw",
+    "typeof",
+    "void",
+    "yield",
+}
+
+
+def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
+    """Return whether the next slash can begin a JavaScript regex literal."""
+
+    significant = [token for token in tokens if token[0] != "newline"]
+    if not significant:
+        return True
+    kind, value = significant[-1]
+    if kind == "identifier":
+        return value in REGEX_PREFIX_KEYWORDS
+    if kind in {"number", "regex", "string"} or value in {")", "]", "}"}:
+        return False
+    if value in {"+", "-"} and len(significant) > 1 and significant[-2] == significant[-1]:
+        return False
+    return True
+
+
+def consume_javascript_quote(source: str, index: int, quote: str) -> int | None:
+    cursor = index + 1
+    escaped = False
+    while cursor < len(source):
+        character = source[cursor]
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == quote:
+            return cursor + 1
+        cursor += 1
+    return None
+
+
+def source_regex_allowed(source: str, start: int, index: int, label: str) -> bool:
+    prefix_tokens = javascript_contract_tokens(source[start:index], label)
+    return javascript_regex_allowed(prefix_tokens)
+
+
+def consume_javascript_interpolation(source: str, index: int, label: str) -> int:
+    depth = 1
+    cursor = index
+    while cursor < len(source):
+        if source.startswith("//", cursor):
+            newline = source.find("\n", cursor + 2)
+            cursor = len(source) if newline == -1 else newline + 1
+            continue
+        if source.startswith("/*", cursor):
+            end = source.find("*/", cursor + 2)
+            if end == -1:
+                fail(f"{label} contains an unterminated JavaScript block comment")
+            cursor = end + 2
+            continue
+        character = source[cursor]
+        if character in {"'", '"'}:
+            end = consume_javascript_quote(source, cursor, character)
+            if end is None:
+                fail(f"{label} contains an unterminated JavaScript string")
+            cursor = end
+            continue
+        if character == "`":
+            cursor, _ = consume_javascript_template(source, cursor, label)
+            continue
+        if character == "/" and source_regex_allowed(source, index, cursor, label):
+            end = consume_javascript_regex(source, cursor)
+            if end is not None:
+                cursor = end
+                continue
+        depth += 1 if character == "{" else -1 if character == "}" else 0
+        cursor += 1
+        if depth == 0:
+            return cursor
+    fail(f"{label} contains an unterminated JavaScript template interpolation")
+
+
+def consume_javascript_template(source: str, index: int, label: str) -> tuple[int, list[str]]:
+    expressions: list[str] = []
+    cursor = index + 1
+    while cursor < len(source):
+        character = source[cursor]
+        if character == "\\":
+            cursor += 2
+            continue
+        if character == "`":
+            return cursor + 1, expressions
+        if source.startswith("${", cursor):
+            end = consume_javascript_interpolation(source, cursor + 2, label)
+            expressions.append(source[cursor + 2:end - 1])
+            cursor = end
+            continue
+        cursor += 1
+    fail(f"{label} contains an unterminated JavaScript string")
+
+
 def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]:
     """Tokenize the small JavaScript subset used by static frontend checks.
 
     Marketplace validation must never import or execute a plugin archive.  The
     tokenizer deliberately recognizes comments, string/template literals and
-    slash-delimited literal candidates so an `activate` or RPC snippet merely
-    written as data cannot satisfy the release contract.  Because the checker
-    intentionally does not parse or execute plugins, slash pairs are consumed
-    conservatively even where JavaScript could interpret them as division;
-    that can reject an unusual valid program, but never accepts a placeholder.
+    slash-delimited literals so an `activate` or RPC snippet merely written as
+    data cannot satisfy the release contract. Slash tokens use their lexical
+    expression context to distinguish regex literals from division operators.
     """
 
     tokens: list[tuple[str, str]] = []
@@ -305,13 +412,21 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
                 fail(f"{label} contains an unterminated JavaScript block comment")
             index = end + 2
             continue
-        if character == "/":
+        if character == "/" and javascript_regex_allowed(tokens):
             end = consume_javascript_regex(source, index)
             if end is not None:
                 tokens.append(("regex", source[index:end]))
                 index = end
                 continue
-        if character in {"'", '"', "`"}:
+        if character == "`":
+            end, expressions = consume_javascript_template(source, index, label)
+            literal = source[index + 1:end - 1]
+            tokens.append(("template" if expressions else "string", literal))
+            for expression in expressions:
+                tokens.extend(javascript_contract_tokens(expression, label))
+            index = end
+            continue
+        if character in {"'", '"'}:
             quote = character
             start = index + 1
             index += 1
@@ -324,16 +439,19 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
                     escaped = True
                 elif current == quote:
                     literal = source[start:index]
-                    if quote == "`" and "${" in literal and any(
-                        marker in literal for marker in {"host", "\\u", "eval", "Function"}
-                    ):
-                        fail(f"{label} contains an unsupported executable template interpolation")
                     tokens.append(("string", literal))
                     index += 1
                     break
                 index += 1
             else:
                 fail(f"{label} contains an unterminated JavaScript string")
+            continue
+        if character.isdigit():
+            start = index
+            index += 1
+            while index < length and (source[index].isalnum() or source[index] in {"_", "."}):
+                index += 1
+            tokens.append(("number", source[start:index]))
             continue
         if character.isalpha() or character in {"_", "$"}:
             start = index
