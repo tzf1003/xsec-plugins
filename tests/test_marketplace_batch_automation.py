@@ -50,6 +50,10 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "permission-contents: read",
             "permission-checks: read",
             "python scripts/build_market.py --clean",
+            "git status --porcelain --untracked-files=all",
+            'source_revision="$(git rev-parse HEAD)"',
+            '"$(git rev-parse origin/main)"',
+            "XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}",
             "python scripts/kms_marketplace_publisher.py --root .",
             'branch="xsec-marketplace/batch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
         ):

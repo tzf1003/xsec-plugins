@@ -28,6 +28,16 @@ jobs:
         with:
           ref: refs/heads/main
           fetch-depth: 0
+      - name: Record the current protected Factory revision after acquiring the publication slot
+        id: current-main
+        run: |
+          set -euo pipefail
+          source_revision="$(git rev-parse HEAD)"
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || {
+            echo "Current checkout is not protected main." >&2
+            exit 1
+          }
+          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -139,7 +149,7 @@ jobs:
         id: decision
         run: |
           set -euo pipefail
-          changed="$(git diff --name-only -- .agents/plugins .xsec-factory | rg -v '\.sig\.jws\.json$' || true)"
+          changed="$(git status --porcelain --untracked-files=all -- .agents/plugins .xsec-factory | rg -v '\.sig\.jws\.json$' || true)"
           if [ -n "$changed" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
@@ -162,7 +172,7 @@ jobs:
       - name: Validate and sign the complete immutable Factory candidate
         if: ${{ steps.decision.outputs.publish == 'true' }}
         env:
-          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ github.sha }}
+          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: |
           set -euo pipefail
           python scripts/validate_market.py source --source-root . --built-root .
