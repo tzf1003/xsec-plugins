@@ -104,6 +104,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             'test("^xsec-marketplace/batch-[0-9]+-[0-9]+$")',
             "for name in source-gate; do",
             'creator.login == "coderabbitai[bot]"',
+            'if length > 0 then .[0].state == "success"',
             "reviewThreads(first:100,after:$endCursor)",
             "Verify the signed stale batch as data",
             "--verify-active-marketplace-signatures",
@@ -115,6 +116,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, recovery)
+        self.assertNotIn('sort_by(.created_at) | last | .state == "success"', recovery)
         self.assertIn("trigger_label:", publisher)
         self.assertIn("outputs:\n      pull_number:", publisher)
         self.assertIn('Factory trigger label is invalid.', publisher)
@@ -146,7 +148,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', workflow)
         self.assertIn('creator.login == "coderabbitai[bot]"', workflow)
         self.assertIn('creator.type == "Bot"', workflow)
-        self.assertIn('sort_by(.created_at) | last | .state == "success"', workflow)
+        self.assertIn('if length > 0 then .[0].state == "success"', workflow)
+        self.assertNotIn('sort_by(.created_at)', workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertIn("gh api graphql --paginate --slurp", workflow)
         self.assertIn("all(.[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
@@ -171,7 +174,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('commits/${head_sha}/statuses?per_page=100', selected_finalizer)
         self.assertIn('creator.login == "coderabbitai[bot]"', selected_finalizer)
         self.assertIn('creator.type == "Bot"', selected_finalizer)
-        self.assertIn('sort_by(.created_at) | last | .state == "success"', selected_finalizer)
+        self.assertIn('if length > 0 then .[0].state == "success"', selected_finalizer)
+        self.assertNotIn('sort_by(.created_at)', selected_finalizer)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", selected_finalizer)
         self.assertIn("needs.select-exact-generated-pr.result == 'success'", selected_finalizer)
         self.assertIn("outputs.eligible == 'true'", selected_finalizer)

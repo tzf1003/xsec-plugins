@@ -90,7 +90,7 @@ jobs:
                     and (.created_at | type == "string")
                   )
               ]
-              | if length > 0 then sort_by(.created_at) | last | .state == "success" else false end
+              | if length > 0 then .[0].state == "success" else false end
             )
           ' >/dev/null; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
