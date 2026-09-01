@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the reviewed host-owned project workspace Marketplace transition."""
+"""Apply the reviewed Marketplace default-set transition."""
 
 from __future__ import annotations
 

@@ -219,19 +219,8 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
 
     def test_dispatcher_skips_only_kms_authenticated_callback_bound_registered_stable_smoke(self) -> None:
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
-        callback_bound_stable = '''callback_bound_stable="$(printf '%s' "$result" | jq -cr '
-            if .kind != "stable" then false
-            elif (.promotions | type) != "array" or (.promotions | length) != 1 then false
-            elif (.promotions[0].source | type) != "object" then false
-            elif (.promotions[0].source.repository | type) != "string" then false
-            elif .promotions[0].source.ref != "refs/heads/main" then false
-            elif (.promotions[0].source.sha | type) != "string" then false
-            elif (.promotions[0].release_id | type) != "string" then false
-            else true
-            end
-          ')"'''
-
-        self.assertIn(callback_bound_stable, dispatcher)
+        self.assertIn('elif (.promotions | type) != "array" or (.promotions | length) == 0 then false', dispatcher)
+        self.assertIn('all(.promotions[];', dispatcher)
         self.assertIn("Do not use jq -e here: false is the expected result", dispatcher)
         self.assertIn('[ "$kind" != "beta" ] && [ "$kind" != "beta-smoke-ready" ] && [ "$kind" != "stable" ]', dispatcher)
         for required_status_binding in (
@@ -242,13 +231,14 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             '.release.stableReleaseId == $release_id',
             '.publication.smokeRunUrl | type == "string"',
             '.publication.marketplaceRevision | type == "string"',
-            'Registered Stable completion is bound to its KMS-authenticated Beta Desktop smoke callback',
+            'All registered Stable completions are bound to their KMS-authenticated Beta Desktop smoke callbacks',
         ):
             with self.subTest(required_status_binding=required_status_binding):
                 self.assertIn(required_status_binding, dispatcher)
 
         stable_skip = 'if [ "$callback_bound_stable" = "true" ]; then'
         self.assertIn(stable_skip, dispatcher)
+        self.assertIn("done < <(printf '%s' \"$result\" | jq -rc '.promotions[]')", dispatcher)
         # A legacy pointer-only stable promotion has no registered source and
         # a manual external Stable recovery has no terminal smoke status, so
         # both remain eligible for the independent Stable smoke contract.
@@ -256,7 +246,10 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertNotIn("Dispatch the validated Beta revision to Desktop smoke", dispatcher)
         # KMS verification must precede the callback-status no-op, while the
         # no-op still occurs before source tokens and Desktop dispatch quota.
-        self.assertLess(dispatcher.index("verification=\"$(python scripts/kms_marketplace_publisher.py"), dispatcher.index(callback_bound_stable))
+        self.assertLess(
+            dispatcher.index("verification=\"$(python scripts/kms_marketplace_publisher.py"),
+            dispatcher.index("callback_bound_stable=\"$(printf '%s' \"$result\""),
+        )
         self.assertLess(dispatcher.index(stable_skip), dispatcher.index("source_scope=\"$(printf '%s' \"$sources\""))
 
     def test_finalizer_and_dispatcher_do_not_query_review_threads(self) -> None:

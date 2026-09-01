@@ -84,7 +84,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("separately audited smoke recovery path", workflow)
         self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
         self.assertIn("Dispatch the validated Beta or Stable revision to Desktop smoke", dispatcher)
-        self.assertIn("Registered Stable completion is bound to its KMS-authenticated Beta Desktop smoke callback", dispatcher)
+        self.assertIn("All registered Stable completions are bound to their KMS-authenticated Beta Desktop smoke callbacks", dispatcher)
 
     def test_status_smoke_gate_is_kms_bound_and_cloud_deployment_is_explicit(self) -> None:
         readme = README.read_text(encoding="utf-8")
