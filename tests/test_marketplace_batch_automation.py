@@ -141,6 +141,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('.name == "source-freshness-gate"', workflow)
         self.assertIn("needs.select-exact-generated-pr.result == 'success'", workflow)
         self.assertIn("outputs.eligible == 'true'", workflow)
+        self.assertIn("always() && needs.select-exact-generated-pr.result == 'success'", workflow)
+        self.assertIn("fromJSON(needs.select-exact-generated-pr.outputs.coderabbit_status_verified)", workflow)
         self.assertIn("expected at most one open exact-head generated PR", workflow)
         self.assertIn('($branch == "" or .head.ref == $branch)', workflow)
         self.assertIn("workflow_call:", finalizer)
