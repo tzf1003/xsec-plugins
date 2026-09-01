@@ -71,8 +71,10 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
         self.assertIn("exact PR head has no successful Factory source gate", workflow)
         self.assertIn("Require a current source gate", workflow)
-        self.assertIn("Require the completed CodeRabbit review and resolved threads", workflow)
+        self.assertIn("Require the completed CodeRabbit verification and resolved threads", workflow)
         self.assertIn("coderabbitai", workflow.lower())
+        self.assertIn('commits/${HEAD_SHA}/status', workflow)
+        self.assertIn('.context == "CodeRabbit" and .state == "success"', workflow)
         self.assertIn("reviews(first:100,after:$endCursor)", workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertGreaterEqual(workflow.count("gh api graphql --paginate --slurp"), 4)
@@ -160,7 +162,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn(review_check, merge_step)
         self.assertLess(merge_step.rindex(review_check), merge_step.index(token_assignment))
         self.assertNotIn("steps.finalizer.outputs.token", merge_step[: merge_step.index(token_assignment)])
-        self.assertEqual(merge_step.count('GH_TOKEN="${{ github.token }}"'), 2)
+        self.assertEqual(merge_step.count('GH_TOKEN="${{ github.token }}"'), 3)
         self.assertEqual(merge_step.count('GH_TOKEN="${{ steps.finalizer.outputs.token }}"'), 1)
         self.assertEqual(merge_step.count("gh api graphql --paginate --slurp"), 2)
         self.assertEqual(merge_step.count("gh api --method PUT"), 1)
@@ -326,6 +328,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
         self.assertIn("$threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false", workflow)
+        self.assertIn("or any($review_status.statuses[]?; .context == \"CodeRabbit\" and .state == \"success\")", workflow)
 
 
 if __name__ == "__main__":

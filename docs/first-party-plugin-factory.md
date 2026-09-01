@@ -209,11 +209,12 @@ workflow 和 GitHub 注入的 PR metadata，**从不 checkout 或执行 PR head*
 `xsec-marketplace/*` Factory 分支（包括 `adopt-first-party-*` 和
 `refresh-retained-sidecar-*`）写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
 success/not-applicable，故所需的 Factory context 不会卡住普通产品、文档或 fork PR。每个
-生成候选 PR 创建后都会自动发送一次 `@coderabbitai review` 请求。完成 source gate 或
-CodeRabbit 对当前 head 提交审查后，`auto-finalize-generated-marketplace-pr.yml` 会重新检查
-同仓受允许的 `xsec-marketplace/*` Factory PR：CodeRabbit 必须对该 exact head 给出完成的
-`COMMENTED`、`APPROVED` 或 `CHANGES_REQUESTED` 审查，所有审查线程必须已解决，且线程结果
-不得分页截断。满足后才会
+生成候选 PR 创建后都会自动发送一次 `@coderabbitai review` 请求。完成 source gate、CodeRabbit
+对当前 head 的正式审查，或该当前提交的 `CodeRabbit` 成功状态后，
+`auto-finalize-generated-marketplace-pr.yml` 会重新检查同仓受允许的
+`xsec-marketplace/*` Factory PR。最终门禁要求当前 head 具备 CodeRabbit 的
+`COMMENTED`、`APPROVED`、`CHANGES_REQUESTED` 审查，或当前提交的成功 CodeRabbit
+状态；所有审查线程必须已解决，且线程结果不得分页截断。满足后才会
 并在受保护 `production` 环境调用 `final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live PR 的 head/base，使用精确
 head SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref 与 source gate。Factory
 candidate 的 `factory-final-merge-gate` 始终由 arm workflow 保持 `pending`：final workflow

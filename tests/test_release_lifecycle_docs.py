@@ -357,6 +357,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
     def test_final_gate_requires_coderabbit_and_resolved_threads(self) -> None:
         workflow = FINAL_MERGE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("coderabbitai", workflow.lower())
+        self.assertIn('commits/${HEAD_SHA}/status', workflow)
+        self.assertIn('.context == "CodeRabbit" and .state == "success"', workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertIn("pageInfo{hasNextPage endCursor}", workflow)
         self.assertNotIn("review_request_at=", workflow)

@@ -340,7 +340,7 @@ jobs:
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }
-      - name: Require the completed CodeRabbit review and resolved threads
+      - name: Require the completed CodeRabbit verification and resolved threads
         env:
           GH_TOKEN: ${{ github.token }}
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
@@ -350,20 +350,25 @@ jobs:
           # shellcheck disable=SC2016
           review_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviews(first:100,after:$endCursor){nodes{author{login} state commit{oid}} pageInfo{hasNextPage endCursor}}}}}' \
             -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER" -F endCursor=null)"
+          review_status="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status")"
           # shellcheck disable=SC2016
           thread_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
             -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER" -F endCursor=null)"
-          jq -ne --arg head "$HEAD_SHA" --argjson reviews "$review_pages" --argjson threads "$thread_pages" '
+          jq -ne --arg head "$HEAD_SHA" --argjson reviews "$review_pages" --argjson review_status "$review_status" --argjson threads "$thread_pages" '
             ($reviews | type == "array" and length > 0)
+            and ($review_status | type == "object" and .sha == $head)
             and ($threads | type == "array" and length > 0)
             and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
             and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
             and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
             and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
-            and any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+            and (
+              any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+              or any($review_status.statuses[]?; .context == "CodeRabbit" and .state == "success")
+            )
             and all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
           ' >/dev/null || {
-            echo "The exact Factory PR head requires a completed CodeRabbit review with all review threads resolved." >&2
+            echo "The exact Factory PR head requires a completed CodeRabbit verification with all review threads resolved." >&2
             exit 1
           }
       - name: Recheck the live PR/source boundary before the isolated final merge
@@ -451,20 +456,25 @@ jobs:
             # shellcheck disable=SC2016
             review_pages="$(GH_TOKEN="${{ github.token }}" gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviews(first:100,after:$endCursor){nodes{author{login} state commit{oid}} pageInfo{hasNextPage endCursor}}}}}' \
               -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER" -F endCursor=null)"
+            review_status="$(GH_TOKEN="${{ github.token }}" gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status")"
             # shellcheck disable=SC2016
             thread_pages="$(GH_TOKEN="${{ github.token }}" gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
               -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER" -F endCursor=null)"
-            jq -ne --arg head "$HEAD_SHA" --argjson reviews "$review_pages" --argjson threads "$thread_pages" '
+            jq -ne --arg head "$HEAD_SHA" --argjson reviews "$review_pages" --argjson review_status "$review_status" --argjson threads "$thread_pages" '
               ($reviews | type == "array" and length > 0)
+              and ($review_status | type == "object" and .sha == $head)
               and ($threads | type == "array" and length > 0)
               and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
               and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
               and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
               and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
-              and any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+              and (
+                any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+                or any($review_status.statuses[]?; .context == "CodeRabbit" and .state == "success")
+              )
               and all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
             ' >/dev/null || {
-              echo "The exact Factory PR head requires a completed CodeRabbit review with all review threads resolved immediately before final merge." >&2
+              echo "The exact Factory PR head requires a completed CodeRabbit verification with all review threads resolved immediately before final merge." >&2
               exit 1
             }
           }
