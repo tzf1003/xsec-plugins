@@ -61,6 +61,8 @@ def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> Non
 
 
 def frontend_section(case: unittest.TestCase, source: str, start: str, end: str) -> str:
+    """Extract one named Traffic frontend section for focused assertions."""
+
     before, delimiter, remainder = source.partition(start)
     case.assertTrue(delimiter, f"missing frontend section: {start}")
     section, delimiter, _ = remainder.partition(end)
@@ -69,6 +71,8 @@ def frontend_section(case: unittest.TestCase, source: str, start: str, end: str)
 
 
 def assert_traffic_react_loaders(case: unittest.TestCase, source: str) -> None:
+    """Assert loader state and error isolation across Traffic settings sections."""
+
     default_filter = frontend_section(case, source, "function DefaultFilterSection({host})", "function samePassiveRule")
     rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
     ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
@@ -101,6 +105,8 @@ def assert_traffic_react_loaders(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_rules(case: unittest.TestCase, source: str) -> None:
+    """Assert reviewed passive-rule mutations and their refresh ordering."""
+
     rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
     mutations = frontend_section(case, source, "function ruleMutations", "function RulesSection({host})")
     handlers = (
@@ -136,6 +142,8 @@ def assert_traffic_react_rules(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_ca(case: unittest.TestCase, source: str) -> None:
+    """Assert MITM CA status, import, and rotation error handling."""
+
     ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
     ca_ui = frontend_section(case, source, "function CaStatusDetails({host,model})", "function DefaultFilterSection")
     case.assertIn("let model=useCaModel(host)", ca_ui)
@@ -158,6 +166,8 @@ def assert_traffic_react_ca(case: unittest.TestCase, source: str) -> None:
 
 
 def assert_traffic_react_activation(case: unittest.TestCase, source: str) -> None:
+    """Assert settings rendering remains reachable from Traffic activation."""
+
     activation = frontend_section(case, source, "function activate(host)", "return __toCommonJS")
     plugin_app = frontend_section(case, source, "function PluginApp({host,context})", "function object2")
     settings_page = frontend_section(case, source, "function SettingsPage({host})", "function workspaceInstanceKey")
@@ -180,6 +190,8 @@ def assert_traffic_react_activation(case: unittest.TestCase, source: str) -> Non
 
 
 def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert the reviewed React settings contract preserves loaded state."""
+
     assert_traffic_react_loaders(case, source)
     assert_traffic_react_rules(case, source)
     assert_traffic_react_ca(case, source)
@@ -190,6 +202,8 @@ def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str
 
 
 def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    """Assert Traffic settings isolation for current and retained frontends."""
+
     if "function RulesSection({host})" in source:
         assert_traffic_react_settings_isolation(case, source)
         return
