@@ -163,6 +163,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('.name == "source-freshness-gate"', workflow)
         self.assertIn("expected at most one open exact-head generated PR", workflow)
         self.assertIn('($branch == "" or .head.ref == $branch)', workflow)
+        self.assertIn('*) echo "eligible=false" >> "$GITHUB_OUTPUT"; exit 0 ;;', workflow)
         self.assertNotIn("final-revalidate-and-merge:", workflow)
         self.assertNotIn("coderabbit_status_verified", workflow)
         self.assertIn("workflows: [Automatically finalize generated Marketplace PR]", selected_finalizer)
