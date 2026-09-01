@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.traffic",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-traffic",
+    "path": "plugins/com.xsec.workspace.traffic",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "9feb5fa8690c5ea9314970c11f50130fda815eb4",
+    "stableSha": null,
+    "mainGateSha": "75eff11a4646ae72c6e16323be1fc646bb872c42"
+  },
+  "release": {
+    "betaReleaseId": "sha256-08378e0dad503079baf32f6362ebfbf88f8f0df6b753bff8a7019d9acfdfbdf6",
+    "stableReleaseId": "sha256-b909d1718368557fccdabad98d5dd9cfbeee0e1ee9f90a402f1a796f20bd92da"
+  },
+  "publication": {
+    "state": "waiting_for_smoke",
+    "deliveryId": "batch-33522400279.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33522400279",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
+  }
+}
