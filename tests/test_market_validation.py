@@ -46,6 +46,33 @@ def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> Non
     case.assertIn('const provider=settings.value?.provider==="fofa"?"fofa":"hunter";const missing=provider==="fofa"?!settings.value?.fofaApiKeyConfigured:!settings.value?.hunterApiKeyConfigured;', source)
 
 
+def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    if "function RulesSection({host})" in source:
+        required = (
+            "loadRules(host).then(value=>{active&&setRules(value)}).catch(reason=>{active&&setError(",
+            "finally(()=>{active&&setLoading(!1)})",
+            "let reload=async()=>{setRules(await loadRules(host))}",
+            "function refreshRules(reload,setError,completed){try{await reload()}catch(reason){setError(",
+            "function useCaModel(host)",
+            "loadCaStatus(host).then(value=>{active&&setStatus(value)}).catch(reason=>{active&&setError(",
+            "function CaError({model})",
+        )
+        for required_source in required:
+            case.assertIn(required_source, source)
+        case.assertNotIn("setRules(void 0)", source)
+        case.assertNotIn("setStatus(void 0)", source)
+        return
+    case.assertIn('async function loadRules(){renderRules(await host.request("xsec.traffic.passive-rules.list",{}))}', source)
+    case.assertIn('async function loadCa(){const view=await host.request("xsec.traffic.ca.status",{});', source)
+    case.assertIn('settingsReady=true;controls.save.disabled=false;await Promise.all', source)
+    case.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`', source)
+    case.assertIn('enabled.onchange=()=>void toggle(rule.rule_id,enabled.checked,enabled);', source)
+    case.assertIn('control.checked=!enabled;note(`更新被动规则失败：', source)
+    case.assertIn('CA 已导入，但刷新 CA 状态失败', source)
+    case.assertIn('规则已保存，但刷新规则列表失败', source)
+    case.assertIn('规则已删除，但刷新规则列表失败', source)
+
+
 class MarketplaceValidationTests(unittest.TestCase):
     maxDiff = None
 
@@ -180,24 +207,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         traffic_source = (
             snapshot_dir(ROOT, "com.xsec.workspace.traffic") / "com.xsec.desktop" / "frontend" / "index.js"
         ).read_text(encoding="utf-8")
-        # The helpers deliberately propagate to load().  Its single outer
-        # catch writes the error after the rejected Promise.all, so it cannot
-        # be overwritten by the success-only note("") below it.
-        self.assertIn(
-            'async function loadRules(){renderRules(await host.request("xsec.traffic.passive-rules.list",{}))}',
-            traffic_source,
-        )
-        self.assertIn(
-            'async function loadCa(){const view=await host.request("xsec.traffic.ca.status",{});',
-            traffic_source,
-        )
-        self.assertIn('settingsReady=true;controls.save.disabled=false;await Promise.all', traffic_source)
-        self.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`', traffic_source)
-        self.assertIn('enabled.onchange=()=>void toggle(rule.rule_id,enabled.checked,enabled);', traffic_source)
-        self.assertIn('control.checked=!enabled;note(`更新被动规则失败：', traffic_source)
-        self.assertIn('CA 已导入，但刷新 CA 状态失败', traffic_source)
-        self.assertIn('规则已保存，但刷新规则列表失败', traffic_source)
-        self.assertIn('规则已删除，但刷新规则列表失败', traffic_source)
+        assert_traffic_settings_isolation(self, traffic_source)
 
         for plugin_id in validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT:
             frontend = snapshot_dir(ROOT, plugin_id) / "com.xsec.desktop" / "frontend" / "index.js"
