@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -17,6 +18,9 @@ from validate_market import MarketplaceValidationError  # noqa: E402
 PLUGIN_ID = "com.xsec.system-terminal"
 PLUGIN_DIR = ROOT / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / PLUGIN_ID
 ACTIVATION_MARKER = "export function activate(host){"
+ACTIVATION_PATTERN = re.compile(
+    r"(?m)^[ \t]*export\s+function\s+activate\s*\(\s*host\s*\)\s*\{"
+)
 SETTINGS_OPEN_CALL = 'host.request("xsec.plugin.settings.open",{})'
 
 
@@ -28,13 +32,29 @@ def terminal_contract() -> tuple[dict[str, object], str]:
     return manifest, source
 
 
-def inject_activation(source: str, payload: str) -> str:
-    if ACTIVATION_MARKER not in source:
+def activation_match(source: str) -> re.Match[str]:
+    match = ACTIVATION_PATTERN.search(source)
+    if match is None:
         raise AssertionError("terminal fixture has no activation marker")
-    return source.replace(ACTIVATION_MARKER, f"{ACTIVATION_MARKER}{payload}", 1)
+    return match
+
+
+def inject_activation(source: str, payload: str) -> str:
+    match = activation_match(source)
+    return f"{source[:match.end()]}{payload}{source[match.end():]}"
 
 
 class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
+    def test_activation_injection_accepts_reviewed_formatting(self) -> None:
+        source = (
+            "// export function activate(host){\n"
+            "export function activate(host) { return terminalSurface(host); }\n"
+        )
+        self.assertIn(
+            "activate(host) {const injected=true; return",
+            inject_activation(source, "const injected=true;"),
+        )
+
     def test_javascript_line_terminator_consumes_crlf_once(self) -> None:
         self.assertEqual(validate_market.javascript_line_terminator("x\r\ny", 0), (1, 2))
 
@@ -157,7 +177,7 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
             "export function activate(host){"
             "const reviewed=()=>({});return reviewed(host)}"
         )
-        prefix, _ = source.split(ACTIVATION_MARKER, 1)
+        prefix = source[:activation_match(source).start()]
         mutated = f"{prefix}{helper}{activation}"
         with self.assertRaisesRegex(MarketplaceValidationError, "executable mount/update/dispose"):
             validate_market.validate_official_frontend(manifest, mutated, PLUGIN_ID)
