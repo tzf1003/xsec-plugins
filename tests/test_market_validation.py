@@ -307,6 +307,28 @@ class MarketplaceValidationTests(unittest.TestCase):
         self.assertLess(elapsed, 0.75)
         self.assertEqual(len(slashes), divisions)
 
+    def test_official_frontend_rejects_undeclared_request_after_template_interpolation(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        call = 'host.request("xsec.plugin.settings.open",{})'
+        payload = '`${typeof of}`/host.request("xsec.plugin.settings.open",{})/1'
+        marker = "export function activate(host){"
+        self.assertIn(call, source)
+        self.assertIn(marker, source)
+        source = source.replace(call, "undefined", 1).replace(marker, f"{marker}{payload};", 1)
+        tokens = validate_market.javascript_contract_tokens(payload, "frontend")
+        regexes = [value for kind, value in tokens if kind == "regex"]
+        self.assertEqual(regexes, [])
+        self.assertEqual(
+            validate_market.frontend_host_requests(tokens, "frontend"),
+            {"xsec.plugin.settings.open"},
+        )
+        with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
     def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
         source = (
             snapshot_dir(ROOT, "com.xsec.system-terminal") / "com.xsec.desktop" / "frontend" / "index.js"

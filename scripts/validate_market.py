@@ -312,7 +312,7 @@ def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
     kind, value = significant[-1]
     if kind == "identifier":
         return value in REGEX_PREFIX_KEYWORDS
-    if kind in {"number", "regex", "string"} or value in {"]", "}"}:
+    if kind in {"number", "regex", "string", "template"} or value in {"]", "}"}:
         return False
     if value == ")":
         return javascript_control_header_closed(significant)
@@ -385,8 +385,8 @@ def tokenize_javascript(
         if character == "`":
             end, interpolated, has_interpolation = consume_javascript_template(source, index, label)
             literal = source[index + 1:end - 1]
-            tokens.append(("template" if has_interpolation else "string", literal))
             tokens.extend(interpolated)
+            tokens.append(("template" if has_interpolation else "string", literal))
             index = end
             continue
         if character in {"'", '"'}:
