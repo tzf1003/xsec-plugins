@@ -15,7 +15,13 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (
+        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/batch-') ||
+        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/default-set-') ||
+        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/external-beta-') ||
+        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/external-stable-')
+      )
     runs-on: ubuntu-latest
     outputs:
       pull_number: ${{ steps.pr.outputs.pull_number }}
@@ -43,6 +49,7 @@ jobs:
           echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"
   final-revalidate-and-merge:
     needs: select-exact-generated-pr
+    if: needs.select-exact-generated-pr.result == 'success'
     uses: ./.github/workflows/final-merge-generated-marketplace-pr.yml
     with:
       pull_number: ${{ needs.select-exact-generated-pr.outputs.pull_number }}

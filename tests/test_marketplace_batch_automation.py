@@ -71,8 +71,11 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         ):
             self.assertIn(branch, workflow)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", workflow)
+        self.assertIn("startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/batch-')", workflow)
+        self.assertIn("needs.select-exact-generated-pr.result == 'success'", workflow)
         self.assertIn("expected one open exact-head generated PR", workflow)
         self.assertIn("workflow_call:", finalizer)
+        self.assertIn("workflow_dispatch|workflow_call|workflow_run", finalizer)
         self.assertIn("xsec-marketplace/batch-*", finalizer)
 
     def test_shared_preflight_preserves_each_source_repositories_real_ci_contract(self) -> None:
