@@ -338,15 +338,17 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         # Pull-request review/status events have a pull merge ref, which the
         # protected production Environment correctly rejects. The selector
         # therefore has no reusable final-merge job; a workflow_run from
-        # protected default-branch configuration reselects the exact candidate
-        # before handing it to the production finalizer.
+        # protected default-branch configuration finds one current-baseline
+        # candidate before handing it to the production finalizer.
         self.assertNotIn("final-revalidate-and-merge:", selector)
         self.assertIn("workflows: [Automatically finalize generated Marketplace PR]", workflow)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", workflow)
-        self.assertIn("github.event.workflow_run.event == 'workflow_run'", workflow)
-        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", workflow)
+        self.assertNotIn("github.event.workflow_run.head_branch", workflow)
         self.assertIn("Require the preceding unprivileged selector to have run", workflow)
         self.assertIn("actions/runs/${UPSTREAM_RUN_ID}/jobs?per_page=100", workflow)
+        self.assertIn('git/ref/heads/main" --jq .object.sha', workflow)
+        self.assertIn('.base.sha == $main_sha', workflow)
+        self.assertIn("expected one exact current-baseline generated PR", workflow)
         self.assertIn("reviews(first:100,after:$endCursor)", workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
