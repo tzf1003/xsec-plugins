@@ -1187,13 +1187,143 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
         fail(f"{label} must match the approved official approvals frontend structure")
 
 
-def validate_frontend_host_requests(methods: dict[str, object], source: str, label: str) -> None:
-    requested = set(re.findall(r"\bhost\s*\.\s*request\s*\(\s*[\"'`](xsec\.[A-Za-z0-9_.-]+)[\"'`]", source))
+def frontend_string_constants(tokens: list[tuple[str, str]]) -> dict[str, str]:
+    dense = [token for token in tokens if token[0] != "newline"]
+    constants: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for index in range(len(dense) - 3):
+        declaration = dense[index:index + 4]
+        if (
+            declaration[0] == ("identifier", "const")
+            and declaration[1][0] == "identifier"
+            and declaration[2] == ("punctuation", "=")
+            and declaration[3][0] == "string"
+        ):
+            name, value = declaration[1][1], declaration[3][1]
+            if name in constants and constants[name] != value:
+                ambiguous.add(name)
+            else:
+                constants[name] = value
+    return {name: value for name, value in constants.items() if name not in ambiguous}
+
+
+def matching_square_bracket(tokens: list[tuple[str, str]], opening_index: int) -> int | None:
+    depth = 0
+    for index in range(opening_index, len(tokens)):
+        if tokens[index] == ("punctuation", "["):
+            depth += 1
+        elif tokens[index] == ("punctuation", "]"):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def static_rpc_array_values(
+    tokens: list[tuple[str, str]], opening: int, closing: int
+) -> set[str] | None:
+    values: set[str] = set()
+    cursor = opening + 1
+    while cursor < closing:
+        if tokens[cursor] == ("punctuation", ","):
+            cursor += 1
+            continue
+        if tokens[cursor][0] not in {"identifier", "string"}:
+            return None
+        if tokens[cursor + 1:cursor + 3] != [("punctuation", ":"), ("punctuation", "[")]:
+            return None
+        array_closing = matching_square_bracket(tokens, cursor + 2)
+        if array_closing is None or array_closing >= closing:
+            return None
+        value = tokens[cursor + 3]
+        if value[0] != "string" or not re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value[1]):
+            return None
+        values.add(value[1])
+        cursor = array_closing + 1
+    return values or None
+
+
+def static_rpc_array_objects(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
+    objects: dict[str, set[str]] = {}
+    for index in range(len(tokens) - 3):
+        if (
+            tokens[index] != ("identifier", "const")
+            or tokens[index + 1][0] != "identifier"
+            or tokens[index + 2:index + 4] != [("punctuation", "="), ("punctuation", "{")]
+        ):
+            continue
+        closing = matching_brace(tokens, index + 3)
+        values = static_rpc_array_values(tokens, index + 3, closing) if closing is not None else None
+        if values:
+            objects[tokens[index + 1][1]] = values
+    return objects
+
+
+def frontend_rpc_bindings(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
+    bindings = {name: {value} for name, value in frontend_string_constants(tokens).items()}
+    objects = static_rpc_array_objects(tokens)
+    for index in range(len(tokens) - 4):
+        if tokens[index:index + 2] != [("identifier", "const"), ("punctuation", "[")]:
+            continue
+        closing = matching_square_bracket(tokens, index + 1)
+        if closing is None or tokens[index + 2][0] != "identifier":
+            continue
+        if closing + 2 >= len(tokens) or tokens[closing + 1] != ("punctuation", "="):
+            continue
+        source = tokens[closing + 2][1] if tokens[closing + 2][0] == "identifier" else ""
+        if source in objects:
+            bindings[tokens[index + 2][1]] = objects[source]
+    return bindings
+
+
+def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str]:
+    dense = [token for token in tokens if token[0] != "newline"]
+    bindings = frontend_rpc_bindings(dense)
+    requested: set[str] = set()
+    saw_request = False
+    for index in range(len(dense) - 4):
+        if dense[index:index + 4] != [
+            ("identifier", "host"),
+            ("punctuation", "."),
+            ("identifier", "request"),
+            ("punctuation", "("),
+        ]:
+            continue
+        saw_request = True
+        argument_kind, argument_value = dense[index + 4]
+        if argument_kind == "string":
+            requested.add(argument_value)
+        elif argument_kind == "identifier" and argument_value in bindings:
+            requested.update(bindings[argument_value])
+        else:
+            fail(f"{label} contains an unresolved host RPC request argument")
+    if not saw_request:
+        fail(f"{label} does not call the declared host RPC surface")
+    return requested
+
+
+def validate_frontend_host_requests(
+    methods: dict[str, object], tokens: list[tuple[str, str]], label: str
+) -> None:
+    requested = frontend_host_requests(tokens, label)
     undeclared = requested - set(methods)
     if undeclared:
         fail(f"{label} calls undeclared host RPC methods: {sorted(undeclared)}")
-    if not re.search(r"\bhost\s*\.\s*request\s*\(", source):
-        fail(f"{label} does not call the declared host RPC surface")
+
+
+def validate_frontend_rpc_literals(
+    methods: dict[str, object], tokens: list[tuple[str, str]], label: str
+) -> None:
+    literals = {
+        value for kind, value in tokens
+        if kind == "string" and re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value)
+    }
+    undeclared = literals - set(methods)
+    if undeclared:
+        fail(f"{label} references undeclared RPC methods: {sorted(undeclared)}")
+    missing = set(methods) - literals
+    if missing:
+        fail(f"{label} does not reference declared RPC methods: {sorted(missing)}")
 
 
 def validate_official_frontend(manifest: dict[str, object], source: str, label: str) -> None:
@@ -1235,11 +1365,9 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
     for lifecycle_method in APPROVALS_FRONTEND_LIFECYCLE_METHODS:
         if not re.search(rf"\b{lifecycle_method}\s*\(", source):
             fail(f"{label} must implement lifecycle method {lifecycle_method}")
-    source_method_literals = set(re.findall(r"[\"'](xsec\.[A-Za-z0-9_.-]+)[\"']", source))
-    missing_methods = set(methods) - source_method_literals
-    if missing_methods:
-        fail(f"{label} does not reference declared RPC methods: {sorted(missing_methods)}")
-    validate_frontend_host_requests(methods, source, label)
+    tokens = javascript_contract_tokens(source, label)
+    validate_frontend_host_requests(methods, tokens, label)
+    validate_frontend_rpc_literals(methods, tokens, label)
 
 
 def validate_official_settings_contract(manifest: dict[str, object], label: str) -> None:

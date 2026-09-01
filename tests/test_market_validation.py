@@ -156,6 +156,58 @@ class MarketplaceValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
             validate_market.validate_official_frontend(manifest, source, plugin_id)
 
+    def test_official_frontend_rejects_undeclared_constant_host_request(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        marker = "export function activate(host){"
+        replacement = f'{marker}const SETTINGS_OPEN="xsec.plugin.settings.open";host.request(SETTINGS_OPEN,{{}});'
+        self.assertIn(marker, source)
+        source = source.replace(marker, replacement, 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
+    def test_official_frontend_ignores_host_request_examples_outside_code(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        examples = (
+            '// host.request("xsec.example.comment", {});',
+            'const example = \'host.request("xsec.example.string", {})\';',
+        )
+        for example in examples:
+            with self.subTest(example=example):
+                validate_market.validate_official_frontend(manifest, f"{source}\n{example}\n", plugin_id)
+
+    def test_official_frontend_rejects_unresolved_host_request_argument(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        marker = "export function activate(host){"
+        self.assertIn(marker, source)
+        source = source.replace(marker, f"{marker}host.request(dynamicMethod,{{}});", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
+    def test_official_frontend_rejects_partially_dynamic_rpc_map(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        marker = "export function activate(host){"
+        dispatch = (
+            'const rpcMap={safe:["xsec.terminal.read"],unsafe:[dynamicMethod]};'
+            "const [method]=rpcMap[key];host.request(method,{});"
+        )
+        self.assertIn(marker, source)
+        source = source.replace(marker, f"{marker}{dispatch}", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
     def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
         source = (
             snapshot_dir(ROOT, "com.xsec.system-terminal") / "com.xsec.desktop" / "frontend" / "index.js"
@@ -166,9 +218,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         # the isolated settings-page renderer. The terminal surface must never
         # reintroduce the old selector/restart/clear toolbar.
         self.assertIn("function terminalSettings(host)", settings_source)
-        self.assertIn('profile=e("select")', settings_source)
+        self.assertRegex(settings_source, r'profile\s*=\s*e\("select"\)')
         self.assertIn("xsec.terminal.settings.set", settings_source)
-        self.assertIn('host.context?.kind==="settings-page"', main_source)
+        self.assertRegex(settings_source, r"(?:settingsReady|state\.ready)\s*=\s*false")
+        self.assertRegex(settings_source, r"(?:controls|state\.controls)\.save\.disabled\s*=\s*true")
+        self.assertRegex(settings_source, r"(?:settingsReady|state\.ready)\s*=\s*true")
+        self.assertRegex(settings_source, r"if\s*\(\s*!(?:settingsReady|state\.ready)\s*\)")
+        self.assertRegex(main_source, r'host\.context\?\.kind\s*===\s*"settings-page"')
         for forbidden in (
             'e("select")',
             '"重新启动"',
