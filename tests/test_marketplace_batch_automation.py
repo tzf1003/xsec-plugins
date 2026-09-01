@@ -97,6 +97,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
 
         for rule in (
             "name: Rebuild stale generated Marketplace batch",
+            "repository_dispatch:",
+            "types: [xsec-stale-marketplace-batch-rebuild]",
             "branches: [main]",
             "group: xsec-marketplace-stale-batch-recovery",
             "cancel-in-progress: false",
@@ -114,6 +116,11 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "factory-stale-batch:",
             "Close unchanged stale batches replaced by the new candidate",
             'gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${old_number}" -f state=closed',
+            "request-protected-rebuild:",
+            "github.event_name != 'repository_dispatch'",
+            "github.event_name == 'repository_dispatch'",
+            'repos/${GITHUB_REPOSITORY}/dispatches',
+            "event_type=xsec-stale-marketplace-batch-rebuild",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, recovery)

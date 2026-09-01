@@ -1,6 +1,8 @@
 name: Rebuild stale generated Marketplace batch
 
 on:
+  repository_dispatch:
+    types: [xsec-stale-marketplace-batch-rebuild]
   push:
     branches: [main]
   pull_request_review:
@@ -24,6 +26,7 @@ jobs:
   select-stale-batch:
     if: >-
       (github.event_name == 'push' && github.ref_protected) ||
+      (github.event_name == 'repository_dispatch' && github.event.action == 'xsec-stale-marketplace-batch-rebuild') ||
       (github.event_name == 'pull_request_review' && github.event.pull_request.state == 'open') ||
       (github.event_name == 'status' && github.event.sender.login == 'coderabbitai[bot]' && github.event.sender.type == 'Bot' && github.event.context == 'CodeRabbit' && github.event.state == 'success') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository)
@@ -168,9 +171,28 @@ jobs:
           git worktree remove --force "$candidate"
           echo "verified=true" >> "$GITHUB_OUTPUT"
 
+  request-protected-rebuild:
+    needs: [select-stale-batch, verify-stale-batch]
+    if: >-
+      needs.verify-stale-batch.outputs.verified == 'true' &&
+      github.event_name != 'repository_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Request protected stale-batch rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" \
+            -f event_type=xsec-stale-marketplace-batch-rebuild >/dev/null
+
   rebuild-current-batch:
     needs: [select-stale-batch, verify-stale-batch]
-    if: needs.verify-stale-batch.outputs.verified == 'true'
+    if: >-
+      needs.verify-stale-batch.outputs.verified == 'true' &&
+      github.event_name == 'repository_dispatch'
     permissions:
       contents: write
       id-token: write
