@@ -135,6 +135,11 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             },
         )
         git(root, "init", "--quiet", "--initial-branch=main")
+        # GitHub-hosted runners may launch background maintenance after ref
+        # updates.  This fixture is removed immediately after each test, so
+        # keep its repository lifecycle synchronous and deterministic.
+        git(root, "config", "maintenance.auto", "false")
+        git(root, "config", "gc.auto", "0")
         git(root, "config", "user.name", "Factory Test")
         git(root, "config", "user.email", "factory-test@example.invalid")
         git(root, "remote", "add", "origin", materializer.TRUSTED_FACTORY_ORIGIN)
