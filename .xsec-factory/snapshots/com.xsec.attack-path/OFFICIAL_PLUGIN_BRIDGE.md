@@ -1,9 +1,21 @@
-# Plugin-owned official frontend
+# Official plugin bridge
 
-This signed package owns its manifest, permissions, release lifecycle, frontend UI state and interaction logic. XSEC Desktop loads `com.xsec.desktop/frontend/index.js` in the sandbox and exposes only the capability-checked Host RPC methods declared by `plugin.json`; bootstrap must never replace it with a compatibility renderer or placeholder.
+This package owns the signed plugin manifest, permissions and release lifecycle.
+XSEC Desktop binds its compatible renderer only after this package is installed
+and enabled. Package state, rather than the application installer, is the source
+of truth.
 
-## 设置审查
+## Portable MCP and Skill boundary
 
-攻击路径当前没有账户级持久化配置，因此不创建空的插件设置页。节点图、缩放、
-平移和当前任务状态均是工作上下文，保留在主界面。详见仓库的
-[插件设置规范](../../docs/plugin-settings.md)。
+The root `mcp.json` and `skills/attack-path/SKILL.md` are portable Agent Plugins
+components. Desktop discovers them, asks for the declared `mcp.servers.register`
+and `native.execute` permissions, and exposes the sidecar through its authenticated
+MCP Fabric. Oh My Pi receives only that session projection; it does not install or
+start a second copy of the sidecar.
+
+The sidecar forwards `tools/call` to the XSec Host domain RPC named by
+`XSEC_ATTACK_PATH_HOST_RPC`. The Host derives assignment/project/lease context from
+the authenticated session and validates parent ownership, node relationships,
+revision conflicts, and audit events before writing AttackPathStore. Plugin package
+files stay immutable; nodes and findings are runtime data under the host-owned
+plugin data directory.
