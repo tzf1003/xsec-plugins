@@ -105,7 +105,7 @@ def mutate_terminal_activation(source: str, body: str, prefix: str = "") -> str:
     return replace_source_match(source, match, replacement)
 
 
-def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> None:
+def assert_asset_settings_isolation(case: unittest.TestCase, source: str, dashboard_source: str, host_source: str) -> None:
     """Assert that asset settings failures remain isolated by surface."""
 
     if "function useSettingsReader(api)" in source:
@@ -114,6 +114,14 @@ def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> Non
         case.assertIn("const next=await api.settings()", source)
         case.assertIn("if(!settingsReady)return false", source)
         case.assertIn("reader.error&&!reader.settings", source)
+        return
+    if "type RunsLoadState" in dashboard_source:
+        case.assertIn("setRunsError(", dashboard_source)
+        case.assertIn("setSettingsError(", dashboard_source)
+        case.assertIn("const next = await api.settings()", dashboard_source)
+        case.assertIn("Promise.all([runs.loadRuns(true), setup.loadDefaults(), setup.loadSettings()])", dashboard_source)
+        case.assertNotIn("setRuns([])", dashboard_source)
+        case.assertIn('host.request("xsec.asset-discovery.settings.get", {})', host_source)
         return
     if "setRuns(await api.runs())" in source:
         case.assertIn("setRunsError(", source)
@@ -1218,9 +1226,13 @@ class MarketplaceValidationTests(unittest.TestCase):
         asset_source = (
             snapshot_dir(ROOT, "com.xsec.asset-discovery") / "com.xsec.desktop" / "frontend" / "index.js"
         ).read_text(encoding="utf-8")
+        asset_dashboard_source = (
+            snapshot_dir(ROOT, "com.xsec.asset-discovery") / "frontend-src" / "dashboard-state.ts"
+        ).read_text(encoding="utf-8")
+        asset_host_source = (snapshot_dir(ROOT, "com.xsec.asset-discovery") / "frontend-src" / "host.ts").read_text(encoding="utf-8")
         # Both supported renderers keep workspace data and settings errors in
         # separate state so an auxiliary settings failure remains visible.
-        assert_asset_settings_isolation(self, asset_source)
+        assert_asset_settings_isolation(self, asset_source, asset_dashboard_source, asset_host_source)
         # Credentials stay out of the generic plugin KV store and use the
         # dedicated write and clear actions with password fields.
         self.assertIn('xsec.asset-discovery.credentials.set', asset_source)

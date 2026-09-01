@@ -56,7 +56,9 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             'source_revision="$(git rev-parse HEAD)"',
             '"$(git rev-parse origin/main)"',
             "XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}",
+            'git update-index --add --cacheinfo "160000,${beta_sha},plugins/${plugin_id}"',
             "python scripts/kms_marketplace_publisher.py --root .",
+            "git add -A .agents/plugins .xsec-factory plugins",
             'branch="xsec-marketplace/batch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
         ):
             with self.subTest(rule=rule):
