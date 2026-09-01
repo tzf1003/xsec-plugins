@@ -300,6 +300,16 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest, source = traffic_release_contract()
         validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
 
+    def test_traffic_reviewed_frontend_contract_accepts_canonical_line_endings(self) -> None:
+        """Accept CRLF input after canonical frontend source normalization."""
+
+        manifest, source = traffic_release_contract()
+        validate_market.validate_official_frontend(
+            manifest,
+            source.replace("\n", "\r\n"),
+            "Traffic 1.3.0 CRLF",
+        )
+
     def test_traffic_reviewed_frontend_contract_rejects_source_mutation(self) -> None:
         """Reject any Traffic frontend mutation outside the reviewed digest."""
 
