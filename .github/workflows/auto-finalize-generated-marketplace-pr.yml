@@ -6,6 +6,7 @@ on:
     types: [completed]
   pull_request_review:
     types: [submitted]
+  status:
 
 permissions:
   actions: read
@@ -28,29 +29,37 @@ jobs:
         github.event.pull_request.base.ref == 'main' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         startsWith(github.event.pull_request.head.ref, 'xsec-marketplace/')
+      ) || (
+        github.event_name == 'status' &&
+        github.event.sender.login == 'coderabbitai[bot]' &&
+        github.event.sender.type == 'Bot' &&
+        github.event.context == 'CodeRabbit' &&
+        github.event.state == 'success'
       )
     runs-on: ubuntu-latest
     outputs:
       pull_number: ${{ steps.pr.outputs.pull_number }}
       eligible: ${{ steps.pr.outputs.eligible }}
+      coderabbit_status_verified: ${{ steps.pr.outputs.coderabbit_status_verified }}
     steps:
       - name: Resolve one eligible exact generated Factory PR
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.event.pull_request.head.ref }}
-          HEAD_REPOSITORY: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name || github.event.pull_request.head.repo.full_name }}
-          HEAD_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.event_name == 'pull_request_review' && github.event.pull_request.head.ref || '' }}
+          HEAD_REPOSITORY: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name || github.event_name == 'pull_request_review' && github.event.pull_request.head.repo.full_name || github.repository }}
+          HEAD_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'pull_request_review' && github.event.pull_request.head.sha || github.event.sha }}
+          CODERABBIT_STATUS_VERIFIED: ${{ github.event_name == 'status' && github.event.sender.login == 'coderabbitai[bot]' && github.event.sender.type == 'Bot' && github.event.context == 'CodeRabbit' && github.event.state == 'success' }}
         run: |
           set -euo pipefail
-          [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Validated workflow run has an invalid head SHA." >&2; exit 1; }
-          case "$HEAD_BRANCH" in
-            xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
-            *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
-          esac
+          [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Finalizer trigger has an invalid head SHA." >&2; exit 1; }
+          [ "$CODERABBIT_STATUS_VERIFIED" = "true" ] || [ "$CODERABBIT_STATUS_VERIFIED" = "false" ] || {
+            echo "CodeRabbit status event verification is malformed." >&2
+            exit 1
+          }
           prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
           matches="$(printf '%s' "$prs" | jq -cer --arg repository "$HEAD_REPOSITORY" --arg branch "$HEAD_BRANCH" --arg sha "$HEAD_SHA" '
-            [.[][] | select(.head.repo.full_name == $repository and .head.ref == $branch and .head.sha == $sha)]
+            [.[][] | select(.head.repo.full_name == $repository and .head.sha == $sha and ($branch == "" or .head.ref == $branch))]
           ')"
           count="$(printf '%s' "$matches" | jq -er 'length')"
           if [ "$count" = "0" ]; then
@@ -59,7 +68,12 @@ jobs:
           fi
           [ "$count" = "1" ] || { echo "expected at most one open exact-head generated PR" >&2; exit 1; }
           pull_number="$(printf '%s' "$matches" | jq -er '.[0].number')"
+          head_branch="$(printf '%s' "$matches" | jq -er '.[0].head.ref')"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
+          case "$head_branch" in
+            xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
+            *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
+          esac
           check_runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100")"
           if ! printf '%s' "$check_runs" | jq -e '
             any(.check_runs[]?; .name == "source-gate" and .status == "completed" and .conclusion == "success")
@@ -82,6 +96,7 @@ jobs:
             exit 0
           }
           echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"
+          echo "coderabbit_status_verified=$CODERABBIT_STATUS_VERIFIED" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
   final-revalidate-and-merge:
     needs: select-exact-generated-pr
@@ -89,4 +104,5 @@ jobs:
     uses: ./.github/workflows/final-merge-generated-marketplace-pr.yml
     with:
       pull_number: ${{ needs.select-exact-generated-pr.outputs.pull_number }}
+      coderabbit_status_verified: ${{ needs.select-exact-generated-pr.outputs.coderabbit_status_verified }}
     secrets: inherit

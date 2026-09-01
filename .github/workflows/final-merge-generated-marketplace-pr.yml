@@ -7,6 +7,11 @@ on:
         description: Open same-repository Factory transition PR to revalidate and merge
         required: true
         type: string
+      coderabbit_status_verified:
+        description: Exact-head CodeRabbit status verified from an authenticated status event
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       pull_number:
@@ -34,6 +39,7 @@ jobs:
           REF: ${{ github.ref }}
           REF_PROTECTED: ${{ github.ref_protected }}
           PULL_NUMBER: ${{ inputs.pull_number }}
+          CODERABBIT_STATUS_VERIFIED: ${{ github.event_name == 'workflow_call' && inputs.coderabbit_status_verified || false }}
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
@@ -45,6 +51,10 @@ jobs:
             exit 1
           }
           [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "pull_number must be a positive decimal." >&2; exit 1; }
+          [ "$CODERABBIT_STATUS_VERIFIED" = "true" ] || [ "$CODERABBIT_STATUS_VERIFIED" = "false" ] || {
+            echo "CodeRabbit status verification input is malformed." >&2
+            exit 1
+          }
       - name: Require a protected-branch production Environment without administrator bypass
         env:
           GH_TOKEN: ${{ github.token }}
@@ -340,26 +350,41 @@ jobs:
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }
-      - name: Require completed CodeRabbit check and resolved review threads
+      - name: Require authenticated CodeRabbit verification and resolved review threads
         env:
           GH_TOKEN: ${{ github.token }}
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          CODERABBIT_STATUS_VERIFIED: ${{ github.event_name == 'workflow_call' && inputs.coderabbit_status_verified || false }}
         run: |
           set -euo pipefail
-          status_context="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status")"
           # shellcheck disable=SC2016
           thread_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
             -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER" -F endCursor=null)"
-          jq -ne --arg head "$HEAD_SHA" --argjson status "$status_context" --argjson threads "$thread_pages" '
-            ($status.statuses | type == "array")
-            and any($status.statuses[]?; .context == "CodeRabbit" and .state == "success")
-            and ($threads | type == "array" and length > 0)
+          if [ "$CODERABBIT_STATUS_VERIFIED" = "false" ]; then
+            # shellcheck disable=SC2016
+            review_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(first:100,after:$endCursor){nodes{author{login} state commit{oid}} pageInfo{hasNextPage endCursor}}}}}' \
+              -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER" -F endCursor=null)"
+            jq -ne --arg head "$HEAD_SHA" --argjson reviews "$review_pages" '
+              ($reviews | type == "array" and length > 0)
+              and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
+              and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
+              and any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+            ' >/dev/null || {
+              echo "The exact Factory PR head requires a completed CodeRabbit review." >&2
+              exit 1
+            }
+          elif [ "$CODERABBIT_STATUS_VERIFIED" != "true" ]; then
+            echo "CodeRabbit status verification input is malformed." >&2
+            exit 1
+          fi
+          jq -ne --arg head "$HEAD_SHA" --argjson threads "$thread_pages" '
+            ($threads | type == "array" and length > 0)
             and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
             and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
             and all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
           ' >/dev/null || {
-            echo "The exact Factory PR head requires a successful CodeRabbit check and resolved review threads." >&2
+            echo "The exact Factory PR head requires resolved review threads." >&2
             exit 1
           }
       - name: Recheck the live PR/source boundary before the isolated final merge
@@ -441,24 +466,45 @@ jobs:
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+          CODERABBIT_STATUS_VERIFIED: ${{ github.event_name == 'workflow_call' && inputs.coderabbit_status_verified || false }}
         run: |
           set -euo pipefail
-          require_current_review_state() {
-            status_context="$(GH_TOKEN="${{ github.token }}" gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status")"
+          require_all_review_threads_resolved() {
             # shellcheck disable=SC2016
             thread_pages="$(GH_TOKEN="${{ github.token }}" gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
               -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER" -F endCursor=null)"
-            jq -ne --arg head "$HEAD_SHA" --argjson status "$status_context" --argjson threads "$thread_pages" '
-              ($status.statuses | type == "array")
-              and any($status.statuses[]?; .context == "CodeRabbit" and .state == "success")
-              and ($threads | type == "array" and length > 0)
+            jq -ne --arg head "$HEAD_SHA" --argjson threads "$thread_pages" '
+              ($threads | type == "array" and length > 0)
               and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
               and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
               and all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
             ' >/dev/null || {
-              echo "The exact Factory PR head requires a successful CodeRabbit check and resolved review threads immediately before final merge." >&2
+              echo "The exact Factory PR head requires resolved review threads immediately before final merge." >&2
               exit 1
             }
+          }
+          require_current_formal_coderabbit_review() {
+            # shellcheck disable=SC2016
+            review_pages="$(GH_TOKEN="${{ github.token }}" gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(first:100,after:$endCursor){nodes{author{login} state commit{oid}} pageInfo{hasNextPage endCursor}}}}}' \
+              -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PULL_NUMBER" -F endCursor=null)"
+            jq -ne --arg head "$HEAD_SHA" --argjson reviews "$review_pages" '
+              ($reviews | type == "array" and length > 0)
+              and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
+              and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
+              and any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+            ' >/dev/null || {
+              echo "The exact Factory PR head requires a completed CodeRabbit review immediately before final merge." >&2
+              exit 1
+            }
+          }
+          require_current_review_state() {
+            if [ "$CODERABBIT_STATUS_VERIFIED" = "false" ]; then
+              require_current_formal_coderabbit_review
+            elif [ "$CODERABBIT_STATUS_VERIFIED" != "true" ]; then
+              echo "CodeRabbit status verification input is malformed." >&2
+              exit 1
+            fi
+            require_all_review_threads_resolved
           }
           # Token creation is intentionally outside the source-head proof, so
           # beta/main can advance while the App action runs. Re-read every
