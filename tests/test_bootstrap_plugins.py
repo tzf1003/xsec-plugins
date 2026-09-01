@@ -50,11 +50,15 @@ class BootstrapPluginsTests(unittest.TestCase):
             )
             registry = json.loads((root / ".xsec-factory" / "official-registry.json").read_text())
             expected = [
-                entry["pluginId"] for entry in registry["plugins"]
+                (entry["pluginId"], entry["policy"])
+                for entry in registry["plugins"]
                 if entry["trustTier"] == "first-party" and entry["status"] == "active"
             ]
             marketplace = json.loads((root / ".agents" / "plugins" / "marketplace.json").read_text())
-            self.assertEqual([entry["name"] for entry in marketplace["plugins"]], expected)
+            self.assertEqual(
+                [(entry["name"], entry["policy"]) for entry in marketplace["plugins"]],
+                expected,
+            )
             retained_path = (
                 root / ".xsec-factory" / "snapshots" / "com.xsec.project-workspace"
                 / "com.xsec.desktop" / "frontend" / "index.js"

@@ -20,7 +20,11 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def registry_entry(plugin_id: str, status: str = "active") -> dict[str, object]:
+def registry_entry(
+    plugin_id: str,
+    status: str = "active",
+    installation: str = "INSTALLED_BY_DEFAULT",
+) -> dict[str, object]:
     return {
         "pluginId": plugin_id,
         "trustTier": "first-party",
@@ -29,17 +33,20 @@ def registry_entry(plugin_id: str, status: str = "active") -> dict[str, object]:
             "path": f"plugins/{plugin_id}",
             "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
         },
-        "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+        "policy": {"installation": installation, "authentication": "ON_INSTALL"},
         "category": "Security",
         "status": status,
     }
 
 
-def marketplace_entry(plugin_id: str) -> dict[str, object]:
+def marketplace_entry(
+    plugin_id: str,
+    installation: str = "INSTALLED_BY_DEFAULT",
+) -> dict[str, object]:
     return {
         "name": plugin_id,
         "source": {"source": "local", "path": f"./.xsec-factory/snapshots/{plugin_id}"},
-        "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+        "policy": {"installation": installation, "authentication": "ON_INSTALL"},
         "category": "Security",
     }
 
@@ -70,6 +77,24 @@ class MarketplaceDefaultsMaintenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-default-set-noop-") as directory:
             root = self.make_root(directory, status="disabled", discovered=False)
             self.assertFalse(maintenance.apply_transition(root))
+
+    def test_available_first_party_plugin_remains_discoverable_without_joining_defaults(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-available-first-party-") as directory:
+            root = Path(directory)
+            available_id = "com.xsec.attack-path"
+            default_id = "com.xsec.workspace.files"
+            write_json(
+                root / maintenance.REGISTRY_PATH,
+                {
+                    "schemaVersion": 2,
+                    "plugins": [
+                        registry_entry(available_id, installation="AVAILABLE"),
+                        registry_entry(default_id),
+                    ],
+                },
+            )
+
+            self.assertEqual(active_default_official_plugin_ids(root), (default_id,))
 
     def test_partial_transition_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-default-set-partial-") as directory:

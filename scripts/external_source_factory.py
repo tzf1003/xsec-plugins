@@ -529,8 +529,8 @@ def parse_registration(value: object, index: int) -> Registration:
             fail(f"{label}.source.repository does not match the approved first-party source")
         if source_path != PurePosixPath("plugins") / plugin_id:
             fail(f"{label}.source.path must be plugins/{plugin_id} for a first-party plugin")
-        if policy.get("installation") != "INSTALLED_BY_DEFAULT":
-            fail(f"{label}.policy.installation must be INSTALLED_BY_DEFAULT")
+        if policy.get("installation") not in {"INSTALLED_BY_DEFAULT", "AVAILABLE"}:
+            fail(f"{label}.policy.installation must be INSTALLED_BY_DEFAULT or AVAILABLE")
     if policy.get("authentication") != "ON_INSTALL":
         fail(f"{label}.policy.authentication must be ON_INSTALL")
     category = require_text(entry.get("category"), f"{label}.category", maximum=80)

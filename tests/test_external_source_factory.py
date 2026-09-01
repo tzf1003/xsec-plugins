@@ -278,6 +278,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         *,
         repository: str = "tzf1003/xsec-plugin-sub-agent",
         status: str = "pending-adoption",
+        installation: str = "INSTALLED_BY_DEFAULT",
     ) -> dict[str, object]:
         plugin_id = "com.xsec.workspace.sub-agent"
         return {
@@ -288,7 +289,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 "path": f"plugins/{plugin_id}",
                 "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
             },
-            "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+            "policy": {"installation": installation, "authentication": "ON_INSTALL"},
             "category": "Security",
             "status": status,
         }
@@ -1516,6 +1517,9 @@ class ExternalSourceFactoryTests(unittest.TestCase):
 
             self.make_factory(root, self.first_party_entry())
             self.assertEqual(factory.load_registry(root)[0].installation, "INSTALLED_BY_DEFAULT")
+
+            self.make_factory(root, self.first_party_entry(installation="AVAILABLE"))
+            self.assertEqual(factory.load_registry(root)[0].installation, "AVAILABLE")
 
             entry = self.registry_entry()
             entry["status"] = "pending-adoption"
