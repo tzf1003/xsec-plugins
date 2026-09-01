@@ -49,6 +49,10 @@ def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> Non
 def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> None:
     if "function RulesSection({host})" in source:
         required = (
+            "function DefaultFilterSection({host})",
+            "loadSettings(host).then(value=>{active&&editRevision.current===startedAtEdit&&"
+            "(filterRef.current=value,setFilter(value))}).catch(reason=>{active&&setError(",
+            "u2(DefaultFilterSection,{host})",
             "loadRules(host).then(value=>{active&&setRules(value)}).catch(reason=>{active&&setError(",
             "finally(()=>{active&&setLoading(!1)})",
             "let reload=async()=>{setRules(await loadRules(host))}",
@@ -59,6 +63,7 @@ def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> N
         )
         for required_source in required:
             case.assertIn(required_source, source)
+        case.assertNotIn("setFilter(void 0)", source)
         case.assertNotIn("setRules(void 0)", source)
         case.assertNotIn("setStatus(void 0)", source)
         return
