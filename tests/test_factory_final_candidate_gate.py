@@ -220,22 +220,22 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)
 
-    def test_dispatcher_recovers_only_the_current_signed_browser_beta(self) -> None:
+    def test_dispatcher_recovers_only_the_current_signed_registered_plugin_beta(self) -> None:
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
 
         for rule in (
             "plugin_id:",
             "INPUT_PLUGIN_ID: ${{ inputs.plugin_id }}",
-            '[ "$INPUT_PLUGIN_ID" = "com.xsec.workspace.browser" ]',
-            'Manual Browser smoke recovery requires the current protected Factory revision.',
+            '[[ "$INPUT_PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]]',
+            'Manual registered-plugin smoke recovery requires the current protected Factory revision.',
             "python scripts/external_source_factory.py validate",
-            'expected one active Browser registration',
+            'expected one active registered plugin',
             '"waiting_for_smoke"',
-            "Browser recovery status is not bound to the active signed Beta tuple",
+            "Registered plugin recovery status is not bound to the active signed Beta tuple",
             'kind:"beta-smoke-ready"',
-            "browser_recovery: ${{ steps.classify.outputs.browser_recovery }}",
-            'BROWSER_RECOVERY: ${{ steps.classify.outputs.browser_recovery }}',
-            '$browser_recovery == "true"',
+            "registered_recovery: ${{ steps.classify.outputs.registered_recovery }}",
+            'REGISTERED_RECOVERY: ${{ steps.classify.outputs.registered_recovery }}',
+            '$registered_recovery == "true"',
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)
