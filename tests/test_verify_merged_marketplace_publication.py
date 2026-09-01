@@ -117,20 +117,21 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
         root: Path,
         beta: dict[str, object],
         *,
+        plugin_id: str = PLUGIN_ID,
         beta_sha: str = "a" * 40,
         main_gate_sha: str = "b" * 40,
         state: str = "waiting_for_smoke",
         stable_release_id: str | None = None,
     ) -> None:
         write_json(
-            root / f".xsec-factory/official-status/{PLUGIN_ID}.json",
+            root / f".xsec-factory/official-status/{plugin_id}.json",
             {
                 "schemaVersion": 1,
-                "pluginId": PLUGIN_ID,
+                "pluginId": plugin_id,
                 "trustTier": "external",
                 "source": {
                     "repository": "example/plugin",
-                    "path": f"plugins/{PLUGIN_ID}",
+                    "path": f"plugins/{plugin_id}",
                     "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
                     "betaSha": beta_sha,
                     "stableSha": None,
@@ -146,9 +147,23 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
                 },
             },
         )
-        status_proof = root / f".xsec-factory/official-status-proofs/{PLUGIN_ID}.json"
+        status_proof = root / f".xsec-factory/official-status-proofs/{plugin_id}.json"
         status_proof.parent.mkdir(parents=True, exist_ok=True)
         status_proof.write_text(f"status signature for {main_gate_sha}\n", encoding="utf-8")
+
+    def write_beta_evidence(self, root: Path, plugin_id: str, beta: dict[str, object], beta_sha: str) -> None:
+        event = {
+            "channel": "beta",
+            "releaseId": beta["releaseId"],
+            "source": {"repository": "example/plugin", "path": f"plugins/{plugin_id}", "ref": "refs/heads/beta", "sha": beta_sha},
+            "artifact": {"sha256": beta["artifacts"][0]["sha256"], "url": beta["artifacts"][0]["url"]},
+            "publisher": "factory",
+        }
+        evidence = root / f".xsec-factory/official-publications/{plugin_id}.json"
+        write_json(evidence, {"schemaVersion": 1, "pluginId": plugin_id, "events": [event]})
+        proof = root / f".xsec-factory/official-publication-proofs/{plugin_id}.json"
+        proof.parent.mkdir(parents=True, exist_ok=True)
+        proof.write_text(f"evidence signature for {plugin_id}\n", encoding="utf-8")
 
     def test_classifies_beta_without_relying_on_the_merge_subject(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-") as directory:
@@ -463,6 +478,52 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.assertEqual(result["kind"], "beta")
             self.assertEqual({record["plugin_id"] for record in result["promotions"]}, {PLUGIN_ID, secondary_id})
             self.assertEqual(result["promotions"][-1]["source"]["sha"], source_sha)
+
+    def test_classifies_batched_no_pointer_beta_smoke_rechecks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-batched-beta-smoke-ready-") as directory:
+            root = Path(directory)
+            _, stable, beta = self.make_repository(root, registered=True)
+            secondary_id = "com.example.secondary"
+            secondary_stable = release("1.0.0", "secondary-stable")
+            secondary_beta = release("1.1.0", "secondary-beta")
+            registry_path = root / ".xsec-factory/official-registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["plugins"].append(
+                {
+                    "pluginId": secondary_id,
+                    "trustTier": "external",
+                    "source": {"repository": "example/plugin", "path": f"plugins/{secondary_id}", "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"}},
+                    "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+                    "category": "Security",
+                    "status": "active",
+                }
+            )
+            write_json(registry_path, registry)
+            write_json(root / ".agents/plugins/marketplace.json", {"plugins": [{"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}}, {"source": {"path": f"./{snapshot_path(secondary_id)}"}}]})
+            self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+            write_json(root / snapshot_path(secondary_id) / ".xsec-market/releases.json", {"schemaVersion": 2, "pluginId": secondary_id, "releases": [secondary_stable, secondary_beta], "channels": {"beta": {"releaseId": secondary_beta["releaseId"]}, "stable": {"releaseId": secondary_stable["releaseId"]}}})
+            for plugin_id in (PLUGIN_ID, secondary_id):
+                sidecar = root / snapshot_path(plugin_id) / ".xsec-market/releases.json.sig.jws.json"
+                sidecar.parent.mkdir(parents=True, exist_ok=True)
+                sidecar.write_text("baseline release signature\n", encoding="utf-8")
+            self.write_beta_evidence(root, PLUGIN_ID, beta, "a" * 40)
+            self.write_beta_evidence(root, secondary_id, secondary_beta, "b" * 40)
+            self.write_inflight_beta_status(root, beta, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=stable["releaseId"])
+            self.write_inflight_beta_status(root, secondary_beta, plugin_id=secondary_id, beta_sha="b" * 40, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=secondary_stable["releaseId"])
+            before = self.commit(root, "two betas await reproducible main sources")
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
+            for plugin_id in (PLUGIN_ID, secondary_id):
+                (root / snapshot_path(plugin_id) / ".xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
+            for plugin_id in (PLUGIN_ID, secondary_id):
+                (root / f".xsec-factory/official-publication-proofs/{plugin_id}.json").write_text("refreshed evidence signature\n", encoding="utf-8")
+            self.write_inflight_beta_status(root, beta, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"])
+            self.write_inflight_beta_status(root, secondary_beta, plugin_id=secondary_id, beta_sha="b" * 40, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=secondary_stable["releaseId"])
+            after = self.commit(root, "two registered mains rebuild their betas")
+
+            result = verifier.classify_merged_change(root, before, after)
+
+            self.assertEqual(result["kind"], "beta-smoke-ready")
+            self.assertEqual({record["plugin_id"] for record in result["promotions"]}, {PLUGIN_ID, secondary_id})
 
     def test_classifies_no_pointer_registered_beta_when_main_newly_rebuilds_it(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-beta-smoke-ready-") as directory:
