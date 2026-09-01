@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       plugin_id:
-        description: Registered Browser plugin ID for the current signed Beta smoke recovery
+        description: Registered plugin ID for the current signed Beta smoke recovery
         required: false
         type: string
 
@@ -40,7 +40,7 @@ jobs:
       source_owner: ${{ steps.classify.outputs.source_owner }}
       source_repositories: ${{ steps.classify.outputs.source_repositories }}
       manual_recovery: ${{ steps.classify.outputs.manual_recovery }}
-      browser_recovery: ${{ steps.classify.outputs.browser_recovery }}
+      registered_recovery: ${{ steps.classify.outputs.registered_recovery }}
       recovery_tuples: ${{ steps.classify.outputs.recovery_tuples }}
     steps:
       - uses: actions/checkout@v4
@@ -101,24 +101,24 @@ jobs:
             echo "Pending Factory layout migration cannot dispatch Desktop smoke."
             exit 0
           fi
-          browser_recovery=false
+          registered_recovery=false
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_PLUGIN_ID" ]; then
-            [ "$INPUT_PLUGIN_ID" = "com.xsec.workspace.browser" ] || {
-              echo "Manual signed smoke recovery is limited to the Browser plugin." >&2
+            [[ "$INPUT_PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]] || {
+              echo "Manual signed smoke recovery plugin ID is invalid." >&2
               exit 1
             }
             [ "$AFTER" = "$(git rev-parse origin/main)" ] || {
-              echo "Manual Browser smoke recovery requires the current protected Factory revision." >&2
+              echo "Manual registered-plugin smoke recovery requires the current protected Factory revision." >&2
               exit 1
             }
-            # Reuse only the active registered Browser status after the
+            # Reuse only the active registered plugin status after the
             # complete Factory model validates its immutable provenance. The
             # KMS verification below authenticates every current sidecar
             # before this tuple is allowed to reach Desktop.
             python scripts/external_source_factory.py validate
             registration="$(jq -cer --arg plugin_id "$INPUT_PLUGIN_ID" '
               .plugins | [ .[] | select(.pluginId == $plugin_id) ]
-              | if length == 1 and .[0].status == "active" then .[0] else error("expected one active Browser registration") end
+              | if length == 1 and .[0].status == "active" then .[0] else error("expected one active registered plugin") end
             ' .xsec-factory/official-registry.json)"
             status="$(jq -cer . ".xsec-factory/official-status/${INPUT_PLUGIN_ID}.json")"
             releases="$(jq -cer . ".xsec-factory/snapshots/${INPUT_PLUGIN_ID}/.xsec-market/releases.json")"
@@ -133,7 +133,7 @@ jobs:
                 or ($status.source.mainGateSha | type != "string" or test("^[a-f0-9]{40}$") | not)
                 or ($status.release.betaReleaseId | type != "string")
                 or $releases.channels.beta.releaseId != $status.release.betaReleaseId
-              then error("Browser recovery status is not bound to the active signed Beta tuple")
+              then error("Registered plugin recovery status is not bound to the active signed Beta tuple")
               else {
                 kind:"beta-smoke-ready",
                 promotions:[{
@@ -145,7 +145,7 @@ jobs:
               }
               end
             ')"
-            browser_recovery=true
+            registered_recovery=true
           else
             result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           fi
@@ -337,14 +337,14 @@ jobs:
           echo "source_owner=$(printf '%s' "$source_scope" | jq -er .owner)" >> "$GITHUB_OUTPUT"
           echo "source_repositories=$(printf '%s' "$source_scope" | jq -er .repositories)" >> "$GITHUB_OUTPUT"
           echo "manual_recovery=$manual_recovery" >> "$GITHUB_OUTPUT"
-          echo "browser_recovery=$browser_recovery" >> "$GITHUB_OUTPUT"
+          echo "registered_recovery=$registered_recovery" >> "$GITHUB_OUTPUT"
           echo "recovery_tuples=$recovery_tuples" >> "$GITHUB_OUTPUT"
       - name: Require the merged generated PR and source gate
         if: ${{ steps.classify.outputs.eligible == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           AFTER: ${{ steps.classify.outputs.marketplace_revision }}
-          BROWSER_RECOVERY: ${{ steps.classify.outputs.browser_recovery }}
+          REGISTERED_RECOVERY: ${{ steps.classify.outputs.registered_recovery }}
         run: |
           set -euo pipefail
           # A protected-main commit can be associated with more than one page
@@ -353,9 +353,9 @@ jobs:
           # PR. Inspecting only the first page could reject
           # the real PR or, worse, select the wrong same-commit PR.
           prs="$(gh api --paginate --slurp -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100")"
-          pr="$(printf '%s' "$prs" | jq -cer --arg browser_recovery "$BROWSER_RECOVERY" '
+          pr="$(printf '%s' "$prs" | jq -cer --arg registered_recovery "$REGISTERED_RECOVERY" '
             [.[][] | select(.merged_at != null and .base.ref == "main"
-              and ($browser_recovery == "true" or (.head.ref | startswith("xsec-marketplace/")))
+              and ($registered_recovery == "true" or (.head.ref | startswith("xsec-marketplace/")))
             )]
             | if length == 1 then .[0] else error("expected exactly one merged Factory generated PR") end
           ')"
