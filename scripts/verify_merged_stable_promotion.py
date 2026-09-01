@@ -333,14 +333,13 @@ def allowed_paths(
 
 
 def renewable_sidecars(root: Path, promoted_ids: set[str]) -> set[str]:
-    """Allow only the current immutable KMS batch and promoted releases."""
+    """Allow only post-candidate KMS sidecars and promoted release indexes."""
 
     try:
         root_path = root.resolve(strict=True)
         active = {
             sidecar_path_for(document).resolve(strict=False).relative_to(root_path).as_posix()
             for document in marketplace_documents(root)
-            if document.purpose != OFFICIAL_STATUS_PURPOSE
         }
     except (MarketplaceKmsPublisherError, OSError, ValueError) as error:
         raise PromotionVerificationError("publication has an invalid active KMS document layout") from error
