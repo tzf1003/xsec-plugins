@@ -100,6 +100,10 @@ def assert_traffic_react_rules(case: unittest.TestCase, source: str) -> None:
         case.assertIn(mutation, handler_source)
         case.assertIn("await refreshRules(reload,setError,", handler_source)
         case.assertLess(handler_source.index(mutation), handler_source.index("await refreshRules(reload,setError,"))
+        case.assertRegex(
+            handler_source,
+            r"catch\(reason\)\{setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}",
+        )
     case.assertIn("let reload=async()=>{setRules(await loadRules(host))}", rules)
     case.assertIn("function refreshRules(reload,setError,completed){try{await reload()}catch(reason){setError(", source)
     case.assertIn(
@@ -145,7 +149,17 @@ def assert_traffic_react_activation(case: unittest.TestCase, source: str) -> Non
     plugin_app = frontend_section(case, source, "function PluginApp({host,context})", "function object2")
     settings_page = frontend_section(case, source, "function SettingsPage({host})", "function workspaceInstanceKey")
     settings_api = frontend_section(case, source, "async function loadSettings(host)", "async function saveSettings")
+    settings_save = frontend_section(case, source, "async function saveSettings(host,filter)", "function caStatus")
+    default_filter = frontend_section(case, source, "function DefaultFilterSection({host})", "function samePassiveRule")
     case.assertIn('host.request("xsec.traffic.settings.get",{})', settings_api)
+    case.assertIn('host.request("xsec.traffic.settings.set",{filter:settingsToDomain(filter)})', settings_save)
+    case.assertRegex(
+        default_filter,
+        r"let save=async\(\)=>\{if\(!filter\)return;let submitted=filter;setSaving\(!0\),setError\(void 0\),setSaved\(!1\);"
+        r"try\{let response=await saveSettings\(host,submitted\);[^;]*\}catch\(reason\)\{setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}"
+        r"finally\{setSaving\(!1\)\}\}",
+    )
+    case.assertIn("onClick:()=>void save()", default_filter)
     case.assertIn("G(u2(PluginApp,{host,context:current}),root)", activation)
     case.assertIn('if(context.kind==="settings-page")return u2(SettingsPage,{host})', plugin_app)
     for section in ("DefaultFilterSection", "CaSection", "RulesSection"):
