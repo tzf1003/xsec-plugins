@@ -1,9 +1,7 @@
 # Official plugin bridge
 
-This package owns the signed plugin manifest, permissions and release lifecycle. XSEC Desktop currently binds its compatible built-in renderer only after this package is installed and enabled. The bridge is intentionally explicit so package state, rather than the application installer, is the source of truth.
+This package owns the signed plugin manifest, permissions and release lifecycle. Once it is installed and enabled, XSEC Desktop loads its frontend in an opaque iframe and grants only the manifest-declared Host RPC methods.
 
-## 设置审查
+The browser workspace tool receives a private, capability-bound surface bridge: the host validates the project/session/page at open time, associates one native Chrome surface with one iframe, and forwards JPEG frames on that iframe's private data stream. Surface input, frame acknowledgements, close, and Desktop-level focus presentation must match that handle. The package frontend is the workspace renderer.
 
-Chrome 可执行文件路径位于“设置 → 插件 → 浏览器会话”，重新启动浏览器会话后
-生效。会话、标签页、导航和当前工作恢复保留在主界面。详见仓库的
-[插件设置规范](../../docs/plugin-settings.md)。
+The manifest also owns the browser settings page and its `pluginData` RPC grants, so installing the package restores both the workspace browser and its custom Chrome-path setting.
