@@ -19,10 +19,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - name: Validate the registered source manifest and release identity inputs
+      - name: Validate the registered source manifest, release identity, and whitespace
         env:
           PLUGIN_ID: ${{ inputs.plugin_id }}
         run: |
@@ -39,11 +36,3 @@ jobs:
           if (!desktop || typeof desktop !== "object" || !desktop.engines || typeof desktop.engines !== "object") process.exit(1);
           NODE
           git diff --check HEAD^
-      - name: Install locked dependencies and run the source repository's real tests
-        run: |
-          set -euo pipefail
-          [ -f package.json ] || { echo "First-party source repository must declare its test command." >&2; exit 1; }
-          [ -f pnpm-lock.yaml ] || { echo "First-party source repository must commit pnpm-lock.yaml." >&2; exit 1; }
-          corepack enable
-          pnpm install --frozen-lockfile
-          pnpm test

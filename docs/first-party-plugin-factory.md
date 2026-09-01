@@ -163,11 +163,12 @@ profiler 与 diagnostic-port 注入变量，并显式关闭 .NET diagnostic IPC�
 
 Each active first-party source repository calls the reusable
 `xsec-plugins/.github/workflows/first-party-source-preflight.yml@main` from its protected `beta`
-and `main` CI. The caller supplies its fixed plugin ID; the workflow verifies the manifest identity,
-checks whitespace, installs the committed lockfile, and runs that repository's real `pnpm test`.
-The resulting `source-preflight / source-preflight` check must be required on both branches before
-the batch reconciler is enabled. This keeps source review at the source authority while Factory
-continues to authenticate exact immutable refs and never executes plugin code during packaging.
+and `main` CI after that repository's own real build/test job succeeds. The caller supplies its fixed
+plugin ID; the reusable job verifies manifest identity and whitespace without assuming a shared package
+manager or test command. The source repository retains its existing real validation job, and its
+`source-preflight / source-preflight` companion check must be required on both branches before the
+batch reconciler is enabled. This keeps source review at the source authority while Factory continues
+to authenticate exact immutable refs and never executes plugin code during packaging.
 
 Cloud 只能用专用 GitHub App 调用 GitHub Actions 的 `workflow_dispatch` API。源码事件固定进入受保护
 `main` 上的 `reconcile-marketplace-batch.yml`；Desktop smoke callback 继续进入

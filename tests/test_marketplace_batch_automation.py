@@ -12,6 +12,7 @@ BATCH_RECONCILE = ROOT / ".github" / "workflows" / "reconcile-marketplace-batch.
 BATCH_PUBLISH = ROOT / ".github" / "workflows" / "publish-marketplace-batch.yml"
 AUTO_FINALIZER = ROOT / ".github" / "workflows" / "auto-finalize-generated-marketplace-pr.yml"
 FINALIZER = ROOT / ".github" / "workflows" / "final-merge-generated-marketplace-pr.yml"
+SOURCE_PREFLIGHT = ROOT / ".github" / "workflows" / "first-party-source-preflight.yml"
 
 
 class MarketplaceBatchAutomationTests(unittest.TestCase):
@@ -65,6 +66,13 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn("expected one open exact-head generated PR", workflow)
         self.assertIn("workflow_call:", finalizer)
         self.assertIn("xsec-marketplace/batch-*", finalizer)
+
+    def test_shared_preflight_preserves_each_source_repositories_real_ci_contract(self) -> None:
+        workflow = SOURCE_PREFLIGHT.read_text(encoding="utf-8")
+        self.assertIn("Validate the registered source manifest, release identity, and whitespace", workflow)
+        self.assertIn("git diff --check HEAD^", workflow)
+        self.assertNotIn("pnpm install", workflow)
+        self.assertNotIn("pnpm test", workflow)
 
 
 if __name__ == "__main__":
