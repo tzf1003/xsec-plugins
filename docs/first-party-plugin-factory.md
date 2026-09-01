@@ -35,11 +35,12 @@ artifact、release history、签名和来源证明。
 因此 Registry PR 不能通过把任意包标记为 `first-party` 来取得 `com.xsec.*`、默认安装或
 现有终端/浏览器/项目写入权限。
 
-`disable-host-owned-project-workspace.yml` creates the signed withdrawal immediately after this
-automation reaches protected `main`: it changes `com.xsec.project-workspace` to `status: "disabled"`,
-removes only its Marketplace index entry, and KMS-signs only that replacement index. Its adoption
-proof, snapshot, release history and historical sidecars remain auditable. The normal source batch
-already excludes this ID during the transition, so a project-source merge cannot create a plugin release.
+Every protected `main` push invokes `publish.yml` in `align_desktop_defaults` mode. It creates one
+KMS-signed `xsec-marketplace/default-set-*` candidate that changes
+`com.xsec.project-workspace` to `status: "disabled"`, updates Marketplace discovery, and refreshes
+the full active-document sidecar batch. Its adoption proof, snapshot, release history and historical
+sidecars remain auditable. The normal source batch uses only active Registry rows, so this historical
+record never produces a plugin release.
 
 首次迁移使用仅第一方允许的临时 `status: "pending-adoption"`：它只能保留已存在的
 内置 Marketplace snapshot、release history、artifact 和已签名 release sidecar，不能
@@ -209,8 +210,8 @@ workflow 和 GitHub 注入的 PR metadata，**从不 checkout 或执行 PR head*
 `refresh-retained-sidecar-*`）写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
 success/not-applicable，故所需的 Factory context 不会卡住普通产品、文档或 fork PR。完成
 source gate 后，`auto-finalize-generated-marketplace-pr.yml` 仅接收同仓
-`xsec-marketplace/batch-*`、`external-beta-*`、`external-stable-*`、
-`disable-host-owned-project-workspace-*` 的成功 `Validate marketplace` run，
+`xsec-marketplace/batch-*`、`default-set-*`、`external-beta-*`、`external-stable-*` 的成功
+`Validate marketplace` run，
 并在受保护 `production` 环境调用 `final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live PR 的 head/base，使用精确
 head SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref 与 source gate。Factory
 candidate 的 `factory-final-merge-gate` 始终由 arm workflow 保持 `pending`：final workflow

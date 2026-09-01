@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
           [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Validated workflow run has an invalid head SHA." >&2; exit 1; }
           case "$HEAD_BRANCH" in
-            xsec-marketplace/batch-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/disable-host-owned-project-workspace-*) ;;
+            xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*) ;;
             *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
           esac
           prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"

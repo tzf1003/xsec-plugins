@@ -16,19 +16,22 @@ SOURCE_PREFLIGHT = ROOT / ".github" / "workflows" / "first-party-source-prefligh
 
 
 class MarketplaceBatchAutomationTests(unittest.TestCase):
-    def test_active_registry_excludes_host_owned_project_management(self) -> None:
+    def test_default_set_maintenance_is_automatic_and_source_batch_stays_ten_plugins(self) -> None:
         registry = json.loads((ROOT / ".xsec-factory" / "official-registry.json").read_text(encoding="utf-8"))
         marketplace = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
         statuses = {entry["pluginId"]: entry["status"] for entry in registry["plugins"]}
         active = [plugin_id for plugin_id, status in statuses.items() if status == "active"]
         market_ids = {entry["name"] for entry in marketplace["plugins"]}
 
-        self.assertEqual(len([plugin_id for plugin_id in active if plugin_id != "com.xsec.project-workspace"]), 10)
-        self.assertEqual(statuses["com.xsec.project-workspace"], "active")
-        self.assertIn("com.xsec.project-workspace", market_ids)
-        withdrawal = (ROOT / ".github" / "workflows" / "disable-host-owned-project-workspace.yml").read_text(encoding="utf-8")
-        self.assertIn('.status = "disabled"', withdrawal)
-        self.assertIn("--marketplace-index", withdrawal)
+        self.assertEqual(len(active), 10)
+        self.assertEqual(statuses["com.xsec.project-workspace"], "disabled")
+        self.assertNotIn("com.xsec.project-workspace", market_ids)
+        publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertFalse((ROOT / ".github" / "workflows" / "disable-host-owned-project-workspace.yml").exists())
+        self.assertIn("push:\n    branches: [main]", publish)
+        self.assertIn('[ "$EVENT_NAME" = "push" ]', publish)
+        self.assertIn("maintenance=align_desktop_defaults", publish)
+        self.assertIn("xsec-marketplace/default-set-", publish)
 
     def test_source_events_coalesce_before_building_one_complete_candidate(self) -> None:
         workflow = BATCH_RECONCILE.read_text(encoding="utf-8")
@@ -58,6 +61,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         finalizer = FINALIZER.read_text(encoding="utf-8")
         for branch in (
             "xsec-marketplace/batch-*",
+            "xsec-marketplace/default-set-*",
             "xsec-marketplace/external-beta-*",
             "xsec-marketplace/external-stable-*",
         ):

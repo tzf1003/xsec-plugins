@@ -361,12 +361,11 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.build_marketplace(output)
             validate_source(ROOT, output)
 
-    def test_source_gate_carries_the_signed_host_owned_transition_into_disposable_output(self) -> None:
-        """The temporary output inherits only the source Registry's active legacy allowance."""
+    def test_source_gate_uses_the_current_active_default_set_in_disposable_output(self) -> None:
+        """The temporary output inherits exactly the active Factory default set."""
 
-        expected = set(validate_market.DEFAULT_OFFICIAL_PLUGIN_IDS) | {"com.xsec.project-workspace"}
-        self.assertEqual(validate_market.default_marketplace_ids(ROOT), expected)
-        with tempfile.TemporaryDirectory(prefix="xsec-market-host-owned-transition-") as directory:
+        expected = set(validate_market.active_default_official_plugin_ids(ROOT))
+        with tempfile.TemporaryDirectory(prefix="xsec-market-active-default-set-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
             self.assertEqual(
@@ -2116,7 +2115,9 @@ export function renderPlaceholder() {}
         self.assertIn('EVENT_NAME: ${{ github.event_name }}', workflow)
         self.assertIn('REF: ${{ github.ref }}', workflow)
         self.assertIn('REF_PROTECTED: ${{ github.ref_protected }}', workflow)
-        self.assertIn('[ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]', workflow)
+        self.assertIn("workflow_dispatch)", workflow)
+        self.assertIn('[ "$REF" = "refs/heads/main" ] || {', workflow)
+        self.assertIn("Manual marketplace publishing is permitted only from refs/heads/main.", workflow)
         self.assertIn('[ "$REF_PROTECTED" != "true" ]', workflow)
         classify_job = workflow.split("  classify-generated-main-change:\n", 1)[1].split("  sign-and-publish:\n", 1)[0]
         # GitHub skips a job whose dependency was skipped, regardless of the
@@ -2124,7 +2125,7 @@ export function renderPlaceholder() {}
         # the classifier a successful, explicit non-generated result so the
         # external Beta/Stable request can reach the signing gate.  Pushes
         # remain the only event that classifies a main merge range.
-        self.assertIn("github.event_name == 'workflow_dispatch'", classify_job)
+        self.assertIn("github.event_name == 'workflow_dispatch' || github.event_name == 'push'", classify_job)
         self.assertIn("if: ${{ github.event_name == 'push' }}", classify_job)
         self.assertIn('EVENT_NAME: ${{ github.event_name }}', classify_job)
         self.assertIn('[ "$EVENT_NAME" = "workflow_dispatch" ]', classify_job)
@@ -2136,6 +2137,7 @@ export function renderPlaceholder() {}
         signing_job = workflow.split("  sign-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
         self.assertIn("needs: [enforce-publish-ref, classify-generated-main-change]", signing_job)
         self.assertIn("needs.enforce-publish-ref.result == 'success'", signing_job)
+        self.assertIn("github.event_name == 'workflow_dispatch' || github.event_name == 'push'", signing_job)
         self.assertNotIn("needs.require_publish_token.result == 'success'", signing_job)
         self.assertIn("needs.classify-generated-main-change.outputs.generated != 'true'", signing_job)
         self.assertNotIn("github.event.head_commit.message", signing_job)

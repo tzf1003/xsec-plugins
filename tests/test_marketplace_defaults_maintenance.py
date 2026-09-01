@@ -107,10 +107,14 @@ class MarketplaceDefaultsMaintenanceTests(unittest.TestCase):
         publish = (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
         arm = (ROOT / ".github/workflows/arm-generated-marketplace-final-merge.yml").read_text(encoding="utf-8")
         finalizer = (ROOT / ".github/workflows/final-merge-generated-marketplace-pr.yml").read_text(encoding="utf-8")
+        auto_finalizer = (ROOT / ".github/workflows/auto-finalize-generated-marketplace-pr.yml").read_text(encoding="utf-8")
+        self.assertIn("push:\n    branches: [main]", publish)
         self.assertIn("align_desktop_defaults", publish)
+        self.assertIn("maintenance=align_desktop_defaults", publish)
         self.assertIn("python scripts/maintain_marketplace_defaults.py --root .", publish)
         self.assertIn("xsec-marketplace/default-set-", arm)
         self.assertIn("xsec-marketplace/default-set-", finalizer)
+        self.assertIn("xsec-marketplace/default-set-*", auto_finalizer)
         self.assertIn("--verify-default-set-transition-candidate", finalizer)
 
 

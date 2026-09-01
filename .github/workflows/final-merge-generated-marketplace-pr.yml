@@ -208,33 +208,6 @@ jobs:
             python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-retained-release-signature --retained-release-plugin-id "$plugin_id"
             result="$(jq -cn --arg plugin_id "$plugin_id" '{kind:"retained-sidecar-refresh",plugin_id:$plugin_id,sources:[]}')"
             sources='[]'
-          elif [[ "$HEAD_REF" == xsec-marketplace/disable-host-owned-project-workspace-* ]]; then
-            mapfile -t changed < <(git -C "$CANDIDATE" diff --name-only --no-renames "$BEFORE" "$AFTER" | LC_ALL=C sort -u)
-            expected=(
-              .agents/plugins/marketplace.json
-              .agents/plugins/marketplace.json.sig.jws.json
-              .xsec-factory/official-registry.json
-            )
-            [ "${#changed[@]}" -eq "${#expected[@]}" ] || { printf 'Unexpected host-routing withdrawal paths:\n%s\n' "${changed[*]:-<none>}" >&2; exit 1; }
-            for index in "${!expected[@]}"; do
-              [ "${changed[$index]}" = "${expected[$index]}" ] || { printf 'Unexpected host-routing withdrawal paths:\n%s\n' "${changed[*]:-<none>}" >&2; exit 1; }
-            done
-            jq -e '
-              .plugins | [.[] | select(.pluginId == "com.xsec.project-workspace")]
-              | length == 1 and .[0].status == "disabled"
-            ' "$CANDIDATE/.xsec-factory/official-registry.json" >/dev/null || {
-              echo "Host-routing withdrawal does not disable exactly the retained project workspace Registry row." >&2
-              exit 1
-            }
-            jq -e '[.plugins[] | select(.name == "com.xsec.project-workspace")] | length == 0' \
-              "$CANDIDATE/.agents/plugins/marketplace.json" >/dev/null || {
-              echo "Host-routing withdrawal leaves project workspace in the Marketplace index." >&2
-              exit 1
-            }
-            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
-            python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-active-marketplace-signatures >/dev/null
-            result='{"kind":"host-owned-project-workspace-withdrawal","sources":[]}'
-            sources='[]'
           else
             case "$HEAD_REF" in
               xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*) ;;

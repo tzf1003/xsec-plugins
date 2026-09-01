@@ -99,17 +99,6 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             release.write_bytes(f'{{"pluginId":"{plugin_id}"}}'.encode("utf-8"))
         return publisher.marketplace_documents(root)
 
-    def test_marketplace_index_selector_returns_only_the_canonical_index(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="xsec-kms-marketplace-index-") as directory:
-            root = Path(directory)
-            documents = self.make_marketplace(root)
-
-            selected = publisher.marketplace_index_document(root)
-
-            self.assertEqual(selected, documents[0])
-            self.assertEqual(selected.purpose, publisher.MARKETPLACE_INDEX_PURPOSE)
-            self.assertEqual(selected.subject, publisher.MARKETPLACE_INDEX_SUBJECT)
-
     def broker_response(
         self,
         document: publisher.MarketplaceDocument,

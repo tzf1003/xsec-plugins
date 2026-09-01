@@ -449,16 +449,6 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
 
 
-def marketplace_index_document(root: Path) -> MarketplaceDocument:
-    """Return the one canonical Marketplace index signing document."""
-
-    documents = marketplace_documents(root)
-    index = documents[0]
-    if index.subject != MARKETPLACE_INDEX_SUBJECT or index.purpose != MARKETPLACE_INDEX_PURPOSE:
-        raise AssertionError("marketplace document order lost its canonical index")
-    return index
-
-
 def without_official_status_documents(documents: list[MarketplaceDocument]) -> list[MarketplaceDocument]:
     """Select the ordinary publisher document set without mutable status.
 
@@ -1020,11 +1010,6 @@ def main() -> None:
         help="sign or validate only one canonical official Factory status document",
     )
     parser.add_argument(
-        "--marketplace-index",
-        action="store_true",
-        help="sign or validate only the official Marketplace index document",
-    )
-    parser.add_argument(
         "--first-party-adoption-plugin-id",
         help="sign or validate only one staged first-party adoption document",
     )
@@ -1037,7 +1022,6 @@ def main() -> None:
         args.validate_only
         or args.retained_release_plugin_id is not None
         or args.official_status_plugin_id is not None
-        or args.marketplace_index
         or args.first_party_adoption_plugin_id is not None
     ):
         parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release, status-only, or validate-only options")
@@ -1046,7 +1030,6 @@ def main() -> None:
     if args.exclude_official_status and (
         args.retained_release_plugin_id is not None
         or args.official_status_plugin_id is not None
-        or args.marketplace_index
         or args.first_party_adoption_plugin_id is not None
     ):
         parser.error("--exclude-official-status cannot be combined with a single-document selector")
@@ -1055,7 +1038,6 @@ def main() -> None:
         for value in (
             args.retained_release_plugin_id,
             args.official_status_plugin_id,
-            True if args.marketplace_index else None,
             args.first_party_adoption_plugin_id,
         )
     )
@@ -1072,8 +1054,6 @@ def main() -> None:
             documents = [retained_release_document(root, args.retained_release_plugin_id)]
         elif args.official_status_plugin_id is not None:
             documents = [official_status_document(root, args.official_status_plugin_id)]
-        elif args.marketplace_index:
-            documents = [marketplace_index_document(root)]
         elif args.first_party_adoption_plugin_id is not None:
             documents = [official_adoption_provenance_document(root, args.first_party_adoption_plugin_id)]
         else:
