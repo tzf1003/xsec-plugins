@@ -31,6 +31,13 @@ def snapshot_dir(root: Path, plugin_id: str) -> Path:
     return root / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / plugin_id
 
 
+def traffic_release_contract() -> tuple[dict[str, object], str]:
+    fixture = ROOT / "tests" / "fixtures"
+    manifest = json.loads((fixture / "traffic-1.3.0-plugin.json").read_text(encoding="utf-8"))
+    source = (fixture / "traffic-1.3.0-frontend.js").read_text(encoding="utf-8")
+    return manifest, source
+
+
 def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> None:
     if "setRuns(await api.runs())" in source:
         case.assertIn("setRunsError(", source)
@@ -196,12 +203,35 @@ class MarketplaceValidationTests(unittest.TestCase):
 
     def test_traffic_react_settings_contract_fixture(self) -> None:
         fixture = ROOT / "tests" / "fixtures" / "traffic-1.3.0-frontend.js"
-        payload = fixture.read_bytes().removesuffix(b"\n")
+        payload = fixture.read_bytes()
         self.assertEqual(
             hashlib.sha256(payload).hexdigest(),
-            "f8defb39dfdb8b35fec7492b347044bee01998cc1e218343fa71e737332457b2",
+            "cdc8bb1d5e7394826ad2e0287c6e95d6bfb6af66d92918827da037055735d0f6",
         )
         assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
+
+    def test_traffic_reviewed_frontend_contract_accepts_release_bundle(self) -> None:
+        manifest, source = traffic_release_contract()
+        validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
+
+    def test_traffic_reviewed_frontend_contract_rejects_source_mutation(self) -> None:
+        manifest, source = traffic_release_contract()
+        mutated = source.replace("traffic.frontend.activate", "traffic.frontend.changed", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "reviewed Traffic frontend source"):
+            validate_market.validate_official_frontend(manifest, mutated, "Traffic 1.3.0")
+
+    def test_traffic_reviewed_frontend_contract_rejects_rpc_drift(self) -> None:
+        manifest, source = traffic_release_contract()
+        methods = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
+        methods["xsec.traffic.reference.add"]["binding"] = "plugin"
+        with self.assertRaisesRegex(MarketplaceValidationError, "reviewed Traffic RPC contract"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
+
+    def test_composer_capability_requires_plugin_api_1_4_for_any_method_name(self) -> None:
+        manifest, source = traffic_release_contract()
+        manifest["extensions"]["com.xsec.desktop"]["engines"]["pluginApi"] = "^1.3.0"
+        with self.assertRaisesRegex(MarketplaceValidationError, "plugin API 1.4"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 1.3.0")
 
     def build_marketplace(self, destination: Path) -> None:
         command = [
@@ -1335,7 +1365,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             methods = desktop["frontendApi"]["methods"]
             expected_plugin_api = (
                 "^1.4.0"
-                if set(methods) & validate_market.WORKSPACE_COMPOSER_METHODS
+                if validate_market.frontend_methods_with_capability(methods, "workspace.composer.write")
                 else "^1.3.0"
                 if "xsec.workspace.tool.open" in methods
                 else "^1.2.0"
