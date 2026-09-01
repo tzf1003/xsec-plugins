@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
-            workflow_dispatch|workflow_call) ;;
+            workflow_dispatch|workflow_call|workflow_run) ;;
             *) echo "Final Marketplace merge accepts only its protected dispatcher or reusable caller." >&2; exit 1 ;;
           esac
           [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
