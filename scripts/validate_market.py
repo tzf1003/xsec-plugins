@@ -283,6 +283,24 @@ REGEX_PREFIX_KEYWORDS = {
     "void",
     "yield",
 }
+CONTROL_HEADER_KEYWORDS = {"if", "for", "while", "with", "switch"}
+CONST_INITIALIZER_TERMINATORS = {";", ",", "}"}
+
+
+def javascript_control_header_closed(tokens: list[tuple[str, str]]) -> bool:
+    """Return whether the last token closes if/for/while/with/switch (...)."""
+
+    opening = matching_opening_parenthesis(tokens, len(tokens) - 1)
+    if opening is None or opening == 0:
+        return False
+    previous = tokens[opening - 1]
+    if previous[0] == "identifier" and previous[1] in CONTROL_HEADER_KEYWORDS:
+        return True
+    return (
+        opening >= 2
+        and previous == ("identifier", "await")
+        and tokens[opening - 2] == ("identifier", "for")
+    )
 
 
 def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
@@ -294,71 +312,18 @@ def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
     kind, value = significant[-1]
     if kind == "identifier":
         return value in REGEX_PREFIX_KEYWORDS
-    if kind in {"number", "regex", "string"} or value in {")", "]", "}"}:
+    if kind in {"number", "regex", "string"} or value in {"]", "}"}:
         return False
+    if value == ")":
+        return javascript_control_header_closed(significant)
     if value in {"+", "-"} and len(significant) > 1 and significant[-2] == significant[-1]:
         return False
     return True
 
 
-def consume_javascript_quote(source: str, index: int, quote: str) -> int | None:
-    cursor = index + 1
-    escaped = False
-    while cursor < len(source):
-        character = source[cursor]
-        if escaped:
-            escaped = False
-        elif character == "\\":
-            escaped = True
-        elif character == quote:
-            return cursor + 1
-        cursor += 1
-    return None
-
-
-def source_regex_allowed(source: str, start: int, index: int, label: str) -> bool:
-    prefix_tokens = javascript_contract_tokens(source[start:index], label)
-    return javascript_regex_allowed(prefix_tokens)
-
-
-def consume_javascript_interpolation(source: str, index: int, label: str) -> int:
-    depth = 1
-    cursor = index
-    while cursor < len(source):
-        if source.startswith("//", cursor):
-            newline = source.find("\n", cursor + 2)
-            cursor = len(source) if newline == -1 else newline + 1
-            continue
-        if source.startswith("/*", cursor):
-            end = source.find("*/", cursor + 2)
-            if end == -1:
-                fail(f"{label} contains an unterminated JavaScript block comment")
-            cursor = end + 2
-            continue
-        character = source[cursor]
-        if character in {"'", '"'}:
-            end = consume_javascript_quote(source, cursor, character)
-            if end is None:
-                fail(f"{label} contains an unterminated JavaScript string")
-            cursor = end
-            continue
-        if character == "`":
-            cursor, _ = consume_javascript_template(source, cursor, label)
-            continue
-        if character == "/" and source_regex_allowed(source, index, cursor, label):
-            end = consume_javascript_regex(source, cursor)
-            if end is not None:
-                cursor = end
-                continue
-        depth += 1 if character == "{" else -1 if character == "}" else 0
-        cursor += 1
-        if depth == 0:
-            return cursor
-    fail(f"{label} contains an unterminated JavaScript template interpolation")
-
-
-def consume_javascript_template(source: str, index: int, label: str) -> tuple[int, list[str]]:
-    expressions: list[str] = []
+def consume_javascript_template(source: str, index: int, label: str) -> tuple[int, list[tuple[str, str]], bool]:
+    interpolated: list[tuple[str, str]] = []
+    has_interpolation = False
     cursor = index + 1
     while cursor < len(source):
         character = source[cursor]
@@ -366,29 +331,28 @@ def consume_javascript_template(source: str, index: int, label: str) -> tuple[in
             cursor += 2
             continue
         if character == "`":
-            return cursor + 1, expressions
+            return cursor + 1, interpolated, has_interpolation
         if source.startswith("${", cursor):
-            end = consume_javascript_interpolation(source, cursor + 2, label)
-            expressions.append(source[cursor + 2:end - 1])
-            cursor = end
+            has_interpolation = True
+            inner, cursor = tokenize_javascript(source, cursor + 2, label, stop_at_unmatched_brace=True)
+            interpolated.extend(inner)
             continue
         cursor += 1
     fail(f"{label} contains an unterminated JavaScript string")
 
 
-def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]:
-    """Tokenize the small JavaScript subset used by static frontend checks.
-
-    Marketplace validation must never import or execute a plugin archive.  The
-    tokenizer deliberately recognizes comments, string/template literals and
-    slash-delimited literals so an `activate` or RPC snippet merely written as
-    data cannot satisfy the release contract. Slash tokens use their lexical
-    expression context to distinguish regex literals from division operators.
-    """
+def tokenize_javascript(
+    source: str,
+    index: int,
+    label: str,
+    *,
+    stop_at_unmatched_brace: bool = False,
+) -> tuple[list[tuple[str, str]], int]:
+    """Tokenize source from index, optionally stopping at an unmatched `}`."""
 
     tokens: list[tuple[str, str]] = []
-    index = 0
     length = len(source)
+    depth = 1 if stop_at_unmatched_brace else 0
     while index < length:
         character = source[index]
         if character in {"\n", "\r"}:
@@ -419,11 +383,10 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
                 index = end
                 continue
         if character == "`":
-            end, expressions = consume_javascript_template(source, index, label)
+            end, interpolated, has_interpolation = consume_javascript_template(source, index, label)
             literal = source[index + 1:end - 1]
-            tokens.append(("template" if expressions else "string", literal))
-            for expression in expressions:
-                tokens.extend(javascript_contract_tokens(expression, label))
+            tokens.append(("template" if has_interpolation else "string", literal))
+            tokens.extend(interpolated)
             index = end
             continue
         if character in {"'", '"'}:
@@ -460,8 +423,30 @@ def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]
                 index += 1
             tokens.append(("identifier", source[start:index]))
             continue
+        if stop_at_unmatched_brace and character == "{":
+            depth += 1
+        if stop_at_unmatched_brace and character == "}":
+            depth -= 1
+            if depth == 0:
+                return tokens, index + 1
         tokens.append(("punctuation", character))
         index += 1
+    if stop_at_unmatched_brace:
+        fail(f"{label} contains an unterminated JavaScript template interpolation")
+    return tokens, index
+
+
+def javascript_contract_tokens(source: str, label: str) -> list[tuple[str, str]]:
+    """Tokenize the small JavaScript subset used by static frontend checks.
+
+    Marketplace validation must never import or execute a plugin archive.  The
+    tokenizer deliberately recognizes comments, string/template literals and
+    slash-delimited literals so an `activate` or RPC snippet merely written as
+    data cannot satisfy the release contract. Slash tokens use their lexical
+    expression context to distinguish regex literals from division operators.
+    """
+
+    tokens, _ = tokenize_javascript(source, 0, label)
     return tokens
 
 
@@ -1317,6 +1302,10 @@ def frontend_string_constants(tokens: list[tuple[str, str]]) -> dict[str, str]:
             and declaration[2] == ("punctuation", "=")
             and declaration[3][0] == "string"
         ):
+            if index + 4 < len(dense):
+                next_kind, next_value = dense[index + 4]
+                if next_kind != "punctuation" or next_value not in CONST_INITIALIZER_TERMINATORS:
+                    continue
             name, value = declaration[1][1], declaration[3][1]
             if name in constants and constants[name] != value:
                 ambiguous.add(name)
@@ -1394,21 +1383,71 @@ def frontend_rpc_bindings(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
     return bindings
 
 
+def _bracket_request_length(dense: list[tuple[str, str]], index: int) -> int:
+    if (
+        index + 2 < len(dense)
+        and dense[index] == ("punctuation", "[")
+        and dense[index + 1] == ("string", "request")
+        and dense[index + 2] == ("punctuation", "]")
+    ):
+        return 3
+    return 0
+
+
+def host_request_argument_index(dense: list[tuple[str, str]], index: int) -> int | None:
+    """Return the first-argument index of host.request / host?.request / host["request"]."""
+
+    if index >= len(dense) or dense[index] != ("identifier", "host"):
+        return None
+    cursor = index + 1
+    if (
+        cursor + 1 < len(dense)
+        and dense[cursor] == ("punctuation", "?")
+        and dense[cursor + 1] == ("punctuation", ".")
+    ):
+        cursor += 2
+        bracket = _bracket_request_length(dense, cursor)
+        if bracket:
+            cursor += bracket
+        elif cursor < len(dense) and dense[cursor] == ("identifier", "request"):
+            cursor += 1
+        else:
+            return None
+    elif cursor < len(dense) and dense[cursor] == ("punctuation", "."):
+        cursor += 1
+        if cursor >= len(dense) or dense[cursor] != ("identifier", "request"):
+            return None
+        cursor += 1
+    else:
+        bracket = _bracket_request_length(dense, cursor)
+        if not bracket:
+            return None
+        cursor += bracket
+    if (
+        cursor + 1 < len(dense)
+        and dense[cursor] == ("punctuation", "?")
+        and dense[cursor + 1] == ("punctuation", ".")
+    ):
+        cursor += 2
+    if cursor >= len(dense) or dense[cursor] != ("punctuation", "("):
+        return None
+    argument = cursor + 1
+    if argument >= len(dense):
+        return None
+    return argument
+
+
 def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str]:
     dense = [token for token in tokens if token[0] != "newline"]
     bindings = frontend_rpc_bindings(dense)
     requested: set[str] = set()
     saw_request = False
-    for index in range(len(dense) - 4):
-        if dense[index:index + 4] != [
-            ("identifier", "host"),
-            ("punctuation", "."),
-            ("identifier", "request"),
-            ("punctuation", "("),
-        ]:
+    for index in range(len(dense)):
+        argument_index = host_request_argument_index(dense, index)
+        if argument_index is None:
             continue
         saw_request = True
-        argument_kind, argument_value = dense[index + 4]
+        argument_kind, argument_value = dense[argument_index]
         if argument_kind == "string":
             requested.add(argument_value)
         elif argument_kind == "identifier" and argument_value in bindings:
