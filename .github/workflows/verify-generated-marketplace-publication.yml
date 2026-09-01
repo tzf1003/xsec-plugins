@@ -36,6 +36,10 @@ jobs:
             echo "Pending Factory layout migration has no source-freshness proof."
             exit 0
           fi
+          if git diff --quiet "$BEFORE" "$AFTER" -- .agents/plugins .xsec-factory plugins .gitmodules; then
+            echo "This PR does not change a generated Marketplace release surface."
+            exit 0
+          fi
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
           if [ "$kind" != "beta" ] && [ "$kind" != "stable" ] && [ "$kind" != "stable-maintenance" ] && [ "$kind" != "beta-smoke-ready" ]; then
@@ -52,6 +56,10 @@ jobs:
           set -euo pipefail
           if [ -f .xsec-factory/layout-migration.json ]; then
             echo "Pending Factory layout migration has no source-freshness proof."
+            exit 0
+          fi
+          if git diff --quiet "$BEFORE" "$AFTER" -- .agents/plugins .xsec-factory plugins .gitmodules; then
+            echo "This PR does not change a generated Marketplace release surface."
             exit 0
           fi
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"

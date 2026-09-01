@@ -29,11 +29,11 @@ permissions:
   contents: read
 
 concurrency:
-  # All source webhooks converge after obtaining this one slot.  The worker
-  # reads every active Registry source *after* it owns the slot, so a burst of
-  # ten source merges produces one current candidate instead of ten PRs.
+  # The newest source webhook owns the batch slot.  It reads every active
+  # Registry source after acquiring that slot, so a burst of source merges
+  # produces one current candidate.
   group: xsec-marketplace-source-batch
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   validate-source-event:
