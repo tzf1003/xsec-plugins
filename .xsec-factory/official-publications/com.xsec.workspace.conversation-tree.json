@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.conversation-tree",
+  "events": [
+    {
+      "channel": "beta",
+      "releaseId": "sha256-f22a1852ae37852a5ffcd3fb80930338fd93a3e4f6fe1be293fbb62f6dac5353",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-conversation-tree",
+        "path": "plugins/com.xsec.workspace.conversation-tree",
+        "ref": "refs/heads/beta",
+        "sha": "4706b1700edaa04f6b342305dea8e2e3203a45e8"
+      },
+      "artifact": {
+        "sha256": "e347224fc223972c6dd702e570f9788499b7ce30415e6ce66b269ad0f5f2d21b",
+        "url": "artifacts/com.xsec.workspace.conversation-tree-1.3.2-sha256-e347224fc223972c-any-any.xsec-plugin"
+      },
+      "publisher": "github-actions[bot]"
+    }
+  ]
+}
