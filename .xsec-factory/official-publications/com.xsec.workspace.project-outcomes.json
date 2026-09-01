@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.project-outcomes",
+  "events": [
+    {
+      "channel": "beta",
+      "releaseId": "sha256-55cfcb5b76c32075f71f41b1127816db199bbe6f2c1540a565a45e82b302a711",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-project-outcomes",
+        "path": "plugins/com.xsec.workspace.project-outcomes",
+        "ref": "refs/heads/beta",
+        "sha": "57ec0a38ec2b20a9ac810b4cf4da4f9f650fff95"
+      },
+      "artifact": {
+        "sha256": "f37fe133b59f4c0437f2253c5f73604b41b7dfe0eb3d319028dacad6b8f56beb",
+        "url": "artifacts/com.xsec.workspace.project-outcomes-1.2.4-sha256-f37fe133b59f4c04-any-any.xsec-plugin"
+      },
+      "publisher": "github-actions[bot]"
+    }
+  ]
+}
