@@ -84,6 +84,10 @@ jobs:
           [ "$current" = "$SOURCE_SHA" ] || { echo "Source delivery is stale; the registered ref advanced." >&2; exit 1; }
   build-current-batch:
     needs: validate-source-event
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
     uses: ./.github/workflows/publish-marketplace-batch.yml
     with:
       delivery_key: ${{ needs.validate-source-event.outputs.delivery_key }}
