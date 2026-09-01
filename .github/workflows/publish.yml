@@ -248,10 +248,7 @@ jobs:
             if printf '%s' "$files" | jq -e --arg plugin_id "$PLUGIN_ID" '
               any(.[][];
                 .filename == ("plugins/" + $plugin_id)
-                or .filename == (".xsec-factory/official-publications/" + $plugin_id + ".json")
-                or .filename == (".xsec-factory/official-publication-proofs/" + $plugin_id + ".json")
                 or .filename == (".xsec-factory/official-status/" + $plugin_id + ".json")
-                or .filename == (".xsec-factory/official-status-proofs/" + $plugin_id + ".json")
                 or .filename == (".xsec-factory/snapshots/" + $plugin_id + "/.xsec-market/releases.json")
               )
             ' >/dev/null; then
