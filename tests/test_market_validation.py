@@ -447,8 +447,11 @@ class MarketplaceValidationTests(unittest.TestCase):
         )
         activation = terminal_activation_match(source)
         rpc = terminal_fixture_rpc_match(source)
-        self.assertGreater(activation.start(), source.index(activation_decoy))
-        self.assertGreater(rpc.start(), source.index(rpc_decoy))
+        prefix_length = len(f"{activation_decoy}{rpc_decoy}\n")
+        activation_offset = source.index("export function activate(host){", prefix_length)
+        rpc_offset = source.index('host.request("xsec.terminal.write",{})', activation_offset)
+        self.assertEqual(activation.start(), activation_offset)
+        self.assertEqual(rpc.start(), rpc_offset)
         self.assertIn(rpc_decoy, replace_source_match(source, rpc, "undefined"))
 
     def test_official_frontend_rejects_undeclared_template_literal_host_request(self) -> None:
