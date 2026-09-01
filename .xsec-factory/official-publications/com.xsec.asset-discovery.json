@@ -16,6 +16,21 @@
         "url": "artifacts/com.xsec.asset-discovery-1.3.5-sha256-49c88395ada21930-any-any.xsec-plugin"
       },
       "publisher": "github-actions[bot]"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-f502c883d66fe39825a946da61c1e195932850026933db4a656eaf4da721b7af",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-asset-discovery",
+        "path": "plugins/com.xsec.asset-discovery",
+        "ref": "refs/heads/beta",
+        "sha": "2087ba071158473bd2291cc712b3e681d0a17b4d"
+      },
+      "artifact": {
+        "sha256": "788d21c0a56e4b1a678c00c2c13c38009656b751bb80c143c3d07811bad8193f",
+        "url": "artifacts/com.xsec.asset-discovery-1.3.7-sha256-788d21c0a56e4b1a-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
     }
   ]
 }

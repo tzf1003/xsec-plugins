@@ -49,11 +49,27 @@
           "sha256": "25db2633a6a1cbd4a777139133d3aec8ae07399fe9e0c0ca144df1c98345b0a8"
         }
       ]
+    },
+    {
+      "releaseId": "sha256-08378e0dad503079baf32f6362ebfbf88f8f0df6b753bff8a7019d9acfdfbdf6",
+      "version": "1.3.0",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.4.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/com.xsec.workspace.traffic-1.3.0-sha256-7276a0b41a3a42ad-any-any.xsec-plugin",
+          "sha256": "7276a0b41a3a42ad249a6be3efc125b4c8671daa1e0bf710c7fc9e8912f8e70d"
+        }
+      ]
     }
   ],
   "channels": {
     "beta": {
-      "releaseId": "sha256-643634ffde7e1839f9b73f60af4ee7ede4c9d69af6aac8f3ecc60ce584b376cb"
+      "releaseId": "sha256-08378e0dad503079baf32f6362ebfbf88f8f0df6b753bff8a7019d9acfdfbdf6"
     },
     "stable": {
       "releaseId": "sha256-b909d1718368557fccdabad98d5dd9cfbeee0e1ee9f90a402f1a796f20bd92da"
