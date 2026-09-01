@@ -439,6 +439,14 @@ def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
     if kind == "identifier":
         if value in {"break", "continue"}:
             return had_line_terminator
+        # ``break label`` / ``continue label`` plus a line terminator is a
+        # complete statement.  ASI then lets the next slash start a regex.
+        if had_line_terminator:
+            previous = cursor - 1
+            while previous >= 0 and tokens[previous][0] == "newline":
+                previous -= 1
+            if previous >= 0 and tokens[previous][0] == "identifier" and tokens[previous][1] in {"break", "continue"}:
+                return True
         if value not in REGEX_PREFIX_KEYWORDS:
             return False
         previous = cursor - 1

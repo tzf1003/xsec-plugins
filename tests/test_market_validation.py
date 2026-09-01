@@ -450,6 +450,102 @@ class MarketplaceValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
                     validate_market.validate_official_frontend(manifest, mutated, plugin_id)
 
+    def test_official_frontend_rejects_undeclared_request_after_catch_method(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        call = 'host.request("xsec.plugin.settings.open",{})'
+        marker = "export function activate(host){"
+        payload = 'Promise.resolve(1).catch(()=>1)/host.request("xsec.plugin.settings.open",{})/1'
+        self.assertIn(call, source)
+        source = source.replace(call, "undefined", 1).replace(marker, f"{marker}{payload};", 1)
+        tokens = validate_market.javascript_contract_tokens(payload, "frontend")
+        self.assertEqual([value for kind, value in tokens if kind == "regex"], [])
+        with self.assertRaisesRegex(MarketplaceValidationError, "calls undeclared host RPC methods"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
+    def test_official_frontend_rejects_continued_literal_rpc_argument(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        marker = "export function activate(host){"
+        self.assertIn(marker, source)
+        call = (
+            'host.request("xsec.terminal.settings.get"'
+            '.replace("terminal.settings.get","plugin.settings.open"),{})'
+        )
+        mutated = source.replace(marker, f"{marker}{call};", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+            validate_market.validate_official_frontend(manifest, mutated, plugin_id)
+
+    def test_official_frontend_rejects_comma_host_receiver(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        marker = "export function activate(host){"
+        self.assertIn(marker, source)
+        mutated = source.replace(
+            marker,
+            f"{marker}(0,host).request(host.context.dynamicMethod,{{}});",
+            1,
+        )
+        with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+            validate_market.validate_official_frontend(manifest, mutated, plugin_id)
+
+    def test_official_frontend_rejects_constructor_and_object_method_shadowed_rpc_constant(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        marker = "export function activate(host){"
+        self.assertIn(marker, source)
+        shadows = (
+            'const METHOD="xsec.plugin.settings.open";class C{constructor(METHOD){host.request(METHOD,{})}}',
+            'const METHOD="xsec.plugin.settings.open";const o={send(METHOD){host.request(METHOD,{})}};',
+        )
+        for shadow in shadows:
+            with self.subTest(shadow=shadow):
+                mutated = source.replace(marker, f"{marker}{shadow}", 1)
+                with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+                    validate_market.validate_official_frontend(manifest, mutated, plugin_id)
+
+    def test_javascript_contract_tokens_preserve_asi_for_labeled_break(self) -> None:
+        source = 'done:for(;;){break done\n/host.request("xsec.plugin.settings.open")/.test("")}'
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        regexes = [value for kind, value in tokens if kind == "regex"]
+        with self.assertRaisesRegex(MarketplaceValidationError, "does not call the declared host RPC surface"):
+            validate_market.frontend_host_requests(tokens, "frontend")
+        self.assertEqual(regexes, ['/host.request("xsec.plugin.settings.open")/'])
+
+    def test_official_frontend_rejects_labeled_break_asi_regex_as_declared_host_request(self) -> None:
+        plugin_id = "com.xsec.system-terminal"
+        plugin_dir = snapshot_dir(ROOT, plugin_id)
+        manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+        source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
+        statement = 'openSettings.onclick=()=>void host.request("xsec.plugin.settings.open",{})'
+        replacement = (
+            "openSettings.onclick=()=>{done:for(;;){break done\n"
+            '/host.request("xsec.plugin.settings.open")/.test("")}}'
+        )
+        self.assertIn(statement, source)
+        source = source.replace(statement, replacement, 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "does not reference declared RPC methods"):
+            validate_market.validate_official_frontend(manifest, source, plugin_id)
+
+    def test_javascript_contract_tokens_scan_division_heavy_source_incrementally(self) -> None:
+        divisions = 2000
+        source = "x=1" + "/2" * divisions + ";"
+        started = time.perf_counter()
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        elapsed = time.perf_counter() - started
+        slashes = [value for kind, value in tokens if kind == "punctuation" and value == "/"]
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(len(slashes), divisions)
+
     def test_terminal_profile_controls_are_limited_to_the_settings_page_branch(self) -> None:
         source = (
             snapshot_dir(ROOT, "com.xsec.system-terminal") / "com.xsec.desktop" / "frontend" / "index.js"
