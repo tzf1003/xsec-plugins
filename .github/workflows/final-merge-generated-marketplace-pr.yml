@@ -1,6 +1,12 @@
 name: Final merge Marketplace publication PR
 
 on:
+  workflow_call:
+    inputs:
+      pull_number:
+        description: Open same-repository Factory transition PR to revalidate and merge
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       pull_number:
@@ -22,15 +28,20 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Require a protected main dispatch
+      - name: Require a protected main finalization request
         env:
+          EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           REF_PROTECTED: ${{ github.ref_protected }}
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
+          case "$EVENT_NAME" in
+            workflow_dispatch|workflow_call) ;;
+            *) echo "Final Marketplace merge accepts only its protected dispatcher or reusable caller." >&2; exit 1 ;;
+          esac
           [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
-            echo "Final Marketplace merge requires a protected main dispatch." >&2
+            echo "Final Marketplace merge requires protected Factory main." >&2
             exit 1
           }
           [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "pull_number must be a positive decimal." >&2; exit 1; }
@@ -197,9 +208,36 @@ jobs:
             python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-retained-release-signature --retained-release-plugin-id "$plugin_id"
             result="$(jq -cn --arg plugin_id "$plugin_id" '{kind:"retained-sidecar-refresh",plugin_id:$plugin_id,sources:[]}')"
             sources='[]'
+          elif [[ "$HEAD_REF" == xsec-marketplace/disable-host-owned-project-workspace-* ]]; then
+            mapfile -t changed < <(git -C "$CANDIDATE" diff --name-only --no-renames "$BEFORE" "$AFTER" | LC_ALL=C sort -u)
+            expected=(
+              .agents/plugins/marketplace.json
+              .agents/plugins/marketplace.json.sig.jws.json
+              .xsec-factory/official-registry.json
+            )
+            [ "${#changed[@]}" -eq "${#expected[@]}" ] || { printf 'Unexpected host-routing withdrawal paths:\n%s\n' "${changed[*]:-<none>}" >&2; exit 1; }
+            for index in "${!expected[@]}"; do
+              [ "${changed[$index]}" = "${expected[$index]}" ] || { printf 'Unexpected host-routing withdrawal paths:\n%s\n' "${changed[*]:-<none>}" >&2; exit 1; }
+            done
+            jq -e '
+              .plugins | [.[] | select(.pluginId == "com.xsec.project-workspace")]
+              | length == 1 and .[0].status == "disabled"
+            ' "$CANDIDATE/.xsec-factory/official-registry.json" >/dev/null || {
+              echo "Host-routing withdrawal does not disable exactly the retained project workspace Registry row." >&2
+              exit 1
+            }
+            jq -e '[.plugins[] | select(.name == "com.xsec.project-workspace")] | length == 0' \
+              "$CANDIDATE/.agents/plugins/marketplace.json" >/dev/null || {
+              echo "Host-routing withdrawal leaves project workspace in the Marketplace index." >&2
+              exit 1
+            }
+            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
+            python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-active-marketplace-signatures >/dev/null
+            result='{"kind":"host-owned-project-workspace-withdrawal","sources":[]}'
+            sources='[]'
           else
             case "$HEAD_REF" in
-              xsec-marketplace/publish-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*) ;;
+              xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*) ;;
               *) echo "Final gate accepts only an exact pending layout migration or a protected Factory publication branch." >&2; exit 1 ;;
             esac
             result="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" --before "$BEFORE" --after "$AFTER" --classify)"

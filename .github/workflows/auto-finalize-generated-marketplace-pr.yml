@@ -1,0 +1,49 @@
+name: Automatically finalize generated Marketplace PR
+
+on:
+  workflow_run:
+    workflows: [Validate marketplace]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  select-exact-generated-pr:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      pull_number: ${{ steps.pr.outputs.pull_number }}
+    steps:
+      - name: Resolve one eligible exact generated Factory PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Validated workflow run has an invalid head SHA." >&2; exit 1; }
+          case "$HEAD_BRANCH" in
+            xsec-marketplace/batch-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/disable-host-owned-project-workspace-*) ;;
+            *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
+          esac
+          prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
+          pull_number="$(printf '%s' "$prs" | jq -er --arg repository "$HEAD_REPOSITORY" --arg branch "$HEAD_BRANCH" --arg sha "$HEAD_SHA" '
+            [.[][] | select(.head.repo.full_name == $repository and .head.ref == $branch and .head.sha == $sha)]
+            | if length == 1 then .[0].number else error("expected one open exact-head generated PR") end
+          ')"
+          [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
+          echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"
+  final-revalidate-and-merge:
+    needs: select-exact-generated-pr
+    uses: ./.github/workflows/final-merge-generated-marketplace-pr.yml
+    with:
+      pull_number: ${{ needs.select-exact-generated-pr.outputs.pull_number }}
+    secrets: inherit

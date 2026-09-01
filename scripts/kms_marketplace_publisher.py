@@ -32,6 +32,7 @@ from build_market import SNAPSHOT_ROOT_RELATIVE_PATH, WINDOWS_RESERVED_DEVICE_NA
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE_INDEX_SUBJECT = ".agents/plugins/marketplace.json"
+MARKETPLACE_INDEX_PURPOSE = "xsec.plugin-marketplace.index"
 OFFICIAL_PUBLICATIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-publications"
 OFFICIAL_PUBLICATION_PROOFS_RELATIVE_PATH = Path(".xsec-factory") / "official-publication-proofs"
 OFFICIAL_ADOPTIONS_RELATIVE_PATH = Path(".xsec-factory") / "official-adoptions"
@@ -419,7 +420,7 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     plugins = marketplace.get("plugins")
     if not isinstance(plugins, list):
         fail("marketplace.json plugins must be a list")
-    documents = [MarketplaceDocument("xsec.plugin-marketplace.index", MARKETPLACE_INDEX_SUBJECT, index_path)]
+    documents = [MarketplaceDocument(MARKETPLACE_INDEX_PURPOSE, MARKETPLACE_INDEX_SUBJECT, index_path)]
     subjects = {MARKETPLACE_INDEX_SUBJECT}
     for entry in plugins:
         if not isinstance(entry, dict):
@@ -446,6 +447,16 @@ def marketplace_documents(root: Path) -> list[MarketplaceDocument]:
     # must neither sign it nor fail because it is correctly unsigned.
     documents.extend(official_status_documents(root))
     return [documents[0], *sorted(documents[1:], key=lambda document: document.subject)]
+
+
+def marketplace_index_document(root: Path) -> MarketplaceDocument:
+    """Return the one canonical Marketplace index signing document."""
+
+    documents = marketplace_documents(root)
+    index = documents[0]
+    if index.subject != MARKETPLACE_INDEX_SUBJECT or index.purpose != MARKETPLACE_INDEX_PURPOSE:
+        raise AssertionError("marketplace document order lost its canonical index")
+    return index
 
 
 def without_official_status_documents(documents: list[MarketplaceDocument]) -> list[MarketplaceDocument]:
@@ -1009,6 +1020,11 @@ def main() -> None:
         help="sign or validate only one canonical official Factory status document",
     )
     parser.add_argument(
+        "--marketplace-index",
+        action="store_true",
+        help="sign or validate only the official Marketplace index document",
+    )
+    parser.add_argument(
         "--first-party-adoption-plugin-id",
         help="sign or validate only one staged first-party adoption document",
     )
@@ -1021,6 +1037,7 @@ def main() -> None:
         args.validate_only
         or args.retained_release_plugin_id is not None
         or args.official_status_plugin_id is not None
+        or args.marketplace_index
         or args.first_party_adoption_plugin_id is not None
     ):
         parser.error("--verify-active-marketplace-signatures cannot be combined with retained-release, status-only, or validate-only options")
@@ -1029,6 +1046,7 @@ def main() -> None:
     if args.exclude_official_status and (
         args.retained_release_plugin_id is not None
         or args.official_status_plugin_id is not None
+        or args.marketplace_index
         or args.first_party_adoption_plugin_id is not None
     ):
         parser.error("--exclude-official-status cannot be combined with a single-document selector")
@@ -1037,6 +1055,7 @@ def main() -> None:
         for value in (
             args.retained_release_plugin_id,
             args.official_status_plugin_id,
+            True if args.marketplace_index else None,
             args.first_party_adoption_plugin_id,
         )
     )
@@ -1053,6 +1072,8 @@ def main() -> None:
             documents = [retained_release_document(root, args.retained_release_plugin_id)]
         elif args.official_status_plugin_id is not None:
             documents = [official_status_document(root, args.official_status_plugin_id)]
+        elif args.marketplace_index:
+            documents = [marketplace_index_document(root)]
         elif args.first_party_adoption_plugin_id is not None:
             documents = [official_adoption_provenance_document(root, args.first_party_adoption_plugin_id)]
         else:

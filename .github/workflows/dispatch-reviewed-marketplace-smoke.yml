@@ -129,43 +129,47 @@ jobs:
           # Beta and legacy/manual Stable transition, not a workflow failure.
           callback_bound_stable="$(printf '%s' "$result" | jq -cr '
             if .kind != "stable" then false
-            elif (.promotions | type) != "array" or (.promotions | length) != 1 then false
-            elif (.promotions[0].source | type) != "object" then false
-            elif (.promotions[0].source.repository | type) != "string" then false
-            elif .promotions[0].source.ref != "refs/heads/main" then false
-            elif (.promotions[0].source.sha | type) != "string" then false
-            elif (.promotions[0].release_id | type) != "string" then false
-            else true
+            elif (.promotions | type) != "array" or (.promotions | length) == 0 then false
+            elif all(.promotions[];
+              (.source | type) == "object"
+              and (.source.repository | type) == "string"
+              and .source.ref == "refs/heads/main"
+              and (.source.sha | type) == "string"
+              and (.release_id | type) == "string") then true
+            else false
             end
           ')"
           if [ "$callback_bound_stable" = "true" ]; then
-            plugin_id="$(printf '%s' "$result" | jq -er '.promotions[0].plugin_id')"
-            stable_repository="$(printf '%s' "$result" | jq -er '.promotions[0].source.repository')"
-            stable_sha="$(printf '%s' "$result" | jq -er '.promotions[0].source.sha')"
-            stable_release_id="$(printf '%s' "$result" | jq -er '.promotions[0].release_id')"
-            status_path=".xsec-factory/official-status/${plugin_id}.json"
-            [ -f "$status_path" ] || {
-              echo "Registered Stable completion ${plugin_id} has no Factory status." >&2
-              exit 1
-            }
-            status="$(jq -cer . "$status_path")"
-            if printf '%s' "$status" | jq -e \
-              --arg plugin_id "$plugin_id" --arg repository "$stable_repository" \
-              --arg stable_sha "$stable_sha" --arg release_id "$stable_release_id" '
-                .schemaVersion == 1
-                and .pluginId == $plugin_id
-                and .trustTier == "first-party"
-                and .source.repository == $repository
-                and .source.refs == {beta:"refs/heads/beta",stable:"refs/heads/main"}
-                and .source.stableSha == $stable_sha
-                and .release.betaReleaseId == $release_id
-                and .release.stableReleaseId == $release_id
-                and .publication.state == "published"
-                and (.publication.smokeRunUrl | type == "string" and test("^https://github\\.com/tzf1003/xSecDesktop/actions/runs/[1-9][0-9]*$"))
-                and (.publication.marketplaceRevision | type == "string" and test("^[a-f0-9]{40}$"))
-              ' >/dev/null; then
+            while IFS= read -r promotion; do
+              plugin_id="$(printf '%s' "$promotion" | jq -er .plugin_id)"
+              stable_repository="$(printf '%s' "$promotion" | jq -er .source.repository)"
+              stable_sha="$(printf '%s' "$promotion" | jq -er .source.sha)"
+              stable_release_id="$(printf '%s' "$promotion" | jq -er .release_id)"
+              status_path=".xsec-factory/official-status/${plugin_id}.json"
+              [ -f "$status_path" ] || { callback_bound_stable=false; break; }
+              status="$(jq -cer . "$status_path")"
+              if ! printf '%s' "$status" | jq -e \
+                --arg plugin_id "$plugin_id" --arg repository "$stable_repository" \
+                --arg stable_sha "$stable_sha" --arg release_id "$stable_release_id" '
+                  .schemaVersion == 1
+                  and .pluginId == $plugin_id
+                  and .trustTier == "first-party"
+                  and .source.repository == $repository
+                  and .source.refs == {beta:"refs/heads/beta",stable:"refs/heads/main"}
+                  and .source.stableSha == $stable_sha
+                  and .release.betaReleaseId == $release_id
+                  and .release.stableReleaseId == $release_id
+                  and .publication.state == "published"
+                  and (.publication.smokeRunUrl | type == "string" and test("^https://github\\.com/tzf1003/xSecDesktop/actions/runs/[1-9][0-9]*$"))
+                  and (.publication.marketplaceRevision | type == "string" and test("^[a-f0-9]{40}$"))
+                ' >/dev/null; then
+                callback_bound_stable=false
+                break
+              fi
+            done < <(printf '%s' "$result" | jq -rc '.promotions[]')
+            if [ "$callback_bound_stable" = "true" ]; then
               echo "eligible=false" >> "$GITHUB_OUTPUT"
-              echo "Registered Stable completion is bound to its KMS-authenticated Beta Desktop smoke callback; no duplicate Desktop dispatch is needed."
+              echo "All registered Stable completions are bound to their KMS-authenticated Beta Desktop smoke callbacks; no duplicate Desktop dispatch is needed."
               exit 0
             fi
           fi

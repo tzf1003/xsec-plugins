@@ -361,6 +361,19 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.build_marketplace(output)
             validate_source(ROOT, output)
 
+    def test_source_gate_carries_the_signed_host_owned_transition_into_disposable_output(self) -> None:
+        """The temporary output inherits only the source Registry's active legacy allowance."""
+
+        expected = set(validate_market.DEFAULT_OFFICIAL_PLUGIN_IDS) | {"com.xsec.project-workspace"}
+        self.assertEqual(validate_market.default_marketplace_ids(ROOT), expected)
+        with tempfile.TemporaryDirectory(prefix="xsec-market-host-owned-transition-") as directory:
+            output = Path(directory) / "marketplace"
+            self.build_marketplace(output)
+            self.assertEqual(
+                {plugin_id for plugin_id, _, _ in validate_market.marketplace_entries(output, expected_default_ids=expected)},
+                expected,
+            )
+
     def test_official_plugin_settings_pages_and_plugin_bound_rpcs_are_declared(self) -> None:
         """The six reviewed settings surfaces remain field-renderable packages."""
 

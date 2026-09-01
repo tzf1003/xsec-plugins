@@ -22,7 +22,7 @@ artifact、release history、签名和来源证明。
 | --- | --- |
 | `com.xsec.asset-discovery` | [tzf1003/xsec-plugin-asset-discovery](https://github.com/tzf1003/xsec-plugin-asset-discovery) |
 | `com.xsec.attack-path` | [tzf1003/xsec-plugin-attack-path](https://github.com/tzf1003/xsec-plugin-attack-path) |
-| `com.xsec.project-workspace` | [tzf1003/xsec-plugin-project-workspace](https://github.com/tzf1003/xsec-plugin-project-workspace) |
+| `com.xsec.project-workspace` | historical Factory record only; project management is Desktop Host-owned |
 | `com.xsec.system-terminal` | [tzf1003/xsec-plugin-system-terminal](https://github.com/tzf1003/xsec-plugin-system-terminal) |
 | `com.xsec.workspace.approvals` | [tzf1003/xsec-plugin-approvals](https://github.com/tzf1003/xsec-plugin-approvals) |
 | `com.xsec.workspace.browser` | [tzf1003/xsec-plugin-browser](https://github.com/tzf1003/xsec-plugin-browser) |
@@ -34,6 +34,12 @@ artifact、release history、签名和来源证明。
 
 因此 Registry PR 不能通过把任意包标记为 `first-party` 来取得 `com.xsec.*`、默认安装或
 现有终端/浏览器/项目写入权限。
+
+`disable-host-owned-project-workspace.yml` creates the signed withdrawal immediately after this
+automation reaches protected `main`: it changes `com.xsec.project-workspace` to `status: "disabled"`,
+removes only its Marketplace index entry, and KMS-signs only that replacement index. Its adoption
+proof, snapshot, release history and historical sidecars remain auditable. The normal source batch
+already excludes this ID during the transition, so a project-source merge cannot create a plugin release.
 
 首次迁移使用仅第一方允许的临时 `status: "pending-adoption"`：它只能保留已存在的
 内置 Marketplace snapshot、release history、artifact 和已签名 release sidecar，不能
@@ -153,10 +159,20 @@ profiler 与 diagnostic-port 注入变量，并显式关闭 .NET diagnostic IPC�
 
 ## 自动 reconcile payload
 
-Cloud 只能用专用 GitHub App 调用 GitHub Actions 的 `workflow_dispatch` API，固定目标是受保护
-`main` 上的 `reconcile-source.yml`；它接受下方完整的 text-only inputs。顶层 workflow 要求
-repository variable `XSEC_FACTORY_DISPATCHER_ACTOR` 精确等于该 App bot login，再按
-`trigger_kind` 在内部路由 source publish 或受控的 `reconcile-smoke.yml` reusable workflow。
+## Source preflight
+
+Each active first-party source repository calls the reusable
+`xsec-plugins/.github/workflows/first-party-source-preflight.yml@main` from its protected `beta`
+and `main` CI. The caller supplies its fixed plugin ID; the workflow verifies the manifest identity,
+checks whitespace, installs the committed lockfile, and runs that repository's real `pnpm test`.
+The resulting `source-preflight / source-preflight` check must be required on both branches before
+the batch reconciler is enabled. This keeps source review at the source authority while Factory
+continues to authenticate exact immutable refs and never executes plugin code during packaging.
+
+Cloud 只能用专用 GitHub App 调用 GitHub Actions 的 `workflow_dispatch` API。源码事件固定进入受保护
+`main` 上的 `reconcile-marketplace-batch.yml`；Desktop smoke callback 继续进入
+`reconcile-source.yml` 的窄状态完成路径。批处理 workflow 要求 repository variable
+`XSEC_FACTORY_DISPATCHER_ACTOR` 精确等于该 App bot login。
 Factory 不监听公开 `repository_dispatch`，因此 Cloud 以外的事件不能绕过该 App 边界。
 这里校验的是 GitHub 注入的 `github.actor`、`github.ref` 与 `github.ref_protected`，不是任何
 workflow input；即使有人手工从 `main` 点击 dispatch，也会因 actor 不是 Dispatcher App 而在
@@ -165,14 +181,13 @@ checkout 前被拒绝。
 source event payload：
 
 ```json
-{"trigger_kind":"source_event","delivery_key":"...","plugin_id":"...","source_repository":"owner/repository","source_ref":"refs/heads/beta|refs/heads/main","source_sha":"40-hex","marketplace_revision":"","channel":"","smoke_workflow_run_id":"","smoke_workflow_run_attempt":""}
+{"delivery_key":"...","plugin_id":"...","source_repository":"owner/repository","source_ref":"refs/heads/beta|refs/heads/main","source_sha":"40-hex"}
 ```
 
-Factory 再读 protected Registry、固定 HTTPS 查询当前分支头并拒绝过期 SHA。`beta` 调度
-`publish.yml`；`main` 会重新读取同一 Registry 行的**当前 beta head**并调度同一个 Beta
-reconcile，而不是直接推广 Stable。Publisher 在取得全局 publication slot 后还会重新拉取注册
-分支，并要求 `source_sha` 仍是该分支**精确 head**（不能只是不早于 head 的 ancestor）；因此晚到
-或排队的旧 Beta 永远不能覆盖较新的 Beta。
+Factory 再读 protected Registry、固定 HTTPS 查询事件分支头并拒绝过期 SHA。取得全局 publication
+slot 后，批处理再次读取全部 10 个活跃来源的 `beta` 与 `main` exact head，静态 materialize 全部
+Beta source、一次性重建 release/status/provenance，并对完整候选请求 KMS sidecar。晚到或排队的
+单个事件不会覆盖较新的 Beta：它只会促使当前全局 source snapshot 被重新计算。
 
 每个 Beta reconcile 都从只读 Source App 的同一固定 HTTPS fetch 中 materialize 当前注册的
 `main`，并确定性重建当前 Beta releaseId。若两者不一致，Factory 只把已 KMS 绑定到该 Beta
@@ -181,21 +196,21 @@ provenance 的可读状态置为 `waiting_for_beta`：它不会请求 Desktop sm
 main 已精确重建该 Beta 时才转回 `waiting_for_smoke` 并请求一个**新的** Desktop Beta smoke。
 这使 beta 领先 main 是正常的等待状态，而不是一次失败的 Stable 发布。
 
-会调用 KMS 的发布、Stable、sidecar repair 和 adoption 工作流共享 publication slot，
-直到候选的不可变文件创建完成。外部 Beta 发布与 Stable 推广随后只阻止**同一插件**的
-待审 Factory transition；它们会按 Factory status、provenance、release 与 snapshot 路径
-识别目标插件，并且在无法完整读取候选变更时 fail closed。这样无关插件可以并行审查，
-但一个插件不能得到两个互相竞争的候选。PR 审查期间来源 `beta`/`main` 继续前进时，
-`Verify generated Marketplace publication merge` 会失败；但该 PR check 通过后来源仍可能
-继续前进，所以不能把它当作最终合并授权。
+会调用 KMS 的批量发布、Stable、sidecar repair 和 adoption 工作流共享 publication slot，
+直到候选的不可变文件创建完成。一个 batch PR 按 Factory status、provenance、release 与 snapshot
+路径认证每个受影响插件；任何一个来源无法完整读取或认证时整批失败。PR 验证期间来源
+`beta`/`main` 继续前进时，`Verify generated Marketplace publication merge` 会失败；即使通过也只是
+早期信号，最终合并前仍会精确复读所有记录来源。
 
 `arm-generated-marketplace-final-merge.yml` 使用 `pull_request_target`，只读取可信的默认分支
 workflow 和 GitHub 注入的 PR metadata，**从不 checkout 或执行 PR head**。它为同仓、受允许
 `xsec-marketplace/*` Factory 分支（包括 `adopt-first-party-*` 和
 `refresh-retained-sidecar-*`）写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
 success/not-applicable，故所需的 Factory context 不会卡住普通产品、文档或 fork PR。完成
-source gate 完成后，受保护 `production` 环境中的 maintainer 手工运行
-`final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live PR 的 head/base，使用精确
+source gate 后，`auto-finalize-generated-marketplace-pr.yml` 仅接收同仓
+`xsec-marketplace/batch-*`、`external-beta-*`、`external-stable-*`、
+`disable-host-owned-project-workspace-*` 的成功 `Validate marketplace` run，
+并在受保护 `production` 环境调用 `final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live PR 的 head/base，使用精确
 head SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref 与 source gate。Factory
 candidate 的 `factory-final-merge-gate` 始终由 arm workflow 保持 `pending`：final workflow
 绝不写 success，也不依赖 EXIT/SIGTERM trap 恢复状态。全部检查通过后，它临时创建独立、仓库
