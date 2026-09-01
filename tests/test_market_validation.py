@@ -225,10 +225,10 @@ class MarketplaceValidationTests(unittest.TestCase):
         """Keep the reviewed React settings fixture pinned to its digest."""
 
         fixture = ROOT / "tests" / "fixtures" / "traffic-1.3.0-frontend.js"
-        payload = fixture.read_bytes()
+        payload = fixture.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         self.assertEqual(
             hashlib.sha256(payload).hexdigest(),
-            "4858d71e58d75133c1f740d4db53bda0fb81db283ed8d2890d876c2bd0133559",
+            "12807a7dce6ba885e66d5609f07bb623b5bc4a914870927a96ce255419ccdd38",
         )
         assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
 

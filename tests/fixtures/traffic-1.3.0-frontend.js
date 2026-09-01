@@ -136,9 +136,16 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 export function activate(host){
   const controller=__xsecTrafficFrontend.activate(host);
   return{
-    /** Mount the active Traffic surface into the supplied root and context. */
+    /**
+     * Mount the active Traffic surface into the supplied root and context.
+     * @param {Element} root Host-owned element for the active surface.
+     * @param {object} context Initial workspace-tool or settings-page context.
+     */
     mount(root,context){return controller.mount(root,context)},
-    /** Update the active Traffic surface with the next host context. */
+    /**
+     * Update the active Traffic surface with the next host context.
+     * @param {object} context Current workspace-tool or settings-page context.
+     */
     update(context){return controller.update(context)},
     /** Dispose subscriptions, rendered content, and retained surface state. */
     dispose(){return controller.dispose()}
