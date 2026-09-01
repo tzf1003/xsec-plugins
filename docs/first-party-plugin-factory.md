@@ -211,6 +211,12 @@ Factory gate 的身份。缺少任一配置、取消、runner 异常或 merge �
 retained sidecar repair 同样走此门禁：diff 必须严格只修改一个现有
 `.xsec-factory/snapshots/<plugin-id>/.xsec-market/releases.json.sig.jws.json`，并在 exact head 上重新进行
 KMS/JWS 验签与 source gate；它不改变 release history 或 channel pointer。
+默认集合维护由 protected `main` 上的 `publish.yml` 执行 `align_desktop_defaults` 操作。
+该操作把项目工作区从 Marketplace discovery 中移出，将对应第一方 Registry 记录置为
+`disabled`，保留 snapshot、release history 与既有 artifact，并为新的 Marketplace index 和全部
+活动文档生成同一批 KMS sidecar。生成的 `xsec-marketplace/default-set-*` PR 只能包含这两个数据
+变化及完整活动 sidecar batch；finalizer 会从可信 `main` 重新验证 exact-head delta、KMS/JWS 和
+Factory history 后合并。该维护不会创建 release、移动 Beta/Stable 指针或触发 Desktop smoke。
 唯一允许的 no-pointer 例外是当前 Stable 已选中当前 Beta 的 registered external Stable completion：
 它必须只包含严格形状的已签名 provenance/status 更新，重新校验外部 `main` ref 后才可合并，且不会
 再次触发 Desktop smoke。

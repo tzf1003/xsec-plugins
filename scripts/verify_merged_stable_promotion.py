@@ -38,6 +38,7 @@ GITLINK_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})$")
 MARKETPLACE_INDEX = ".agents/plugins/marketplace.json"
 MARKETPLACE_SIDECAR = ".agents/plugins/marketplace.json.sig.jws.json"
 REGISTRY_PATH = ".xsec-factory/official-registry.json"
+PROJECT_WORKSPACE_PLUGIN_ID = "com.xsec.project-workspace"
 SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99}[A-Za-z0-9])?$")
 
@@ -340,6 +341,81 @@ def renewable_sidecars(root: Path, promoted_ids: set[str]) -> set[str]:
         raise PromotionVerificationError("publication has an invalid active KMS document layout") from error
     active.update(f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json" for plugin_id in promoted_ids)
     return active
+
+
+def one_plugin_entry(
+    document: dict[str, object],
+    *,
+    key: str,
+    id_key: str,
+    plugin_id: str,
+    label: str,
+) -> tuple[list[object], int, dict[str, object]]:
+    entries = document.get(key)
+    if not isinstance(entries, list):
+        fail(f"{label} has no {key} list")
+    matches = [
+        (index, entry)
+        for index, entry in enumerate(entries)
+        if isinstance(entry, dict) and entry.get(id_key) == plugin_id
+    ]
+    if len(matches) != 1:
+        fail(f"{label} must contain one {plugin_id} entry")
+    index, entry = matches[0]
+    return entries, index, entry
+
+
+def verify_default_set_payloads(
+    *,
+    before_registry: dict[str, object],
+    after_registry: dict[str, object],
+    before_marketplace: dict[str, object],
+    after_marketplace: dict[str, object],
+) -> None:
+    before_rows, registry_index, before_row = one_plugin_entry(
+        before_registry,
+        key="plugins",
+        id_key="pluginId",
+        plugin_id=PROJECT_WORKSPACE_PLUGIN_ID,
+        label="Factory registry",
+    )
+    after_rows = after_registry.get("plugins")
+    expected_row = dict(before_row)
+    expected_row["status"] = "disabled"
+    if before_row.get("trustTier") != "first-party" or before_row.get("status") != "active":
+        fail("project workspace must start as an active first-party Registry entry")
+    expected_registry = dict(before_registry)
+    expected_registry["plugins"] = [*before_rows[:registry_index], expected_row, *before_rows[registry_index + 1 :]]
+    if after_registry != expected_registry or not isinstance(after_rows, list):
+        fail("default-set transition may only disable the project workspace Registry entry")
+    before_entries, market_index, removed = one_plugin_entry(
+        before_marketplace,
+        key="plugins",
+        id_key="name",
+        plugin_id=PROJECT_WORKSPACE_PLUGIN_ID,
+        label="Marketplace index",
+    )
+    expected_marketplace = dict(before_marketplace)
+    expected_marketplace["plugins"] = [*before_entries[:market_index], *before_entries[market_index + 1 :]]
+    if removed.get("policy") != {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"}:
+        fail("project workspace Marketplace entry has an invalid default policy")
+    if after_marketplace != expected_marketplace:
+        fail("default-set transition may only remove project workspace from discovery")
+
+
+def verify_default_set_transition(root: Path, before: str, after: str) -> dict[str, object]:
+    require_candidate_revisions(root, before, after)
+    paths = changed_paths(root, before, after)
+    expected_paths = renewable_sidecars(root, set()) | {MARKETPLACE_INDEX, REGISTRY_PATH}
+    if set(paths) != expected_paths or len(paths) != len(expected_paths):
+        fail("default-set transition changed paths outside the KMS-authenticated maintenance batch")
+    verify_default_set_payloads(
+        before_registry=json_blob(root, before, REGISTRY_PATH, "prior Factory registry"),
+        after_registry=json_blob(root, after, REGISTRY_PATH, "candidate Factory registry"),
+        before_marketplace=json_blob(root, before, MARKETPLACE_INDEX, "prior Marketplace index"),
+        after_marketplace=json_blob(root, after, MARKETPLACE_INDEX, "candidate Marketplace index"),
+    )
+    return {"kind": "default-set-maintenance", "plugin_id": PROJECT_WORKSPACE_PLUGIN_ID, "promotions": []}
 
 
 def active_registered_source(
@@ -990,6 +1066,8 @@ def classify_merged_change(
         # review-gated migration as a malformed release transition.
         if any(ADOPTION_PATH_PATTERN.fullmatch(path) or ADOPTION_PROOF_PATTERN.fullmatch(path) for path in paths):
             return verify_first_party_adoption_candidate(root, before, after)
+        if REGISTRY_PATH in paths or MARKETPLACE_INDEX in paths:
+            return verify_default_set_transition(root, before, after)
         # A review-gated retained-sidecar repair must not recurse into a new
         # release, and it does not represent a Desktop smoke publication.
         if all(path == MARKETPLACE_SIDECAR or RELEASE_SIDECAR_PATTERN.fullmatch(path) for path in paths):
@@ -1073,6 +1151,7 @@ def main() -> int:
     )
     parser.add_argument("--verify-first-party-adoption-candidate", action="store_true")
     parser.add_argument("--verify-retained-sidecar-refresh-candidate", action="store_true")
+    parser.add_argument("--verify-default-set-transition-candidate", action="store_true")
     args = parser.parse_args()
     modes = sum(
         (
@@ -1080,6 +1159,7 @@ def main() -> int:
             args.channel is not None,
             args.verify_first_party_adoption_candidate,
             args.verify_retained_sidecar_refresh_candidate,
+            args.verify_default_set_transition_candidate,
         )
     )
     if modes != 1:
@@ -1099,8 +1179,10 @@ def main() -> int:
             result = verify_merged_publication(root, args.before, args.after, args.channel)
         elif args.verify_first_party_adoption_candidate:
             result = verify_first_party_adoption_candidate(root, args.before, args.after)
-        else:
+        elif args.verify_retained_sidecar_refresh_candidate:
             result = verify_retained_sidecar_refresh_candidate(root, args.before, args.after)
+        else:
+            result = verify_default_set_transition(root, args.before, args.after)
         print(json.dumps(result, separators=(",", ":"), sort_keys=True))
         return 0
     except PromotionVerificationError as error:

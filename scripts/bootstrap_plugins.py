@@ -14,11 +14,11 @@ import shutil
 from pathlib import Path
 
 from build_market import SNAPSHOT_ROOT_RELATIVE_PATH
-from marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS
+from marketplace_contract import OFFICIAL_PLUGIN_IDS
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_IDS = list(DEFAULT_OFFICIAL_PLUGIN_IDS)
+PLUGIN_IDS = list(OFFICIAL_PLUGIN_IDS)
 
 
 def codex_manifest(manifest: dict[str, object]) -> dict[str, object]:

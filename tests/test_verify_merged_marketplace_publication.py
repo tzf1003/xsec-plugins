@@ -801,14 +801,13 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             write_json(root / f".xsec-factory/official-adoption-proofs/{PLUGIN_ID}.json", {"pluginId": PLUGIN_ID})
             after = self.commit(root, "activate one first-party registration")
 
-            self.assertEqual(
-                verifier.verify_first_party_adoption_candidate(root, before, after),
-                {
-                    "kind": "adoption-activation",
-                    "plugin_id": PLUGIN_ID,
-                    "adoption_path": f".xsec-factory/official-adoptions/{PLUGIN_ID}.json",
-                },
-            )
+            expected = {
+                "kind": "adoption-activation",
+                "plugin_id": PLUGIN_ID,
+                "adoption_path": f".xsec-factory/official-adoptions/{PLUGIN_ID}.json",
+            }
+            self.assertEqual(verifier.verify_first_party_adoption_candidate(root, before, after), expected)
+            self.assertEqual(verifier.classify_merged_change(root, before, after), expected)
 
     def test_first_party_adoption_staging_candidate_rejects_an_unrelated_change(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-extra-") as directory:
