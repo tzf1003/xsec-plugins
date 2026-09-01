@@ -102,6 +102,8 @@ jobs:
               [$statuses[][]
                 | select(
                     .context == "CodeRabbit"
+                    and .creator.login == "coderabbitai[bot]"
+                    and .creator.type == "Bot"
                     and (.created_at | type == "string")
                     and (.description | type == "string")
                   )
@@ -122,12 +124,14 @@ jobs:
               or (
                 ($comments | type == "array" and length > 0)
                 and all($comments[]?; type == "array")
-                and any($comments[][];
+                and any($comments[][]?;
                   .user.login == "coderabbitai[bot]"
                   and .user.type == "Bot"
                   and (.body | type == "string")
-                  and (.body | contains($head))
-                  and (.body | contains("<!-- recent_review_end -->"))
+                  and ((try (.body | capture("(?s)<!-- recent_review_start -->\\s*(?<recent>.*?)\\s*<!-- recent_review_end -->").recent) catch "") as $recent
+                    | ($recent | contains("No actionable comments were generated in the recent review."))
+                    and ($recent | test("Reviewing files that changed from the base of the PR and between [a-f0-9]{40} and " + $head + "\\."))
+                  )
                 )
               )
             )
