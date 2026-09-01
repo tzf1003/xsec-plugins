@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 
 from build_market import SNAPSHOT_ROOT_RELATIVE_PATH
-from marketplace_contract import OFFICIAL_PLUGIN_IDS
+from marketplace_contract import OFFICIAL_PLUGIN_IDS, active_default_official_plugin_ids
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,12 +45,25 @@ def codex_manifest(manifest: dict[str, object]) -> dict[str, object]:
     }
 
 
+def marketplace_entry(plugin_id: str) -> dict[str, object]:
+    return {
+        "name": plugin_id,
+        "source": {"source": "local", "path": f"./.xsec-factory/snapshots/{plugin_id}"},
+        "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+        "category": "Security",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("desktop_plugins", type=Path)
     args = parser.parse_args()
     source_root = args.desktop_plugins.resolve()
-    entries = []
+    active_plugin_ids = active_default_official_plugin_ids(ROOT)
+    unknown_active_ids = set(active_plugin_ids).difference(PLUGIN_IDS)
+    if unknown_active_ids:
+        names = ", ".join(sorted(unknown_active_ids))
+        raise ValueError(f"active Registry plugins are not retained official packages: {names}")
     for plugin_id in PLUGIN_IDS:
         source = source_root / plugin_id / "plugin.json"
         if not source.is_file():
@@ -70,16 +83,10 @@ def main() -> None:
             raise FileNotFoundError(
                 f"official plugin frontend must be maintained in xsec-plugins: {frontend}"
             )
-        entries.append({
-            "name": plugin_id,
-            "source": {"source": "local", "path": f"./.xsec-factory/snapshots/{plugin_id}"},
-            "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
-            "category": "Security",
-        })
     index = {
         "name": "xsec-official",
         "interface": {"displayName": "XSEC 官方插件市场"},
-        "plugins": entries,
+        "plugins": [marketplace_entry(plugin_id) for plugin_id in active_plugin_ids],
     }
     index_path = ROOT / ".agents" / "plugins" / "marketplace.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
