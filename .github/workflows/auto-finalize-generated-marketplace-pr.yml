@@ -2,11 +2,12 @@ name: Automatically finalize generated Marketplace PR
 
 on:
   workflow_run:
-    workflows: [Validate marketplace]
+    workflows: [Validate marketplace, Verify generated Marketplace publication merge]
     types: [completed]
 
 permissions:
   actions: read
+  checks: read
   contents: read
   pull-requests: read
 
@@ -25,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pull_number: ${{ steps.pr.outputs.pull_number }}
+      eligible: ${{ steps.pr.outputs.eligible }}
     steps:
       - name: Resolve one eligible exact generated Factory PR
         id: pr
@@ -41,15 +43,32 @@ jobs:
             *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
           esac
           prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
-          pull_number="$(printf '%s' "$prs" | jq -er --arg repository "$HEAD_REPOSITORY" --arg branch "$HEAD_BRANCH" --arg sha "$HEAD_SHA" '
+          matches="$(printf '%s' "$prs" | jq -cer --arg repository "$HEAD_REPOSITORY" --arg branch "$HEAD_BRANCH" --arg sha "$HEAD_SHA" '
             [.[][] | select(.head.repo.full_name == $repository and .head.ref == $branch and .head.sha == $sha)]
-            | if length == 1 then .[0].number else error("expected one open exact-head generated PR") end
           ')"
+          count="$(printf '%s' "$matches" | jq -er 'length')"
+          if [ "$count" = "0" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$count" = "1" ] || { echo "expected at most one open exact-head generated PR" >&2; exit 1; }
+          pull_number="$(printf '%s' "$matches" | jq -er '.[0].number')"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
+          check_runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100")"
+          freshness="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status")"
+          if ! printf '%s' "$check_runs" | jq -e '
+            any(.check_runs[]?; .name == "source-gate" and .status == "completed" and .conclusion == "success")
+          ' >/dev/null || ! printf '%s' "$freshness" | jq -e '
+            any(.statuses[]?; .context == "source-freshness-gate" and .state == "success")
+          ' >/dev/null; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
   final-revalidate-and-merge:
     needs: select-exact-generated-pr
-    if: needs.select-exact-generated-pr.result == 'success'
+    if: needs.select-exact-generated-pr.result == 'success' && needs.select-exact-generated-pr.outputs.eligible == 'true'
     uses: ./.github/workflows/final-merge-generated-marketplace-pr.yml
     with:
       pull_number: ${{ needs.select-exact-generated-pr.outputs.pull_number }}
