@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.system-terminal",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-system-terminal",
+    "path": "plugins/com.xsec.system-terminal",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "c00cdcafcd645f782d6d8da2625d9d3988be9e79",
+    "stableSha": null,
+    "mainGateSha": "0a5655b7ec5f59e97dcbc82cf6d26e87db219b2e"
+  },
+  "release": {
+    "betaReleaseId": "sha256-f44d60ca3525d4ce7cf54d92a2765a40e656611c1f7be75bd503eb9aa6e4b39f",
+    "stableReleaseId": "sha256-124e5bc1d6f837f280d1f8192c59025eff8ae38bd904b5524ac61e0916c065d0"
+  },
+  "publication": {
+    "state": "waiting_for_smoke",
+    "deliveryId": "33490106814.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33490106814",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
+  }
+}
