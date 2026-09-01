@@ -221,6 +221,12 @@ jobs:
                 *) echo "Only external Stable completion branches may use the no-pointer maintenance shape." >&2; exit 1 ;;
               esac
               python scripts/external_source_factory.py --root "$CANDIDATE" validate
+            elif [ "$kind" = "maintenance" ]; then
+              # The ordinary publisher can renew all immutable KMS sidecars
+              # after a prior source or policy change. This transition has no
+              # channel/status payload delta, so require the full cryptographic
+              # check below but do not request external-source authority.
+              python scripts/external_source_factory.py --root "$CANDIDATE" validate
             elif [ "$kind" = "beta-smoke-ready" ]; then
               case "$HEAD_REF" in
                 xsec-marketplace/external-beta-*|xsec-marketplace/batch-*) ;;
@@ -228,7 +234,7 @@ jobs:
               esac
               python scripts/external_source_factory.py --root "$CANDIDATE" validate
             elif [ "$kind" != "beta" ] && [ "$kind" != "stable" ]; then
-              echo "Final merge gate accepts only a signed Beta, Stable, Beta smoke-ready, or first-party adoption transition." >&2
+              echo "Final merge gate accepts only a signed Marketplace transition." >&2
               exit 1
             fi
             verification="$(python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-active-marketplace-signatures)"

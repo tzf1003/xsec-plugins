@@ -143,6 +143,16 @@ def changed_paths(root: Path, before: str, after: str) -> list[str]:
     return [path for path in git_text(root, ["diff", "--name-only", "--no-renames", before, after]).splitlines() if path]
 
 
+def is_publish_kms_sidecar(path: str) -> bool:
+    """Return whether a path is re-signed by the immutable publisher."""
+
+    return (
+        path == MARKETPLACE_SIDECAR
+        or RELEASE_SIDECAR_PATTERN.fullmatch(path) is not None
+        or PUBLICATION_PROOF_PATTERN.fullmatch(path) is not None
+    )
+
+
 def require_candidate_revisions(root: Path, before: str, after: str) -> None:
     """Require a candidate range rooted in the exact protected-main base.
 
@@ -1235,7 +1245,7 @@ def classify_merged_change(
             return verify_first_party_adoption_candidate(root, before, after)
         # A review-gated retained-sidecar repair must not recurse into a new
         # release, and it does not represent a Desktop smoke publication.
-        if all(path == MARKETPLACE_SIDECAR or RELEASE_SIDECAR_PATTERN.fullmatch(path) for path in paths):
+        if MARKETPLACE_SIDECAR in paths and all(is_publish_kms_sidecar(path) for path in paths):
             return {"kind": "maintenance"}
         # A no-pointer external Stable completion can append signed provenance
         # and update its observable status after an already selected release.

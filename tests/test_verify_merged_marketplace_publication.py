@@ -839,6 +839,20 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
 
             self.assertEqual(verifier.classify_merged_change(root, before, after), {"kind": "maintenance"})
 
+    def test_classifies_active_publisher_kms_sidecar_renewal_as_maintenance(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-merged-kms-renewal-") as directory:
+            root = Path(directory)
+            before, _, _ = self.make_repository(root)
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("renewed index\n", encoding="utf-8")
+            release_sidecar = root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json"
+            release_sidecar.write_text("renewed release\n", encoding="utf-8")
+            proof = root / f".xsec-factory/official-publication-proofs/{PLUGIN_ID}.json"
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            proof.write_text("renewed provenance\n", encoding="utf-8")
+            after = self.commit(root, "renew active KMS sidecars")
+
+            self.assertEqual(verifier.classify_merged_change(root, before, after), {"kind": "maintenance"})
+
     def test_registered_no_pointer_stable_completion_carries_the_current_main_source(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-registered-completion-") as directory:
             root = Path(directory)
