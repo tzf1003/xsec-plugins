@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Classify and fail closed on reviewed Marketplace publication merges.
+"""Classify and fail closed on validated Marketplace publication merges.
 
-The release workflows only create review-required pull requests. This helper
-runs against the protected ``main`` push after that PR is merged. It derives
+The release workflows only create source-gated pull requests. This helper runs
+against the protected ``main`` push after that PR is merged. It derives
 the publication channel from the immutable release-index delta and signed
 Factory layout, never from a PR title or a user-editable merge subject.
 """
@@ -43,7 +43,7 @@ REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,37}[A-Za-z0-9]
 
 
 class PromotionVerificationError(ValueError):
-    """The protected-main change is not a safe reviewed publication."""
+    """The protected-main change is not a safe validated publication."""
 
 
 def fail(message: str) -> None:
@@ -169,7 +169,7 @@ def verify_first_party_adoption_candidate(root: Path, before: str, after: str) -
     Cloud KMS cannot attest bytes that only exist in the workflow checkout. A
     protected staging PR therefore adds the immutable unsigned assertion first;
     a later KMS-generated activation PR adds only its sidecar and flips the
-    reviewed Registry row. Both diffs are deliberately narrow so neither can
+    validated Registry row. Both diffs are deliberately narrow so neither can
     carry arbitrary Factory or workflow changes through the finalizer.
     """
 
@@ -216,7 +216,7 @@ def verify_first_party_adoption_candidate(root: Path, before: str, after: str) -
         if not git_succeeds(root, ["cat-file", "-e", f"{before}:{adoption_path}"]) or not git_succeeds(
             root, ["cat-file", "-e", f"{after}:{adoption_path}"]
         ) or git_bytes(root, ["show", f"{before}:{adoption_path}"]) != git_bytes(root, ["show", f"{after}:{adoption_path}"]):
-            fail("first-party adoption activation candidate must retain its reviewed adoption document byte-for-byte")
+            fail("first-party adoption activation candidate must retain its validated adoption document byte-for-byte")
         if git_succeeds(root, ["cat-file", "-e", f"{before}:{proof_path}"]) or not git_succeeds(
             root, ["cat-file", "-e", f"{after}:{proof_path}"]
         ):
@@ -504,7 +504,7 @@ def beta_main_gate_binding(
     about the concurrently compared ``main`` ref.  The Factory status is the
     only permitted place for that transient, review-bound decision.  Require
     it for every registered Beta PR so a later main push cannot turn an old
-    green result into an unreviewed Desktop smoke request.
+    green result into an unvalidated Desktop smoke request.
     """
 
     identity = active_registered_source(root, after, plugin_id=plugin_id)
@@ -999,7 +999,7 @@ def classify_merged_change(
         # It must not loop into the built-in beta publisher merely because a
         # reviewer used a conventional merge subject. It also must not trigger
         # a second Desktop smoke: that state change is downstream of an
-        # earlier reviewed Beta smoke callback.
+        # earlier validated Beta smoke callback.
         auxiliary = [
             path == MARKETPLACE_SIDECAR
             or RELEASE_SIDECAR_PATTERN.fullmatch(path)
