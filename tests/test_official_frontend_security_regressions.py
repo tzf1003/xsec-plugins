@@ -107,6 +107,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
         )
 
     def test_javascript_line_terminator_consumes_crlf_once(self) -> None:
+        """Consume a CRLF pair as one JavaScript line terminator."""
+
         self.assertEqual(validate_market.javascript_line_terminator("x\r\ny", 0), (1, 2))
 
     def test_unicode_line_separators_end_single_line_comments(self) -> None:
@@ -125,6 +127,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
                     )
 
     def test_escaped_request_spellings_cannot_hide_broker_calls(self) -> None:
+        """Reject broker calls hidden behind escaped request spellings."""
+
         manifest, source = terminal_contract()
         cases = (
             (r"host.requ\u0065st(dynamicMethod,{});", "Unicode escape"),
@@ -164,6 +168,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
                     )
 
     def test_activation_host_reassignment_invalidates_broker_proof(self) -> None:
+        """Reject activation code that reassigns the trusted host binding."""
+
         manifest, source = terminal_contract()
         payload = "host={request(){return Promise.resolve({})}};"
         with self.assertRaisesRegex(MarketplaceValidationError, "host broker contract"):
@@ -172,6 +178,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
             )
 
     def test_comment_text_cannot_supply_activation_or_lifecycle_contracts(self) -> None:
+        """Ignore activation and lifecycle terms contained only in comments."""
+
         manifest, _ = terminal_contract()
         methods = manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"]
         descriptor = next(iter(methods.values()))
@@ -187,6 +195,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
             validate_market.validate_official_frontend(manifest, source, PLUGIN_ID)
 
     def test_dynamic_javascript_evaluators_are_rejected(self) -> None:
+        """Reject dynamic evaluators that could conceal broker calls."""
+
         manifest, source = terminal_contract()
         payloads = (
             'eval(\'host.request("xsec.hidden",{})\');',
@@ -200,6 +210,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
                     )
 
     def test_dynamic_host_member_cannot_hide_request(self) -> None:
+        """Reject computed host members that could conceal request calls."""
+
         manifest, source = terminal_contract()
         payload = (
             'const member=["re","quest"].join("");'
@@ -211,6 +223,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
             )
 
     def test_host_request_destructuring_cannot_hide_alias_calls(self) -> None:
+        """Reject destructured request aliases with unresolved methods."""
+
         manifest, source = terminal_contract()
         payloads = (
             "const {request}=host;"
@@ -240,6 +254,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
             validate_market.validate_official_frontend(manifest, mutated, PLUGIN_ID)
 
     def test_reviewed_event_callbacks_and_lifecycle_remain_valid(self) -> None:
+        """Accept the published frontend callback and lifecycle contract."""
+
         manifest, source = terminal_contract()
         validate_market.validate_official_frontend(manifest, source, PLUGIN_ID)
 
