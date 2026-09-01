@@ -217,6 +217,26 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)
 
+    def test_dispatcher_smokes_only_the_ready_subset_of_a_mixed_beta_batch(self) -> None:
+        dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
+
+        # A later source-main event may make one sibling reproducible while
+        # another remains waiting_for_beta. The ready tuple still needs an
+        # exact status binding, but the waiting sibling must never widen the
+        # Source App token, source revalidation, manual recovery tuple, or
+        # Desktop request.
+        for rule in (
+            "selected_promotions=\"$(printf '%s' \"$result\" | jq -cer '[.promotions[] | select(.source != null)]')\"",
+            'waiting_for_smoke) smoke_promotions+=("$promotion") ;;',
+            "done < <(printf '%s' \"$selected_promotions\" | jq -rc '.[]')",
+            'selected_promotions="$(printf \'%s\\n\' "${smoke_promotions[@]}" | jq -sc \'.\')"',
+            'sources="$(printf \'%s\' "$selected_promotions" | jq -c \'[.[] | .source, (.main_source // empty)]\')"',
+            "No registered Beta promotion is currently waiting for Desktop smoke",
+            "Use only the already-selected smoke subset",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, dispatcher)
+
     def test_dispatcher_skips_only_kms_authenticated_callback_bound_registered_stable_smoke(self) -> None:
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
         self.assertIn('elif (.promotions | type) != "array" or (.promotions | length) == 0 then false', dispatcher)
