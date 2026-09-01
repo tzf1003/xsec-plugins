@@ -970,7 +970,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        rpc_match = terminal_rpc_match(source, "xsec.plugin.settings.open")
+        rpc_match = terminal_fixture_rpc_match(source)
         payload = '`${{}/host.request("xsec.plugin.settings.open",{})/1}`'
         mutated = replace_source_match(source, rpc_match, "undefined")
         mutated = mutate_terminal_activation(mutated, f"{payload};")
@@ -982,7 +982,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         plugin_dir = snapshot_dir(ROOT, plugin_id)
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        rpc_match = terminal_rpc_match(source, "xsec.plugin.settings.open")
+        rpc_match = terminal_fixture_rpc_match(source)
         mutated = replace_source_match(source, rpc_match, "undefined")
         mutated = mutate_terminal_activation(
             mutated,
@@ -1086,7 +1086,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
         manifest["extensions"]["com.xsec.desktop"]["frontendApi"]["methods"].pop("xsec.plugin.settings.open", None)
         source = (plugin_dir / "com.xsec.desktop" / "frontend" / "index.js").read_text(encoding="utf-8")
-        rpc_match = terminal_rpc_match(source, "xsec.plugin.settings.open")
+        rpc_match = terminal_fixture_rpc_match(source)
         payload = '`${function(){}/host.request("xsec.plugin.settings.open",{})/1}`'
         mutated = replace_source_match(source, rpc_match, "undefined")
         mutated = mutate_terminal_activation(mutated, f"{payload};")
