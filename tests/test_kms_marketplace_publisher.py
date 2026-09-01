@@ -731,6 +731,27 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
             self.assertEqual(base64.b64decode(payload["content_b64"], validate=True), document.path.read_bytes())
             self.assertEqual(base64.b64encode(document.path.read_bytes()).decode("ascii"), payload["content_b64"])
 
+    def test_broker_rejection_detail_allows_only_reviewed_authorization_messages(self) -> None:
+        allowed = json.dumps({
+            "error": {
+                "code": "forbidden",
+                "message": "GitHub Actions workflow is not authorized",
+            },
+        }).encode("utf-8")
+        rejected = json.dumps({
+            "error": {
+                "code": "forbidden",
+                "message": "untrusted response text",
+            },
+        }).encode("utf-8")
+
+        self.assertEqual(
+            publisher.broker_rejection_detail(allowed),
+            ": GitHub Actions workflow is not authorized",
+        )
+        self.assertEqual(publisher.broker_rejection_detail(rejected), "")
+        self.assertEqual(publisher.broker_rejection_detail(b"not-json"), "")
+
     def test_oidc_request_binds_the_fixed_broker_audience(self) -> None:
         environment = {
             "ACTIONS_ID_TOKEN_REQUEST_URL": "https://pipelines.actions.githubusercontent.com/request?job=123",

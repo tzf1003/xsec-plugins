@@ -65,6 +65,17 @@ MAX_BROKER_RESPONSE_BYTES = 64 * 1024
 MAX_KMS_JWKS_BYTES = 256 * 1024
 MAX_KMS_JWKS_KEYS = 32
 MAX_KMS_JWS_SIGNING_INPUT_BYTES = 24 * 1024
+SAFE_BROKER_REJECTION_MESSAGES = {
+    "GitHub Actions repository is not authorized",
+    "GitHub Actions repository id is not authorized",
+    "GitHub Actions workflow is not authorized",
+    "GitHub Actions reusable workflow is not authorized",
+    "GitHub Actions ref is not authorized",
+    "GitHub Actions environment is not authorized",
+    "GitHub Actions SHA is invalid",
+    "Marketplace source revision is invalid",
+    "Marketplace source revision is not an authorized protected-main descendant",
+}
 PINNED_KMS_JWKS_URL = f"{OFFICIAL_MARKETPLACE_KMS_ISSUER_URL}/jwks.json"
 GITHUB_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 BASE64URL_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -897,6 +908,22 @@ def validate_published_sidecars(root: Path, source_revision: str, *, now: int | 
     return validate_documents(marketplace_documents(root), source_revision, now=now)
 
 
+def broker_rejection_detail(payload: bytes) -> str:
+    """Return a reviewed Cloud authorization reason without echoing response data."""
+
+    try:
+        response = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    error = response.get("error") if isinstance(response, dict) else None
+    if not isinstance(error, dict) or error.get("code") != "forbidden":
+        return ""
+    message = error.get("message")
+    if message not in SAFE_BROKER_REJECTION_MESSAGES:
+        return ""
+    return f": {message}"
+
+
 def request_json(request: Request) -> bytes:
     try:
         with build_opener(NoRedirect()).open(request, timeout=15) as response:
@@ -904,7 +931,8 @@ def request_json(request: Request) -> bytes:
                 fail(f"HTTPS signing request returned status {response.status}")
             payload = response.read(MAX_BROKER_RESPONSE_BYTES + 1)
     except HTTPError as error:
-        fail(f"HTTPS signing request returned status {error.code}")
+        error_payload = error.read(MAX_BROKER_RESPONSE_BYTES + 1)
+        fail(f"HTTPS signing request returned status {error.code}{broker_rejection_detail(error_payload)}")
     except URLError as error:
         raise MarketplaceKmsPublisherError("HTTPS signing request failed") from error
     if len(payload) > MAX_BROKER_RESPONSE_BYTES:
