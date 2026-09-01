@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.workspace.browser",
+  "trustTier": "first-party",
+  "source": {
+    "repository": "tzf1003/xsec-plugin-browser",
+    "path": "plugins/com.xsec.workspace.browser",
+    "refs": {
+      "beta": "refs/heads/beta",
+      "stable": "refs/heads/main"
+    },
+    "betaSha": "6cecab7f436440340a2af08f9a0ece4e4cdf24e7",
+    "stableSha": null,
+    "mainGateSha": "90189075485c8ce23fbdc249a8a457ddaffd3917"
+  },
+  "release": {
+    "betaReleaseId": "sha256-977470b9dcc71e5daa16effb67c82d6505af26090bda6fa73ac83b12cbda22ac",
+    "stableReleaseId": "sha256-7805c1c7d8bd1d4a889584e1da867c88b7ac9de3b9f3f26837d7d763eb66f8a2"
+  },
+  "publication": {
+    "state": "waiting_for_beta",
+    "deliveryId": "33492254575.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33492254575",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
+  }
+}
