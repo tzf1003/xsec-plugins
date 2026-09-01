@@ -114,8 +114,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "verify_merged_stable_promotion.py",
             "--verify-active-marketplace-signatures",
             "successful immutable Factory source gate",
-            "terminal Codex review: neither a REST review nor completed official summary follows its latest @codex review request",
-            "unresolved Codex review threads",
+            "terminal CodeRabbit audit after its latest @coderabbitai review request",
+            "unresolved CodeRabbit review thread",
             "Revalidate each registered source branch at the reviewed merge boundary",
             'event_type:"xsec_official_marketplace_published"',
         ):
@@ -197,7 +197,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("factory_main_protection_policy.py", protection)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", readme)
         self.assertIn("factory-final-merge-gate", readme)
-        self.assertIn("跨 REST pages 的精确 head Codex review", factory_document)
+        self.assertIn("跨 REST pages 的精确 head CodeRabbit audit", factory_document)
         self.assertIn("绝不写 success", factory_document)
         self.assertIn("xsec-marketplace-final-exact-head", factory_document)
         self.assertIn("remains pending through final revalidation and merge", finalizer_ruleset_document)
@@ -279,7 +279,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "--verify-retained-release-signature --retained-release-plugin-id",
             "external_source_factory.py validate",
             "git ls-files --others --exclude-standard",
-            "@codex review",
+            "@coderabbitai review",
             "The workflow intentionally does **not** merge this PR.",
         ):
             with self.subTest(required_rule=required_rule):
@@ -290,7 +290,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         # YAML ``run: |`` block. GitHub then registers the file without a
         # dispatch trigger and creates empty failed push runs. Keep the review
         # message as one correctly indented shell assignment instead.
-        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
+        self.assertIn("review_body=\"@coderabbitai review\"$'\\n\\n'", workflow)
         self.assertNotIn("\n\nThis PR was generated", workflow)
         self.assertIn("Retained KMS sidecar repair", readme)
         self.assertIn("refresh-retained-sidecars.yml", readme)
@@ -304,9 +304,9 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("group: xsec-marketplace-publish-main", stage)
         self.assertIn("Stage only the immutable unsigned adoption proof", stage)
         self.assertIn("The Registry remains pending-adoption", stage)
-        self.assertIn("@codex review", stage)
-        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
-        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", stage)
+        self.assertIn("@coderabbitai review", stage)
+        self.assertIn("review_body=\"@coderabbitai review\"$'\\n\\n'", workflow)
+        self.assertIn("review_body=\"@coderabbitai review\"$'\\n\\n'", stage)
         self.assertNotIn("\n\nThis is an immutable first-party adoption", workflow)
 
     def test_final_gate_arms_shared_commit_status_only_after_slurping_all_main_pr_pages(self) -> None:
@@ -339,20 +339,19 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('error("expected exactly one merged Factory generated PR")', workflow)
         self.assertNotIn('gh api -H \'Accept: application/vnd.github+json\' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100"', workflow)
 
-    def test_final_gate_and_post_merge_dispatcher_paginate_exact_head_codex_reviews(self) -> None:
+    def test_final_gate_and_post_merge_dispatcher_require_exact_head_coderabbit_audits(self) -> None:
         for workflow_path in (FINAL_MERGE_WORKFLOW, POST_MERGE_DISPATCHER):
             workflow = workflow_path.read_text(encoding="utf-8")
             with self.subTest(workflow=workflow_path.name):
-                self.assertIn('gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${', workflow)
-                self.assertIn('reviews?per_page=100")', workflow)
+                self.assertIn('issues/${', workflow)
                 self.assertIn('any(.[][];', workflow)
-                self.assertIn('.state == "APPROVED" or .state == "COMMENTED"', workflow)
+                self.assertIn('.user.login == "coderabbitai[bot]"', workflow)
+                self.assertIn("No actionable comments were generated", workflow)
+                self.assertIn("contains($head)", workflow)
+                self.assertIn("rate limited|review limit reached|processing new changes", workflow)
                 self.assertIn('review_request_at=', workflow)
                 self.assertIn('.author_association == "OWNER"', workflow)
-                self.assertIn("codex-pull-request-review-summary", workflow)
-                self.assertIn("Code Review", workflow)
-                self.assertIn("Completed", workflow)
-                self.assertIn("short_head", workflow)
+                self.assertIn("@coderabbitai review", workflow)
 
 
 if __name__ == "__main__":

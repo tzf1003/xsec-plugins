@@ -269,7 +269,7 @@ jobs:
           echo "source_repositories=$(printf '%s' "$source_scope" | jq -er .repositories)" >> "$GITHUB_OUTPUT"
           echo "manual_recovery=$manual_recovery" >> "$GITHUB_OUTPUT"
           echo "recovery_tuples=$recovery_tuples" >> "$GITHUB_OUTPUT"
-      - name: Require the merged generated PR, source gate, and completed Codex review
+      - name: Require the merged generated PR, source gate, and completed CodeRabbit audit
         if: ${{ steps.classify.outputs.eligible == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -308,41 +308,33 @@ jobs:
           comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${number}/comments?per_page=100")"
           review_request_at="$(printf '%s' "$comments" | jq -er '
             [ .[][]
-              | select(.body | type == "string" and test("(^|[[:space:]])@codex[[:space:]]+review([[:space:]]|$)"; "i"))
+              | select(.body | type == "string" and test("(^|[[:space:]])@coderabbitai[[:space:]]+review([[:space:]]|$)"; "i"))
               | select(.author_association == "OWNER")
               | select(.created_at | type == "string")
               | .created_at
-            ] | if length > 0 then max else error("no current @codex review request") end
+            ] | if length > 0 then max else error("no current @coderabbitai review request") end
           ')"
-          reviews="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${number}/reviews?per_page=100")"
-          if printf '%s' "$reviews" | jq -e --arg head "$head_sha" --arg requested_at "$review_request_at" '
+          if printf '%s' "$comments" | jq -e --arg head "$head_sha" --arg requested_at "$review_request_at" '
             any(.[][];
-              (.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector")
-              and .commit_id == $head
-              and (.state == "APPROVED" or .state == "COMMENTED")
-              and (.submitted_at | type == "string" and . >= $requested_at)
+              .user.login == "coderabbitai[bot]"
+              and (.body | type == "string" and contains("<!-- recent_review_start -->"))
+              and (.body | contains("No actionable comments were generated"))
+              and (.body | contains($head))
+              and (.body | test("rate limited|review limit reached|processing new changes"; "i") | not)
+              and ((.updated_at // .created_at) as $reviewed_at | ($reviewed_at | type == "string") and $reviewed_at >= $requested_at)
             )
           ' >/dev/null; then
-            echo "Accepted terminal Codex REST review for the merged generated PR head."
-          elif printf '%s' "$comments" | jq -e --arg head "$head_sha" --arg short_head "${head_sha:0:7}" --arg requested_at "$review_request_at" '
-            any(.[][];
-              .user.login == "chatgpt-codex-connector[bot]"
-              and (.body | type == "string" and contains("<!-- codex-pull-request-review-summary -->"))
-              and (.body | test("\\|[^\\r\\n|]*Code Review[^\\r\\n|]*\\|[^\\r\\n|]*✅[^\\r\\n|]*Completed[^\\r\\n|]*\\|[^\\r\\n|]*`(" + $head + "|" + $short_head + ")`[^\\r\\n|]*\\|"))
-              and (. as $comment | [ $comment.created_at, $comment.updated_at | select(type == "string" and . >= $requested_at) ] | length > 0)
-            )
-          ' >/dev/null; then
-            echo "Accepted terminal Codex bot summary for the merged generated PR head."
+            echo "Accepted terminal CodeRabbit audit for the merged generated PR head."
           else
-            echo "The merged generated PR has no terminal Codex review: neither a REST review nor completed official summary follows its latest @codex review request." >&2
+            echo "The merged generated PR has no terminal CodeRabbit audit after its latest @coderabbitai review request." >&2
             exit 1
           fi
           cursor=""
           while :; do
             query='query($owner:String!,$repository:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:1){nodes{author{login}}}} pageInfo{hasNextPage endCursor}}}}}'
             page="$(gh api graphql -f query="$query" -F owner="${GITHUB_REPOSITORY%%/*}" -F repository="${GITHUB_REPOSITORY##*/}" -F number="$number" -f cursor="$cursor")"
-            printf '%s' "$page" | jq -e '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[]?.author.login] | any(. == "chatgpt-codex-connector" or . == "chatgpt-codex-connector[bot]") | not' >/dev/null || {
-              echo "The merged generated PR still has unresolved Codex review threads." >&2
+            printf '%s' "$page" | jq -e '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[]?.author.login] | any(. == "coderabbitai") | not' >/dev/null || {
+              echo "The merged generated PR still has an unresolved CodeRabbit review thread." >&2
               exit 1
             }
             # `jq -e` exits 1 when the final page reports false, so use a

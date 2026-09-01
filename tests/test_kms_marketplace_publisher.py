@@ -884,8 +884,8 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('--arg source_ref "refs/heads/main"', dispatcher)
         self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
         self.assertIn('--arg source_sha "$SOURCE_SHA"', dispatcher)
-        self.assertIn("Require the merged generated PR, source gate, and completed Codex review", dispatcher)
-        self.assertIn("unresolved Codex review threads", dispatcher)
+        self.assertIn("Require the merged generated PR, source gate, and completed CodeRabbit audit", dispatcher)
+        self.assertIn("unresolved CodeRabbit review thread", dispatcher)
         self.assertIn("Revalidate each registered source branch at the reviewed merge boundary", dispatcher)
         self.assertIn("merge_group:", merge_guard)
         self.assertIn("Reject a generated PR whose registered source branch advanced during review", merge_guard)
@@ -896,7 +896,6 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertNotIn('gh workflow run validate.yml --ref "$branch"', workflow)
         self.assertNotIn("--event workflow_dispatch", workflow)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
-        self.assertNotIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
         self.assertIn('echo "pending_status_authentication=true"', workflow)
         self.assertIn("awaiting status authentication", workflow)
         self.assertIn("This workflow never merges the PR", workflow)
@@ -922,7 +921,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn("--official-status-plugin-id", reconcile)
         self.assertIn("--allow-unsigned-official-status-plugin-id", reconcile)
         self.assertIn('gh workflow run validate.yml --ref "$branch"', reconcile)
-        self.assertIn("@codex review", reconcile)
+        self.assertIn("@coderabbitai review", reconcile)
         # Reconciliation authenticates each candidate's own Beta tuple first,
         # then compares it with the live source head to supersede stale work.
         # It refreshes protected Factory main before deriving the PR delta; the
@@ -989,7 +988,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('git rev-parse origin/main', workflow)
         self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
-        self.assertIn("review_body=\"@codex review\"$'\\n\\n'", workflow)
+        self.assertIn("review_body=\"@coderabbitai review\"$'\\n\\n'", workflow)
         self.assertIn("This workflow intentionally does not merge this PR", workflow)
         self.assertIn("Refuse to sign while any generated Factory PR awaits review", workflow)
         self.assertNotIn("steps.publish.outputs.published == 'true'", workflow)
