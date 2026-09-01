@@ -3,6 +3,12 @@ name: Publish immutable marketplace beta release
 on:
   workflow_dispatch:
     inputs:
+      maintenance:
+        description: Select the protected default-set transition or a normal release operation.
+        required: false
+        default: release
+        type: choice
+        options: [release, align_desktop_defaults]
       channel:
         description: Beta publishes an approved external beta SHA; Stable promotes an identical existing Beta release.
         required: false
@@ -64,6 +70,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           REF_PROTECTED: ${{ github.ref_protected }}
+          MAINTENANCE: ${{ inputs.maintenance }}
           CHANNEL: ${{ inputs.channel }}
           PLUGIN_ID: ${{ inputs.plugin_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -84,9 +91,14 @@ jobs:
             exit 1
           fi
           channel="${CHANNEL:-beta}"
+          maintenance="${MAINTENANCE:-release}"
           case "$channel" in
             beta|stable) ;;
             *) echo "channel must be beta or stable." >&2; exit 1 ;;
+          esac
+          case "$maintenance" in
+            release|align_desktop_defaults) ;;
+            *) echo "maintenance must be release or align_desktop_defaults." >&2; exit 1 ;;
           esac
           if [ -n "$RECONCILE_DELIVERY_KEY" ] && ! [[ "$RECONCILE_DELIVERY_KEY" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$ ]]; then
             echo "reconcile_delivery_key is not a bounded delivery identifier." >&2
@@ -101,7 +113,14 @@ jobs:
               echo "A reconcile receipt requires both delivery key and dispatch nonce." >&2
               exit 1
             }
-          if [ -n "$PLUGIN_ID" ]; then
+          if [ "$maintenance" = "align_desktop_defaults" ]; then
+            [ "$channel" = "beta" ] && [ -z "$PLUGIN_ID" ] && [ -z "$SOURCE_SHA" ] && [ -z "$RELEASE_ID" ] \
+              && [ -z "$EXPECTED_BETA_SHA" ] && [ -z "$SMOKE_RUN_URL" ] && [ -z "$SMOKE_MARKETPLACE_REVISION" ] \
+              && [ -z "$RECONCILE_DELIVERY_KEY" ] && [ -z "$RECONCILE_DISPATCH_NONCE" ] || {
+                echo "Default-set maintenance accepts no release, source, smoke, or reconcile inputs." >&2
+                exit 1
+              }
+          elif [ -n "$PLUGIN_ID" ]; then
             [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit protected-main dispatch." >&2; exit 1; }
             [ -n "$SOURCE_SHA" ] || { echo "External source publication requires source_sha." >&2; exit 1; }
             if [ "$channel" = "beta" ] && { [ -n "$RELEASE_ID" ] || [ -n "$EXPECTED_BETA_SHA" ]; }; then
@@ -217,6 +236,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
           PLUGIN_ID: ${{ inputs.plugin_id }}
+          MAINTENANCE: ${{ inputs.maintenance }}
         run: |
           set -euo pipefail
           if [ -n "$PLUGIN_ID" ] && ! [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]]; then
@@ -234,7 +254,11 @@ jobs:
             number="$(printf '%s' "$candidate" | jq -er .number)"
             branch="$(printf '%s' "$candidate" | jq -er .head.ref)"
             if [ -z "$PLUGIN_ID" ]; then
-              [[ "$branch" == xsec-marketplace/publish-* ]] && pending+=("#${number}:${branch}")
+              if [ "${MAINTENANCE:-release}" = "align_desktop_defaults" ]; then
+                [[ "$branch" == xsec-marketplace/default-set-* ]] && pending+=("#${number}:${branch}")
+              else
+                [[ "$branch" == xsec-marketplace/publish-* ]] && pending+=("#${number}:${branch}")
+              fi
               continue
             fi
             metadata="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}")"
@@ -270,11 +294,20 @@ jobs:
         env:
           INPUT_CHANNEL: ${{ inputs.channel }}
           INPUT_PLUGIN_ID: ${{ inputs.plugin_id }}
+          INPUT_MAINTENANCE: ${{ inputs.maintenance }}
         run: |
           set -euo pipefail
           channel="${INPUT_CHANNEL:-beta}"
-          if [ -n "$INPUT_PLUGIN_ID" ]; then
+          maintenance="${INPUT_MAINTENANCE:-release}"
+          if [ "$maintenance" = "align_desktop_defaults" ]; then
+            echo "external=false" >> "$GITHUB_OUTPUT"
+            echo "maintenance=true" >> "$GITHUB_OUTPUT"
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+            echo "commit_title=chore: align Marketplace default set" >> "$GITHUB_OUTPUT"
+            echo "branch_prefix=default-set" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_PLUGIN_ID" ]; then
             echo "external=true" >> "$GITHUB_OUTPUT"
+            echo "maintenance=false" >> "$GITHUB_OUTPUT"
             echo "channel=$channel" >> "$GITHUB_OUTPUT"
             if [ "$channel" = "beta" ]; then
               echo "commit_title=chore: publish external marketplace beta release" >> "$GITHUB_OUTPUT"
@@ -285,10 +318,14 @@ jobs:
             fi
           else
             echo "external=false" >> "$GITHUB_OUTPUT"
+            echo "maintenance=false" >> "$GITHUB_OUTPUT"
             echo "channel=beta" >> "$GITHUB_OUTPUT"
             echo "commit_title=chore: publish marketplace beta release" >> "$GITHUB_OUTPUT"
             echo "branch_prefix=publish" >> "$GITHUB_OUTPUT"
           fi
+      - name: Apply the reviewed Desktop default-set transition
+        if: ${{ steps.request.outputs.maintenance == 'true' }}
+        run: python scripts/maintain_marketplace_defaults.py --root .
       - name: Validate an external registry request before source access
         id: external-request
         if: ${{ steps.request.outputs.external == 'true' }}
@@ -579,6 +616,7 @@ jobs:
         env:
           EXTERNAL: ${{ steps.request.outputs.external }}
           CHANNEL: ${{ steps.request.outputs.channel }}
+          MAINTENANCE: ${{ steps.request.outputs.maintenance }}
           STABLE_CHANGED: ${{ steps.external-stable.outputs.changed }}
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
@@ -691,6 +729,7 @@ jobs:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
           EXTERNAL: ${{ steps.request.outputs.external }}
           CHANNEL: ${{ steps.request.outputs.channel }}
+          MAINTENANCE: ${{ steps.request.outputs.maintenance }}
           COMMIT_TITLE: ${{ steps.request.outputs.commit_title }}
           BRANCH_PREFIX: ${{ steps.request.outputs.branch_prefix }}
         run: |
@@ -714,7 +753,9 @@ jobs:
           branch="xsec-marketplace/${BRANCH_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
-          if [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ]; then
+          if [ "$MAINTENANCE" = "true" ]; then
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It removes the project workspace package from Marketplace discovery, retains its immutable Factory history, and refreshes the complete active KMS sidecar batch. The protected finalizer revalidates the exact default-set delta and never treats it as a plugin release."
+          elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ]; then
             body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It proved external main deterministically rebuilds the selected Beta release and changes only channels.stable.releaseId plus Factory provenance. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory run the source gate. This workflow never merges the PR."
           elif [ "$EXTERNAL" = "true" ]; then
             body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It snapshots one reachable external beta commit, appends immutable releases as needed, advances beta only, and records Factory provenance. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory run the source gate. This workflow never merges the PR."

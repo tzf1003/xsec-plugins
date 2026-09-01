@@ -32,7 +32,7 @@ from build_market import (
     sha256,
     write_zip,
 )
-from marketplace_contract import DEFAULT_OFFICIAL_PLUGIN_IDS
+from marketplace_contract import OFFICIAL_PLUGIN_IDS, active_default_official_plugin_ids
 
 
 MAX_ZIP_ENTRIES = 10_000
@@ -2914,7 +2914,7 @@ def validate_archive(
             fail(f"artifact {path} does not include XSEC Desktop entrypoint {entrypoint_name} at {entrypoint_path.as_posix()}")
         if not zip_member_is_regular_file(entrypoint):
             fail(f"artifact {path} XSEC Desktop entrypoint {entrypoint_name} must be a regular file")
-    if plugin_id in DEFAULT_OFFICIAL_PLUGIN_IDS:
+    if plugin_id in OFFICIAL_PLUGIN_IDS:
         frontend_path = dict(entrypoints).get("frontend")
         if frontend_path is None:
             fail(f"artifact {path} official plugin must declare a frontend entrypoint")
@@ -2931,7 +2931,10 @@ def validate_archive(
     return manifest
 
 
-def marketplace_entries(root: Path) -> list[tuple[str, Path, dict[str, object]]]:
+def marketplace_entries(
+    root: Path,
+    expected_default_ids: set[str],
+) -> list[tuple[str, Path, dict[str, object]]]:
     marketplace_path = root / MARKETPLACE_RELATIVE_PATH
     if is_link(marketplace_path):
         fail("marketplace metadata must not be a symbolic link")
@@ -2971,9 +2974,9 @@ def marketplace_entries(root: Path) -> list[tuple[str, Path, dict[str, object]]]
                 fail(f"default marketplace plugin {plugin_id} must authenticate on install")
             default_ids.add(plugin_id)
         result.append((plugin_id, plugin_dir, entry))
-    if default_ids != set(DEFAULT_OFFICIAL_PLUGIN_IDS):
-        missing = sorted(set(DEFAULT_OFFICIAL_PLUGIN_IDS) - default_ids)
-        unexpected = sorted(default_ids - set(DEFAULT_OFFICIAL_PLUGIN_IDS))
+    if default_ids != expected_default_ids:
+        missing = sorted(expected_default_ids - default_ids)
+        unexpected = sorted(default_ids - expected_default_ids)
         fail(f"default official plugin set mismatch (missing={missing}, unexpected={unexpected})")
     return result
 
@@ -3157,7 +3160,7 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
             entrypoint_path,
             f"plugin manifest {plugin_id} entrypoint {entrypoint_name}",
         )
-    if plugin_id in DEFAULT_OFFICIAL_PLUGIN_IDS:
+    if plugin_id in OFFICIAL_PLUGIN_IDS:
         validate_codex_manifest(plugin_id, plugin_dir, manifest["version"])
         frontend = resolved_entrypoints.get("frontend")
         if frontend is None:
@@ -3174,8 +3177,12 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
 
 
 def validate_source(source_root: Path, built_root: Path) -> None:
-    source_entries = marketplace_entries(source_root)
-    built_entries = marketplace_entries(built_root)
+    try:
+        expected_default_ids = set(active_default_official_plugin_ids(source_root))
+    except ValueError as error:
+        fail(str(error))
+    source_entries = marketplace_entries(source_root, expected_default_ids)
+    built_entries = marketplace_entries(built_root, expected_default_ids)
     if (source_root / MARKETPLACE_RELATIVE_PATH).read_bytes() != (built_root / MARKETPLACE_RELATIVE_PATH).read_bytes():
         fail("temporary marketplace metadata differs from source metadata")
     built_by_id = {plugin_id: plugin_dir for plugin_id, plugin_dir, _ in built_entries}
