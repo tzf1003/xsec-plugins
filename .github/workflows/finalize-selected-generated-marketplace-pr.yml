@@ -102,7 +102,7 @@ jobs:
                     and (.created_at | type == "string")
                   )
               ]
-              | if length > 0 then sort_by(.created_at) | last | .state == "success" else false end
+              | if length > 0 then .[0].state == "success" else false end
             )
             and ($threads | type == "array" and length > 0)
             and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
