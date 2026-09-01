@@ -1,0 +1,34 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "com.xsec.workspace.traffic", "version": "1.3.0", "description": "XSEC proxy traffic workspace tools", "author": { "name": "XSEC" }, "license": "MIT",
+  "extensions": { "com.xsec.desktop": {
+    "schemaVersion": 1, "displayName": "抓包流量", "publisher": "XSEC", "icon": "plug",
+    "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.4.0" }, "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
+    "activationEvents": ["onWorkspaceTool:traffic", "onWorkspaceTool:traffic-replay", "onWorkspaceTool:request-detail", "onSettingsPage:traffic"],
+    "permissions": { "workspace.session.read": {}, "workspace.session.write": {}, "workspace.composer.write": {}, "workspace.tool.open": {}, "pluginData.read": {}, "pluginData.write": {} },
+    "frontendApi": { "version": 2, "module": "single-esm", "methods": {
+      "xsec.traffic.list": { "capability": "workspace.session.read", "binding": "session" },
+      "xsec.traffic.get": { "capability": "workspace.session.read", "binding": "session" },
+      "xsec.traffic.replay-attempts": { "capability": "workspace.session.read", "binding": "session" },
+      "xsec.traffic.replay": { "capability": "workspace.session.write", "binding": "session" },
+      "xsec.traffic.reference.add": { "capability": "workspace.composer.write", "binding": "session" },
+      "xsec.workspace.tool.open": { "capability": "workspace.tool.open", "binding": "context" },
+      "xsec.traffic.settings.get": { "capability": "pluginData.read", "binding": "plugin" },
+      "xsec.traffic.settings.set": { "capability": "pluginData.write", "binding": "plugin" },
+      "xsec.traffic.ca.status": { "capability": "pluginData.read", "binding": "plugin" },
+      "xsec.traffic.ca.import": { "capability": "pluginData.write", "binding": "plugin" },
+      "xsec.traffic.ca.rotate": { "capability": "pluginData.write", "binding": "plugin" },
+      "xsec.traffic.passive-rules.list": { "capability": "pluginData.read", "binding": "plugin" },
+      "xsec.traffic.passive-rules.upsert": { "capability": "pluginData.write", "binding": "plugin" },
+      "xsec.traffic.passive-rules.toggle": { "capability": "pluginData.write", "binding": "plugin" },
+      "xsec.traffic.passive-rules.delete": { "capability": "pluginData.write", "binding": "plugin" }
+    } },
+    "contributes": { "workspaceTools": {
+      "traffic": { "title": "抓包流量", "icon": "plug", "scope": "session", "launchable": true, "policy": "singleton", "surface": "edge-to-edge", "retain": "always", "preferredSideWidth": 880, "preferredBottomHeight": 480, "surfaces": ["interactive-dock", "batch-observe"] },
+      "traffic-replay": { "title": "流量重放", "icon": "plug", "scope": "entity", "launchable": false, "policy": "entity-singleton", "surface": "edge-to-edge", "retain": "always", "preferredSideWidth": 880, "preferredBottomHeight": 480, "surfaces": ["interactive-dock", "batch-observe"] },
+      "request-detail": { "title": "请求详情", "icon": "plug", "scope": "entity", "launchable": false, "policy": "entity-singleton", "surface": "standard", "retain": "active", "preferredSideWidth": 560, "preferredBottomHeight": 360, "surfaces": ["interactive-dock", "batch-observe"] }
+    }, "settingsPages": {
+      "traffic": { "title": "抓包流量", "group": "plugins", "page": "traffic", "icon": "plug", "order": 150 }
+    } }
+  } }
+}
