@@ -51,7 +51,11 @@ jobs:
           [[ "$main_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Protected Factory main revision is invalid." >&2; exit 1; }
           prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
           matches="$(printf '%s' "$prs" | jq -cer --arg repository "$GITHUB_REPOSITORY" --arg main_sha "$main_sha" '
-            [.[][] | select(.head.repo.full_name == $repository and .base.sha == $main_sha)]
+            [.[][] | select(
+              .head.repo.full_name == $repository
+              and .base.sha == $main_sha
+              and (.head.ref | test("^xsec-marketplace/(publish-|batch-|default-set-|external-beta-|external-stable-|promote-stable-|stage-first-party-adoption-|adopt-first-party-|refresh-retained-sidecar-|layout-signatures-)"))
+            )]
           ')"
           count="$(printf '%s' "$matches" | jq -er 'length')"
           if [ "$count" = "0" ]; then
@@ -78,21 +82,28 @@ jobs:
             exit 0
           fi
           # The protected finalizer re-reads this state immediately before its
-          # App-token merge. Keep the handoff unqueued until the same exact
-          # candidate already has a formal CodeRabbit review and no open
-          # threads, so source-gate completion alone cannot consume production
+          # App-token merge. Keep the handoff unqueued until the exact
+          # candidate has a trusted CodeRabbit completion and no open threads,
+          # so source-gate completion alone cannot consume production
           # credentials for an unreviewed candidate.
-          # shellcheck disable=SC2016
-          review_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviews(first:100,after:$endCursor){nodes{author{login} state commit{oid}} pageInfo{hasNextPage endCursor}}}}}' \
-            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/statuses?per_page=100")"
           # shellcheck disable=SC2016
           thread_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
             -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
-          jq -ne --arg head "$head_sha" --argjson reviews "$review_pages" --argjson threads "$thread_pages" '
-            ($reviews | type == "array" and length > 0)
-            and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
-            and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
-            and any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?; .author.login == "coderabbitai" and (.state == "COMMENTED" or .state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit.oid == $head)
+          jq -ne --arg head "$head_sha" --argjson statuses "$statuses" --argjson threads "$thread_pages" '
+            ($statuses | type == "array" and length > 0)
+            and all($statuses[]?; type == "array")
+            and (
+              [$statuses[][]
+                | select(
+                    .context == "CodeRabbit"
+                    and .creator.login == "coderabbitai[bot]"
+                    and .creator.type == "Bot"
+                    and (.created_at | type == "string")
+                  )
+              ]
+              | if length > 0 then sort_by(.created_at) | last | .state == "success" else false end
+            )
             and ($threads | type == "array" and length > 0)
             and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
             and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
@@ -109,7 +120,4 @@ jobs:
     uses: ./.github/workflows/final-merge-generated-marketplace-pr.yml
     with:
       pull_number: ${{ needs.select-exact-generated-pr.outputs.pull_number }}
-      # The protected finalizer re-reads the exact formal CodeRabbit review
-      # and every review thread before it requests its narrow App token.
-      coderabbit_status_verified: false
     secrets: inherit

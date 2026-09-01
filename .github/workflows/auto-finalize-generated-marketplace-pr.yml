@@ -40,7 +40,6 @@ jobs:
     outputs:
       pull_number: ${{ steps.pr.outputs.pull_number }}
       eligible: ${{ steps.pr.outputs.eligible }}
-      coderabbit_status_verified: ${{ steps.pr.outputs.coderabbit_status_verified }}
     steps:
       - name: Resolve one eligible exact generated Factory PR
         id: pr
@@ -49,14 +48,9 @@ jobs:
           HEAD_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.event_name == 'pull_request_review' && github.event.pull_request.head.ref || '' }}
           HEAD_REPOSITORY: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name || github.event_name == 'pull_request_review' && github.event.pull_request.head.repo.full_name || github.repository }}
           HEAD_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'pull_request_review' && github.event.pull_request.head.sha || github.event.sha }}
-          CODERABBIT_STATUS_VERIFIED: ${{ github.event_name == 'status' && github.event.sender.login == 'coderabbitai[bot]' && github.event.sender.type == 'Bot' && github.event.context == 'CodeRabbit' && github.event.state == 'success' }}
         run: |
           set -euo pipefail
           [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Finalizer trigger has an invalid head SHA." >&2; exit 1; }
-          [ "$CODERABBIT_STATUS_VERIFIED" = "true" ] || [ "$CODERABBIT_STATUS_VERIFIED" = "false" ] || {
-            echo "CodeRabbit status event verification is malformed." >&2
-            exit 1
-          }
           prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
           matches="$(printf '%s' "$prs" | jq -cer --arg repository "$HEAD_REPOSITORY" --arg branch "$HEAD_BRANCH" --arg sha "$HEAD_SHA" '
             [.[][] | select(.head.repo.full_name == $repository and .head.sha == $sha and ($branch == "" or .head.ref == $branch))]
@@ -83,6 +77,25 @@ jobs:
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/statuses?per_page=100")"
+          if ! printf '%s' "$statuses" | jq -e '
+            (type == "array" and length > 0)
+            and all(.[]?; type == "array")
+            and (
+              [.[][]
+                | select(
+                    .context == "CodeRabbit"
+                    and .creator.login == "coderabbitai[bot]"
+                    and .creator.type == "Bot"
+                    and (.created_at | type == "string")
+                  )
+              ]
+              | if length > 0 then sort_by(.created_at) | last | .state == "success" else false end
+            )
+          ' >/dev/null; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # shellcheck disable=SC2016
           review_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
             -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
@@ -96,5 +109,4 @@ jobs:
             exit 0
           }
           echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"
-          echo "coderabbit_status_verified=$CODERABBIT_STATUS_VERIFIED" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
