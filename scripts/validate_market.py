@@ -1680,17 +1680,33 @@ def frontend_direct_helper_calls(
 ) -> list[str]:
     calls: list[str] = []
     for index in range(span[0], span[1] - 1):
-        if tokens[index][0] != "identifier" or tokens[index + 1] != ("punctuation", "("):
+        if tokens[index][0] != "identifier":
             continue
         name = tokens[index][1]
         if name not in blocks or frontend_is_member_helper_call(tokens, index):
             continue
-        closing = matching_parenthesis(tokens, index + 1)
+        call_opening = frontend_helper_call_parenthesis(tokens, index, span[1])
+        if call_opening is None:
+            continue
+        closing = matching_parenthesis(tokens, call_opening)
         if closing is None or closing + 1 >= len(tokens):
             calls.append(name)
         elif tokens[closing + 1] != ("punctuation", "{"):
             calls.append(name)
     return calls
+
+
+def frontend_helper_call_parenthesis(
+    tokens: list[tuple[str, str]], index: int, end: int
+) -> int | None:
+    if index + 1 < end and tokens[index + 1] == ("punctuation", "("):
+        return index + 1
+    optional_call = tokens[index + 1:index + 4] == [
+        ("punctuation", "?"),
+        ("punctuation", "."),
+        ("punctuation", "("),
+    ]
+    return index + 3 if optional_call and index + 3 < end else None
 
 
 def frontend_is_member_helper_call(tokens: list[tuple[str, str]], index: int) -> bool:
