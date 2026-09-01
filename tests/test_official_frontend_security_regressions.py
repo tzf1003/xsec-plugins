@@ -9,12 +9,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import build_market  # noqa: E402
 import validate_market  # noqa: E402
 from validate_market import MarketplaceValidationError  # noqa: E402
 
 
 PLUGIN_ID = "com.xsec.system-terminal"
-PLUGIN_DIR = ROOT / ".xsec-factory" / "snapshots" / PLUGIN_ID
+PLUGIN_DIR = ROOT / build_market.SNAPSHOT_ROOT_RELATIVE_PATH / PLUGIN_ID
 ACTIVATION_MARKER = "export function activate(host){"
 SETTINGS_OPEN_CALL = 'host.request("xsec.plugin.settings.open",{})'
 
