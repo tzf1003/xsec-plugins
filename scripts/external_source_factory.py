@@ -1579,11 +1579,11 @@ def prepare_staged_adoption(
     baseline_root: Path,
     factory_revision: str,
 ) -> dict[str, str]:
-    """Rebuild and read the reviewed unsigned adoption assertion.
+    """Rebuild and read the validated unsigned adoption assertion.
 
     The Cloud KMS broker reads the record from protected ``main`` before it
     signs it.  This accepts no caller-supplied source SHA: the source tuple is
-    exclusively the immutable tuple previously reviewed in the staged proof.
+    exclusively the immutable tuple previously validated in the staged proof.
     More importantly, the assertion's retained-history fields are rebuilt
     from the protected parent that existed *before* that proof was added.
     Keeping this separate from :func:`create_adoption` means the signing
@@ -1612,7 +1612,7 @@ def prepare_staged_adoption(
     if baseline_proof_path.exists() or is_link(baseline_proof_path):
         fail("trusted pre-staging Factory baseline already contains the adoption proof")
     if sidecar_path.exists() or is_link(sidecar_path):
-        fail("first-party adoption proof is already signed; activation must use the existing reviewed proof")
+        fail("first-party adoption proof is already signed; activation must use the existing validated proof")
     validate_adoption(root, registration, require_kms_proof=False)
     proof = read_json(proof_path, f"first-party adoption proof for {registration.plugin_id}")
     source = require_object(proof.get("source"), "first-party adoption proof source")
@@ -1925,7 +1925,7 @@ def record_status(
             if isinstance(existing_source, dict):
                 beta_sha = optional_sha(existing_source.get("betaSha"), "existing official Factory status betaSha")
         # Stable completion and a late smoke callback must retain the last
-        # reviewed main-rebuild proof.  A Beta publication passes a new value
+        # validated main-rebuild proof.  A Beta publication passes a new value
         # explicitly, so it can never inherit a proof for a different cycle.
         if main_gate_sha is None:
             existing_source = existing.get("source")

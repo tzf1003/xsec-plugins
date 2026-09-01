@@ -83,7 +83,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("A duplicate source delivery", workflow)
         self.assertIn("separately audited smoke recovery path", workflow)
         self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
-        self.assertIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
+        self.assertIn("Dispatch the validated Beta or Stable revision to Desktop smoke", dispatcher)
         self.assertIn("Registered Stable completion is bound to its KMS-authenticated Beta Desktop smoke callback", dispatcher)
 
     def test_status_smoke_gate_is_kms_bound_and_cloud_deployment_is_explicit(self) -> None:
@@ -105,7 +105,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("status KMS proof", verifier)
         self.assertIn("--verify-active-marketplace-signatures", dispatcher)
 
-    def test_reviewed_merge_dispatcher_requires_signed_diff_review_and_fresh_sources(self) -> None:
+    def test_merge_dispatcher_requires_signed_diff_source_gate_and_fresh_sources(self) -> None:
         dispatcher = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
         merge_guard = MERGE_GUARD_WORKFLOW.read_text(encoding="utf-8")
         publisher = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
@@ -114,20 +114,19 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "verify_merged_stable_promotion.py",
             "--verify-active-marketplace-signatures",
             "successful immutable Factory source gate",
-            "terminal CodeRabbit audit after its latest @coderabbitai review request",
-            "unresolved CodeRabbit review thread",
-            "Revalidate each registered source branch at the reviewed merge boundary",
+            "Require the merged generated PR and source gate",
+            "Revalidate each registered source branch at the exact merge boundary",
             'event_type:"xsec_official_marketplace_published"',
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)
         self.assertNotIn("head_commit.message", dispatcher)
-        self.assertIn("reviewThreads(first:100,after:$cursor)", dispatcher)
-        self.assertIn("pageInfo{hasNextPage endCursor}", dispatcher)
+        self.assertNotIn("coderabbit", dispatcher.lower())
+        self.assertNotIn("reviewThreads", dispatcher)
         self.assertIn("ref: ${{ inputs.marketplace_revision || github.sha }}", dispatcher)
         self.assertIn("merge_group:", merge_guard)
         self.assertIn("Registered ${repository} ${ref} advanced", merge_guard)
-        self.assertIn("Refuse to sign while any generated Factory PR awaits review", publisher)
+        self.assertIn("Refuse to sign while any generated Factory PR awaits protected final merge", publisher)
         self.assertNotIn("github.event.head_commit.message", publisher)
 
     def test_final_merge_gate_is_trusted_revalidating_and_does_not_deadlock_normal_prs(self) -> None:
@@ -184,8 +183,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('any(.protection_rules[]?; .type == "branch_policy")', final_merge)
         self.assertIn('select(.type == "required_reviewers")', final_merge)
         self.assertIn("length == 0", final_merge)
-        self.assertIn("reviewThreads(first:100,after:$cursor)", final_merge)
-        self.assertIn("pageInfo{hasNextPage endCursor}", final_merge)
+        self.assertNotIn("coderabbit", final_merge.lower())
+        self.assertNotIn("reviewThreads", final_merge)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
         self.assertIn("can_admins_bypass == false", protection)
         self.assertIn("deployment_branch_policy.protected_branches == true", protection)
@@ -197,7 +196,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("factory_main_protection_policy.py", protection)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", readme)
         self.assertIn("factory-final-merge-gate", readme)
-        self.assertIn("跨 REST pages 的精确 head CodeRabbit audit", factory_document)
+        self.assertIn("验证 release diff、全部 KMS sidecar、注册来源当前 ref 与 source gate", factory_document)
         self.assertIn("绝不写 success", factory_document)
         self.assertIn("xsec-marketplace-final-exact-head", factory_document)
         self.assertIn("remains pending through final revalidation and merge", finalizer_ruleset_document)
@@ -279,24 +278,20 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "--verify-retained-release-signature --retained-release-plugin-id",
             "external_source_factory.py validate",
             "git ls-files --others --exclude-standard",
-            "@coderabbitai review",
-            "The workflow intentionally does **not** merge this PR.",
+            "The source gate passed. The protected final merge may now run.",
         ):
             with self.subTest(required_rule=required_rule):
                 self.assertIn(required_rule, workflow)
         self.assertNotIn('pulls/${pull_number}/merge', workflow)
         self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
-        # A literal newline in the shell string at column zero terminates the
-        # YAML ``run: |`` block. GitHub then registers the file without a
-        # dispatch trigger and creates empty failed push runs. Keep the review
-        # message as one correctly indented shell assignment instead.
-        self.assertIn("review_body=\"@coderabbitai review\"$'\\n\\n'", workflow)
+        self.assertNotIn("coderabbit", workflow.lower())
+        self.assertNotIn("review_body=", workflow)
         self.assertNotIn("\n\nThis PR was generated", workflow)
         self.assertIn("Retained KMS sidecar repair", readme)
         self.assertIn("refresh-retained-sidecars.yml", readme)
-        self.assertIn("intentionally **never merges**", readme)
+        self.assertIn("intentionally **never merges**\n", readme)
 
-    def test_adoption_review_comment_keeps_its_workflow_dispatch_yaml_valid(self) -> None:
+    def test_adoption_workflows_keep_their_dispatch_yaml_valid_without_review_comments(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
         stage = STAGE_ADOPTION_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
@@ -304,9 +299,10 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("group: xsec-marketplace-publish-main", stage)
         self.assertIn("Stage only the immutable unsigned adoption proof", stage)
         self.assertIn("The Registry remains pending-adoption", stage)
-        self.assertIn("@coderabbitai review", stage)
-        self.assertIn("review_body=\"@coderabbitai review\"$'\\n\\n'", workflow)
-        self.assertIn("review_body=\"@coderabbitai review\"$'\\n\\n'", stage)
+        self.assertNotIn("coderabbit", workflow.lower())
+        self.assertNotIn("coderabbit", stage.lower())
+        self.assertNotIn("review_body=", workflow)
+        self.assertNotIn("review_body=", stage)
         self.assertNotIn("\n\nThis is an immutable first-party adoption", workflow)
 
     def test_final_gate_arms_shared_commit_status_only_after_slurping_all_main_pr_pages(self) -> None:
@@ -339,19 +335,13 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('error("expected exactly one merged Factory generated PR")', workflow)
         self.assertNotIn('gh api -H \'Accept: application/vnd.github+json\' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100"', workflow)
 
-    def test_final_gate_and_post_merge_dispatcher_require_exact_head_coderabbit_audits(self) -> None:
+    def test_final_gate_and_post_merge_dispatcher_have_no_review_service_dependency(self) -> None:
         for workflow_path in (FINAL_MERGE_WORKFLOW, POST_MERGE_DISPATCHER):
             workflow = workflow_path.read_text(encoding="utf-8")
             with self.subTest(workflow=workflow_path.name):
-                self.assertIn('issues/${', workflow)
-                self.assertIn('any(.[][];', workflow)
-                self.assertIn('.user.login == "coderabbitai[bot]"', workflow)
-                self.assertIn("No actionable comments were generated", workflow)
-                self.assertIn("contains($head)", workflow)
-                self.assertIn("rate limited|review limit reached|processing new changes", workflow)
-                self.assertIn('review_request_at=', workflow)
-                self.assertIn('.author_association == "OWNER"', workflow)
-                self.assertIn("@coderabbitai review", workflow)
+                self.assertNotIn("coderabbit", workflow.lower())
+                self.assertNotIn("reviewThreads", workflow)
+                self.assertNotIn("review_request_at=", workflow)
 
 
 if __name__ == "__main__":

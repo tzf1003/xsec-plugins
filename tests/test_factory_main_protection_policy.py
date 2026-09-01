@@ -31,23 +31,7 @@ def current_protection() -> dict[str, object]:
             ],
         },
         "enforce_admins": {"enabled": False},
-        "required_pull_request_reviews": {
-            "dismiss_stale_reviews": True,
-            "require_code_owner_reviews": False,
-            "require_last_push_approval": True,
-            "required_approving_review_count": 1,
-            "dismissal_restrictions": {
-                "users": [{"login": "reviewer"}],
-                "teams": [{"slug": "release-team"}],
-                "apps": [{"slug": "review-app"}],
-                "url": "response-only",
-            },
-            "bypass_pull_request_allowances": {
-                "users": [{"login": "admin"}],
-                "teams": [{"slug": "maintainers"}],
-                "apps": [{"slug": "merge-app"}],
-            },
-        },
+        "required_pull_request_reviews": None,
         "restrictions": {
             "users": [{"login": "release-admin"}],
             "teams": [{"slug": "release-team"}],
@@ -66,7 +50,12 @@ def current_protection() -> dict[str, object]:
 
 class FactoryMainProtectionPolicyTests(unittest.TestCase):
     def test_strengthening_moves_finalizer_gate_to_ruleset_and_preserves_unrelated_checks(self) -> None:
-        desired = policy.desired_policy(current_protection())
+        current = current_protection()
+        current["required_pull_request_reviews"] = {
+            "dismiss_stale_reviews": True,
+            "required_approving_review_count": 1,
+        }
+        desired = policy.desired_policy(current)
 
         self.assertTrue(desired["required_status_checks"]["strict"])
         self.assertTrue(desired["enforce_admins"])
@@ -88,17 +77,7 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
                 {"context": "unrelated-build", "app_id": 42},
             ],
         )
-        self.assertEqual(
-            desired["required_pull_request_reviews"],
-            {
-                "dismiss_stale_reviews": True,
-                "require_code_owner_reviews": False,
-                "require_last_push_approval": True,
-                "required_approving_review_count": 1,
-                "dismissal_restrictions": {"users": ["reviewer"], "teams": ["release-team"], "apps": ["review-app"]},
-                "bypass_pull_request_allowances": {"users": ["admin"], "teams": ["maintainers"], "apps": ["merge-app"]},
-            },
-        )
+        self.assertIsNone(desired["required_pull_request_reviews"])
         self.assertEqual(desired["restrictions"], {"users": ["release-admin"], "teams": ["release-team"], "apps": ["release-app"]})
         self.assertTrue(desired["required_linear_history"])
         self.assertFalse(desired["allow_force_pushes"])
@@ -113,6 +92,7 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
                 {"context": "source-gate", "app_id": 15368},
             ],
         }
+        active["required_pull_request_reviews"] = None
         policy.verify_policy(active)
 
         stale = current_protection()
@@ -157,6 +137,18 @@ class FactoryMainProtectionPolicyTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(policy.ProtectionPolicyError, "dedicated finalizer Ruleset"):
             policy.verify_policy(finalizer_still_classic)
+
+        review_required = current_protection()
+        review_required["enforce_admins"] = {"enabled": True}
+        review_required["required_status_checks"] = {
+            "strict": True,
+            "checks": [{"context": "source-gate", "app_id": 15368}],
+        }
+        review_required["required_pull_request_reviews"] = {
+            "required_approving_review_count": 1,
+        }
+        with self.assertRaisesRegex(policy.ProtectionPolicyError, "review requirements"):
+            policy.verify_policy(review_required)
 
 
 if __name__ == "__main__":

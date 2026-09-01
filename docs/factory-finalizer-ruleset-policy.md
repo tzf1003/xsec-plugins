@@ -12,7 +12,7 @@ active only for `refs/heads/main`, requires the strict
 `factory-final-merge-gate` status from GitHub Actions integration `15368`, and
 has exactly one bypass actor: the numeric GitHub App integration ID supplied as
 `XSEC_MARKETPLACE_FINALIZER_APP_ID`.  Its bypass mode is `pull_request`, so the
-App can complete the already-reviewed exact-head merge but cannot bypass a
+App can complete the already-validated exact-head merge but cannot bypass a
 direct update. The final workflow separately creates a short-lived,
 contents-read-only Source App token from
 `XSEC_MARKETPLACE_SOURCE_APP_ID` / `XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY`.

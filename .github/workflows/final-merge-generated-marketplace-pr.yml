@@ -1,4 +1,4 @@
-name: Final merge reviewed Marketplace publication PR
+name: Final merge Marketplace publication PR
 
 on:
   workflow_dispatch:
@@ -118,7 +118,7 @@ jobs:
             ')"
             result="$(jq -cn --argjson sources "$sources" '{kind:"factory-layout-source-migration",sources:$sources}')"
           elif [[ "$HEAD_REF" == xsec-marketplace/stage-first-party-adoption-* || "$HEAD_REF" == xsec-marketplace/adopt-first-party-* ]]; then
-            # Adoption is a two-step non-release transition. The reviewed
+            # Adoption is a two-step non-release transition. The validated
             # staging PR adds one unsigned assertion; the KMS-generated
             # activation PR later adds only the matching sidecar and changes
             # that exact Registry row. These scripts come from checked-out
@@ -267,7 +267,7 @@ jobs:
           owner: ${{ steps.publication.outputs.source_owner }}
           repositories: ${{ steps.publication.outputs.source_repositories }}
           permission-contents: read
-      - name: Authenticate each registered source branch before review completion
+      - name: Authenticate each registered source branch before final merge
         env:
           SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
@@ -287,12 +287,12 @@ jobs:
               -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
               ls-remote "https://github.com/${repository}.git" "$ref" | awk 'NR == 1 { print $1 }')"
             [ "$actual_sha" = "$expected_sha" ] || {
-              echo "Registered ${repository} ${ref} advanced or could not be read; regenerate, re-sign, and re-review the PR." >&2
+              echo "Registered ${repository} ${ref} advanced or could not be read; regenerate and re-sign the PR." >&2
               exit 1
             }
           done < <(jq -rc '.[]' "$RUNNER_TEMP/factory-publication-sources.json")
           unset token_header
-      - name: Require a current source gate, CodeRabbit audit, and every CodeRabbit thread resolved
+      - name: Require a current source gate
         env:
           GH_TOKEN: ${{ github.token }}
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
@@ -300,7 +300,7 @@ jobs:
         run: |
           set -euo pipefail
           # The source gate is the PR validation for this immutable candidate
-          # head. A manually-dispatched validation is not the reviewed PR gate.
+          # head. A manually-dispatched validation is not the PR gate.
           runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=100")"
           printf '%s' "$runs" | jq -e --argjson pull_number "$PULL_NUMBER" '
             any(.workflow_runs[];
@@ -312,45 +312,6 @@ jobs:
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }
-          comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PULL_NUMBER}/comments?per_page=100")"
-          review_request_at="$(printf '%s' "$comments" | jq -er '
-            [ .[][]
-              | select(.body | type == "string" and test("(^|[[:space:]])@coderabbitai[[:space:]]+review([[:space:]]|$)"; "i"))
-              | select(.author_association == "OWNER")
-              | select(.created_at | type == "string")
-              | .created_at
-            ] | if length > 0 then max else error("no current @coderabbitai review request") end
-          ')"
-          if printf '%s' "$comments" | jq -e --arg head "$HEAD_SHA" --arg requested_at "$review_request_at" '
-            any(.[][];
-              .user.login == "coderabbitai[bot]"
-              and (.body | type == "string" and contains("<!-- recent_review_start -->"))
-              and (.body | contains("No actionable comments were generated"))
-              and (.body | contains($head))
-              and (.body | test("rate limited|review limit reached|processing new changes"; "i") | not)
-              and ((.updated_at // .created_at) as $reviewed_at | ($reviewed_at | type == "string") and $reviewed_at >= $requested_at)
-            )
-          ' >/dev/null; then
-            echo "Accepted terminal CodeRabbit audit for the exact PR head."
-          else
-            echo "The exact PR head has no terminal CodeRabbit audit after its latest @coderabbitai review request." >&2
-            exit 1
-          fi
-          cursor=""
-          while :; do
-            query='query($owner:String!,$repository:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:1){nodes{author{login}}}} pageInfo{hasNextPage endCursor}}}}}'
-            page="$(gh api graphql -f query="$query" -F owner="${GITHUB_REPOSITORY%%/*}" -F repository="${GITHUB_REPOSITORY##*/}" -F number="$PULL_NUMBER" -f cursor="$cursor")"
-            printf '%s' "$page" | jq -e '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[]?.author.login] | any(. == "coderabbitai") | not' >/dev/null || {
-              echo "The PR still has an unresolved CodeRabbit review thread." >&2
-              exit 1
-            }
-            # `jq -e` exits 1 when the final page reports false, so use a
-            # plain raw read before deciding whether pagination is complete.
-            has_next="$(printf '%s' "$page" | jq -r .data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage)"
-            [ "$has_next" = "true" ] || break
-            cursor="$(printf '%s' "$page" | jq -er .data.repository.pullRequest.reviewThreads.pageInfo.endCursor)"
-            [ -n "$cursor" ] || { echo "GitHub returned a paginated review thread page without a cursor." >&2; exit 1; }
-          done
       - name: Recheck the live PR/source boundary before the isolated final merge
         env:
           GH_TOKEN: ${{ github.token }}
@@ -461,7 +422,7 @@ jobs:
           # rejects a changed/closed head via `sha`; any failure leaves the
           # arm-owned required status pending and requires fresh revalidation.
           merge_result="$(GH_TOKEN="${{ steps.finalizer.outputs.token }}" gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}/merge" \
-            -f sha="$HEAD_SHA" -f merge_method=squash -f commit_title='chore: merge reviewed Marketplace publication')" || {
+            -f sha="$HEAD_SHA" -f merge_method=squash -f commit_title='chore: merge Marketplace publication')" || {
             echo "GitHub did not merge the exact revalidated PR head; the Factory gate remains pending." >&2
             exit 1
           }
