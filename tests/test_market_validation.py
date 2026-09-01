@@ -60,11 +60,24 @@ def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str
     mutations = frontend_section(case, source, "function ruleMutations", "function RulesSection({host})")
     ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
     ca_section = frontend_section(case, source, "function CaSection({host})", "function DefaultFilterSection({host})")
-    case.assertRegex(default_filter, r"loadSettings\(host\)\.then\([^;]*\)\.catch\(reason=>\{active&&setError\([^;]*\)\}\)\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)")
+    settings_page = frontend_section(case, source, "function SettingsPage({host})", "function workspaceInstanceKey")
+    case.assertRegex(
+        default_filter,
+        r"setLoading\(!0\),setError\(void 0\),setSaved\(!1\),loadSettings\(host\)"
+        r"\.then\(value=>\{active&&editRevision\.current===startedAtEdit&&"
+        r"\(filterRef\.current=value,setFilter\(value\)\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\([^;]*\)\}\)"
+        r"\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)",
+    )
     case.assertIn("error?u2(Notice,{action:", default_filter)
     case.assertIn("children:error", default_filter)
-    case.assertIn("u2(DefaultFilterSection,{host})", source)
-    case.assertRegex(rules, r"loadRules\(host\)\.then\([^;]*\)\.catch\(reason=>\{active&&setError\([^;]*\)\}\)\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)")
+    case.assertRegex(
+        rules,
+        r"setLoading\(!0\),setError\(void 0\),loadRules\(host\)"
+        r"\.then\(value=>\{active&&setRules\(value\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\([^;]*\)\}\)"
+        r"\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)",
+    )
     case.assertIn("error?u2(Notice,{action:", rules)
     case.assertIn("children:error", rules)
     case.assertIn("let reload=async()=>{setRules(await loadRules(host))}", rules)
@@ -77,8 +90,16 @@ def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str
     for start, end in handlers:
         handler_source = frontend_section(case, mutations, start, end)
         case.assertIn("await refreshRules(reload,setError,", handler_source)
-    case.assertIn("loadCaStatus(host).then(value=>{active&&setStatus(value)}).catch(reason=>{active&&setError(", ca_model)
+    case.assertRegex(
+        ca_model,
+        r"setBusy\(!0\),setError\(void 0\),loadCaStatus\(host\)"
+        r"\.then\(value=>\{active&&setStatus\(value\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\([^;]*\)\}\)"
+        r"\.finally\(\(\)=>\{active&&setBusy\(!1\)\}\)",
+    )
     case.assertIn("u2(CaError,{model})", ca_section)
+    for section in ("DefaultFilterSection", "CaSection", "RulesSection"):
+        case.assertIn(f"u2({section},{{host}})", settings_page)
     for setter in ("setFilter", "setRules", "setStatus"):
         for cleared_value in ("void 0", "null", "undefined", "[]"):
             case.assertNotIn(f"{setter}({cleared_value})", source)
