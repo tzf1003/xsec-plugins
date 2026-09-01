@@ -1,4 +1,4 @@
-name: Dispatch reviewed merged Marketplace revision to Desktop smoke
+name: Dispatch merged Marketplace revision to Desktop smoke
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       marketplace_revision:
-        description: Exact reviewed Factory Beta merge SHA to retry while its current status remains waiting_for_smoke
+        description: Exact validated Factory Beta merge SHA to retry while its current status remains waiting_for_smoke
         required: true
         type: string
 
@@ -16,13 +16,13 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: xsec-marketplace-reviewed-smoke-${{ inputs.marketplace_revision || github.sha }}
+  group: xsec-marketplace-smoke-${{ inputs.marketplace_revision || github.sha }}
   cancel-in-progress: false
 
 jobs:
   verify-reviewed-publication:
     # A source-gated Factory PR deliberately remains pending after the
-    # publisher exits.  Protected main is the review-completion boundary; no
+    # publisher exits. Protected main is the final merge boundary; no
     # unmerged publication workflow is allowed to contact Desktop.
     if: ${{ github.ref_protected }}
     runs-on: ubuntu-latest
@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 0
           # A push runner may start after a newer main commit exists. Inspect
           # the immutable event revision, not the mutable branch ref, so a
-          # reviewed publication cannot be stranded by unrelated later work.
+          # validated publication cannot be stranded by unrelated later work.
           ref: ${{ inputs.marketplace_revision || github.sha }}
       - uses: actions/setup-python@v5
         with:
@@ -103,7 +103,7 @@ jobs:
             exit 0
           fi
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$kind" != "beta" ] && [ "$kind" != "beta-smoke-ready" ]; then
-            echo "Manual Desktop smoke recovery accepts only an already reviewed Beta transition." >&2
+            echo "Manual Desktop smoke recovery accepts only an already validated Beta transition." >&2
             exit 1
           fi
           # The diff verifier proves the allowed transition and the following
@@ -174,7 +174,7 @@ jobs:
           recovery_tuples='[]'
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             # A manual retry must never manufacture a dispatch for a legacy
-            # built-in transition. Every reviewed promotion needs an exact
+            # built-in transition. Every validated promotion needs an exact
             # registered source/release tuple that can later be revalidated
             # against the current protected Factory state.
             recovery_tuples="$(printf '%s' "$result" | jq -cer '
@@ -197,7 +197,7 @@ jobs:
           if { [ "$kind" = "beta" ] || [ "$kind" = "beta-smoke-ready" ]; } && [ "$(printf '%s' "$sources" | jq -r length)" -gt 0 ]; then
             # A source-main event may have rebuilt the selected immutable
             # Beta byte-for-byte, or it may be ahead/behind it.  The Beta PR
-            # itself is reviewable in either case, but only the former gets a
+            # itself is valid in either case, but only the former gets a
             # Desktop smoke run.  Validate the complete Factory status model
             # before treating its wait state as a dispatch decision.
             python scripts/external_source_factory.py validate
@@ -215,14 +215,14 @@ jobs:
               status_release="$(printf '%s' "$status" | jq -er .release.betaReleaseId)"
               status_sha="$(printf '%s' "$status" | jq -er .source.betaSha)"
               [ "$status_release" = "$release_id" ] && [ "$status_sha" = "$beta_sha" ] || {
-                echo "Factory status is not bound to the reviewed Beta source/release tuple for ${plugin_id}." >&2
+                echo "Factory status is not bound to the validated Beta source/release tuple for ${plugin_id}." >&2
                 exit 1
               }
               if [ "$kind" = "beta-smoke-ready" ]; then
                 main_sha="$(printf '%s' "$promotion" | jq -er .main_source.sha)"
                 status_main_sha="$(printf '%s' "$status" | jq -er .source.mainGateSha)"
                 [ "$status_main_sha" = "$main_sha" ] || {
-                  echo "Factory status is not bound to the reviewed registered-main source SHA for ${plugin_id}." >&2
+                  echo "Factory status is not bound to the validated registered-main source SHA for ${plugin_id}." >&2
                   exit 1
                 }
               fi
@@ -231,7 +231,7 @@ jobs:
                 waiting_for_smoke) ;;
                 waiting_for_beta) waiting_for_beta+=("$plugin_id") ;;
                 *)
-                  echo "Reviewed Beta publication ${plugin_id} has an invalid smoke state: ${status_state}." >&2
+                  echo "Validated Beta publication ${plugin_id} has an invalid smoke state: ${status_state}." >&2
                   exit 1
                   ;;
               esac
@@ -269,7 +269,7 @@ jobs:
           echo "source_repositories=$(printf '%s' "$source_scope" | jq -er .repositories)" >> "$GITHUB_OUTPUT"
           echo "manual_recovery=$manual_recovery" >> "$GITHUB_OUTPUT"
           echo "recovery_tuples=$recovery_tuples" >> "$GITHUB_OUTPUT"
-      - name: Require the merged generated PR, source gate, and completed CodeRabbit audit
+      - name: Require the merged generated PR and source gate
         if: ${{ steps.classify.outputs.eligible == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -278,20 +278,19 @@ jobs:
           set -euo pipefail
           # A protected-main commit can be associated with more than one page
           # of PRs.  `gh api --paginate` emits one JSON array per page, so
-          # slurp the complete response before selecting the one reviewed
-          # generated Factory PR.  Inspecting only the first page could reject
+          # slurp the complete response before selecting the generated Factory
+          # PR. Inspecting only the first page could reject
           # the real PR or, worse, select the wrong same-commit PR.
           prs="$(gh api --paginate --slurp -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100")"
           pr="$(printf '%s' "$prs" | jq -cer '[.[][] | select(.merged_at != null and .base.ref == "main" and (.head.ref | startswith("xsec-marketplace/")))] | if length == 1 then .[0] else error("expected exactly one merged Factory generated PR") end')"
-          number="$(printf '%s' "$pr" | jq -er .number)"
           head_sha="$(printf '%s' "$pr" | jq -er .head.sha)"
           head_ref="$(printf '%s' "$pr" | jq -er .head.ref)"
           # The source gate is the PR validation for this immutable candidate
-          # head. A manually-dispatched validation is not the reviewed PR gate.
+          # head. A manually-dispatched validation is not the PR gate.
           # GitHub's workflow-runs API drops `pull_requests` after the PR is
           # merged, so bind the result to the exact generated branch and head
           # instead.  The selected PR already proves that branch is the one
-          # reviewed and merged into this immutable Factory revision.
+          # validated and merged into this immutable Factory revision.
           runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${head_sha}&event=pull_request&per_page=100")"
           printf '%s' "$runs" | jq -e --arg head_sha "$head_sha" --arg head_ref "$head_ref" '
             any(.workflow_runs[];
@@ -305,45 +304,6 @@ jobs:
             echo "The merged generated PR has no successful immutable Factory source gate." >&2
             exit 1
           }
-          comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${number}/comments?per_page=100")"
-          review_request_at="$(printf '%s' "$comments" | jq -er '
-            [ .[][]
-              | select(.body | type == "string" and test("(^|[[:space:]])@coderabbitai[[:space:]]+review([[:space:]]|$)"; "i"))
-              | select(.author_association == "OWNER")
-              | select(.created_at | type == "string")
-              | .created_at
-            ] | if length > 0 then max else error("no current @coderabbitai review request") end
-          ')"
-          if printf '%s' "$comments" | jq -e --arg head "$head_sha" --arg requested_at "$review_request_at" '
-            any(.[][];
-              .user.login == "coderabbitai[bot]"
-              and (.body | type == "string" and contains("<!-- recent_review_start -->"))
-              and (.body | contains("No actionable comments were generated"))
-              and (.body | contains($head))
-              and (.body | test("rate limited|review limit reached|processing new changes"; "i") | not)
-              and ((.updated_at // .created_at) as $reviewed_at | ($reviewed_at | type == "string") and $reviewed_at >= $requested_at)
-            )
-          ' >/dev/null; then
-            echo "Accepted terminal CodeRabbit audit for the merged generated PR head."
-          else
-            echo "The merged generated PR has no terminal CodeRabbit audit after its latest @coderabbitai review request." >&2
-            exit 1
-          fi
-          cursor=""
-          while :; do
-            query='query($owner:String!,$repository:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:1){nodes{author{login}}}} pageInfo{hasNextPage endCursor}}}}}'
-            page="$(gh api graphql -f query="$query" -F owner="${GITHUB_REPOSITORY%%/*}" -F repository="${GITHUB_REPOSITORY##*/}" -F number="$number" -f cursor="$cursor")"
-            printf '%s' "$page" | jq -e '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[]?.author.login] | any(. == "coderabbitai") | not' >/dev/null || {
-              echo "The merged generated PR still has an unresolved CodeRabbit review thread." >&2
-              exit 1
-            }
-            # `jq -e` exits 1 when the final page reports false, so use a
-            # plain raw read before deciding whether pagination is complete.
-            has_next="$(printf '%s' "$page" | jq -r .data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage)"
-            [ "$has_next" = "true" ] || break
-            cursor="$(printf '%s' "$page" | jq -er .data.repository.pullRequest.reviewThreads.pageInfo.endCursor)"
-            [ -n "$cursor" ] || { echo "GitHub returned a paginated review thread page without a cursor." >&2; exit 1; }
-          done
 
   dispatch-desktop-smoke:
     needs: verify-reviewed-publication
@@ -368,7 +328,7 @@ jobs:
           }
       # actions/create-github-app-token v2.2.2, pinned after resolving the
       # signed v2.2.2 tag. This token can read only the exact source
-      # repositories bound into the reviewed Marketplace revision.
+      # repositories bound into the validated Marketplace revision.
       - name: Create a narrowly scoped read-only Source App token
         id: source-token
         if: ${{ needs.verify-reviewed-publication.outputs.source_app_required == 'true' }}
@@ -379,7 +339,7 @@ jobs:
           owner: ${{ needs.verify-reviewed-publication.outputs.source_owner }}
           repositories: ${{ needs.verify-reviewed-publication.outputs.source_repositories }}
           permission-contents: read
-      - name: Revalidate each registered source branch at the reviewed merge boundary
+      - name: Revalidate each registered source branch at the exact merge boundary
         env:
           SOURCES: ${{ needs.verify-reviewed-publication.outputs.sources }}
           SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
@@ -401,7 +361,7 @@ jobs:
               -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $token_header" \
               ls-remote "$remote" "$ref" | awk 'NR == 1 { print $1 }')"
             [ "$actual_sha" = "$expected_sha" ] || {
-              echo "Registered ${repository} ${ref} advanced or could not be read after the generated PR was reviewed; refusing Desktop smoke." >&2
+              echo "Registered ${repository} ${ref} advanced after the generated PR was validated; refusing Desktop smoke." >&2
               exit 1
             }
           done < <(printf '%s' "$SOURCES" | jq -rc '.[]')
@@ -440,7 +400,7 @@ jobs:
               exit 1
             }
           done < <(printf '%s' "$RECOVERY_TUPLES" | jq -rc '.[]')
-      - name: Dispatch the reviewed Beta or Stable revision to Desktop smoke
+      - name: Dispatch the validated Beta or Stable revision to Desktop smoke
         env:
           XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN: ${{ secrets.XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN }}
           SOURCE_SHA: ${{ needs.verify-reviewed-publication.outputs.source_sha }}

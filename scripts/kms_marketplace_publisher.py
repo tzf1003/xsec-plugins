@@ -309,7 +309,7 @@ def active_adoption_provenance_documents(root: Path) -> list[MarketplaceDocument
     """Return only adoption documents belonging to active Registry entries.
 
     A pending adoption assertion is deliberately unsigned while it awaits the
-    separately reviewed activation PR.  It must never leak into a normal
+    separately validated activation PR.  It must never leak into a normal
     publish/validate batch, even when an unrelated plugin release happens in
     that interval.  Active assertions still participate in full signature
     verification so an active first-party entry cannot silently lose its KMS

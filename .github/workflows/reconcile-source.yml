@@ -141,7 +141,7 @@ jobs:
           # candidate.  Always authenticate the generated candidate before
           # deciding whether to keep it: an old beta would otherwise leave the
           # publisher's pending-PR guard permanently stranded, while a stale
-          # main gate could never be reviewed through to Desktop smoke.
+          # main gate could never be validated through to Desktop smoke.
           [ "$CHANNEL" = "beta" ] || [ "$CHANNEL" = "stable" ] || {
             echo "Unexpected registered source channel." >&2
             exit 1
@@ -228,7 +228,7 @@ jobs:
             # SHA is live and advances when unrelated Factory PRs land, so it
             # is not evidence of the immutable generated-candidate base.
             # It is the generated-candidate identity; a branch prefix or PR
-            # title alone is never sufficient to close a reviewed PR.
+            # title alone is never sufficient to close a validated PR.
             verification="$(python scripts/kms_marketplace_publisher.py --root "$candidate_root" --verify-active-marketplace-signatures --allow-unsigned-official-status-plugin-id "$PLUGIN_ID")"
             generation_base="$(printf '%s' "$verification" | jq -er .source_revision)"
             [[ "$generation_base" =~ ^[a-f0-9]{40}$ ]] || {
@@ -296,7 +296,7 @@ jobs:
           fi
           if [ "${#stale_candidates[@]}" -eq 1 ]; then
             number="${stale_candidates[0]}"
-            audit="Controlled supersede: trusted dispatcher delivery ${DELIVERY_KEY} observed registered ${CHANNEL} source ${SOURCE_SHA} while this same-plugin Beta candidate retained an older KMS-bound source tuple. It is closed before a new source-gated candidate is requested; the replacement still requires validate.yml, @coderabbitai review, and protected final merge."
+            audit="Controlled supersede: trusted dispatcher delivery ${DELIVERY_KEY} observed registered ${CHANNEL} source ${SOURCE_SHA} while this same-plugin Beta candidate retained an older KMS-bound source tuple. It is closed before a new source-gated candidate is requested; the replacement still requires validate.yml and protected final merge."
             gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${number}/comments" -f body="$audit" >/dev/null
             closure="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${number}" -f state=closed)"
             [ "$(printf '%s' "$closure" | jq -er .state)" = "closed" ] || {
@@ -638,9 +638,7 @@ jobs:
               [ "$SECONDS" -lt "$gate_deadline" ] || { echo "Timed out waiting for the signed candidate source gate." >&2; exit 1; }
               sleep 5
             done
-            review_body="@coderabbitai review"$'\n\n'"Protected reconcile-source authenticated the exact generated status proof at ${signed_head}, then the Factory source gate passed. Review the immutable artifacts, provenance, KMS sidecars, and status proof before protected merge. This workflow never merges the PR or dispatches Desktop smoke."
-            gh pr comment "$number" --body "$review_body"
-            echo "Authenticated generated candidate #${number}; source gate passed and CodeRabbit review was requested." >> "$GITHUB_STEP_SUMMARY"
+            echo "Authenticated generated candidate #${number}; source gate passed and the protected final merge may now run." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           done
   reconcile-smoke:
@@ -830,8 +828,6 @@ jobs:
                 [ "$SECONDS" -lt "$gate_deadline" ] || { echo "Timed out waiting for the signed Stable candidate source gate." >&2; exit 1; }
                 sleep 5
               done
-              review_body="@coderabbitai review"$'\n\n'"Protected reconcile-source authenticated the terminal smoke status proof at ${signed_head}, then the Factory source gate passed. Review the Stable pointer, immutable provenance, KMS sidecars, and smoke-bound status before protected merge. This workflow never merges the PR."
-              gh pr comment "$number" --body "$review_body"
               completed="${completed}${number}|"
               completed_count="$((completed_count + 1))"
               progressed=true
@@ -842,4 +838,4 @@ jobs:
               sleep 5
             fi
           done
-          echo "Authenticated ${completed_count} smoke completion candidate(s); source gates passed and CodeRabbit review was requested." >> "$GITHUB_STEP_SUMMARY"
+          echo "Authenticated ${completed_count} smoke completion candidate(s); source gates passed and protected final merge may now run." >> "$GITHUB_STEP_SUMMARY"

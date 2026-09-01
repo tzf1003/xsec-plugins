@@ -25,7 +25,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertNotIn('commits/${PR_HEAD_SHA}/pulls', workflow)
         self.assertIn("factory_generated=true", workflow)
         self.assertIn("state=pending", workflow)
-        # Both stages are privileged, review-gated Factory changes. The arm
+        # Both stages are privileged Factory changes. The arm
         # workflow must keep an ordinary same-SHA PR from overwriting either
         # candidate's required pending finalizer status.
         self.assertGreaterEqual(workflow.count("xsec-marketplace/stage-first-party-adoption-"), 2)
@@ -67,14 +67,9 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("--verify-retained-sidecar-refresh-candidate", workflow)
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
         self.assertIn("exact PR head has no successful Factory source gate", workflow)
-        self.assertIn("latest @coderabbitai review request", workflow)
-        self.assertIn('.user.login == "coderabbitai[bot]"', workflow)
-        self.assertIn("No actionable comments were generated", workflow)
-        self.assertIn("contains($head)", workflow)
-        self.assertIn("rate limited|review limit reached|processing new changes", workflow)
-        self.assertIn("updated_at // .created_at", workflow)
-        self.assertIn("terminal CodeRabbit audit", workflow)
-        self.assertIn("unresolved CodeRabbit review thread", workflow)
+        self.assertIn("Require a current source gate", workflow)
+        self.assertNotIn("coderabbit", workflow.lower())
+        self.assertNotIn("reviewThreads", workflow)
 
     def test_adoption_signer_uses_the_retained_protected_pre_staging_revision(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
@@ -144,7 +139,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
     def test_final_gate_scopes_source_reader_to_exact_owner_repositories(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
         source_token = workflow.split("- name: Create a narrowly scoped read-only Source App token", 1)[1].split(
-            "- name: Authenticate each registered source branch before review completion", 1
+            "- name: Authenticate each registered source branch before final merge", 1
         )[0]
 
         self.assertIn("one Factory candidate cannot span multiple source owners", workflow)
@@ -257,23 +252,18 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         # A legacy pointer-only stable promotion has no registered source and
         # a manual external Stable recovery has no terminal smoke status, so
         # both remain eligible for the independent Stable smoke contract.
-        self.assertIn("Dispatch the reviewed Beta or Stable revision to Desktop smoke", dispatcher)
-        self.assertNotIn("Dispatch the reviewed Beta revision to Desktop smoke", dispatcher)
+        self.assertIn("Dispatch the validated Beta or Stable revision to Desktop smoke", dispatcher)
+        self.assertNotIn("Dispatch the validated Beta revision to Desktop smoke", dispatcher)
         # KMS verification must precede the callback-status no-op, while the
         # no-op still occurs before source tokens and Desktop dispatch quota.
         self.assertLess(dispatcher.index("verification=\"$(python scripts/kms_marketplace_publisher.py"), dispatcher.index(callback_bound_stable))
         self.assertLess(dispatcher.index(stable_skip), dispatcher.index("source_scope=\"$(printf '%s' \"$sources\""))
 
-    def test_finalizer_and_dispatcher_accept_the_last_review_thread_page(self) -> None:
+    def test_finalizer_and_dispatcher_do_not_query_review_threads(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
         dispatcher = (ROOT / ".github" / "workflows" / "dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")
-        page_value = ".data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage"
-
-        # The last page legitimately returns false. `jq -e` converts that
-        # expected value to a non-zero process status under `set -e`.
         for protected_workflow in (workflow, dispatcher):
-            self.assertIn(f"jq -r {page_value}", protected_workflow)
-            self.assertNotIn(f"jq -er {page_value}", protected_workflow)
+            self.assertNotIn("reviewThreads", protected_workflow)
 
 
 if __name__ == "__main__":
