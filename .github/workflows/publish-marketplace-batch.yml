@@ -6,9 +6,13 @@ on:
       delivery_key:
         required: true
         type: string
-      event_plugin_id:
+      trigger_label:
         required: true
         type: string
+    outputs:
+      pull_number:
+        description: Generated Factory PR number; empty when the current batch is unchanged
+        value: ${{ jobs.build-sign-and-open-pr.outputs.pull_number }}
 
 permissions:
   contents: write
@@ -23,6 +27,8 @@ jobs:
   build-sign-and-open-pr:
     runs-on: ubuntu-latest
     environment: production
+    outputs:
+      pull_number: ${{ steps.publish.outputs.pull_number }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -182,13 +188,16 @@ jobs:
           python scripts/external_source_factory.py validate
       - name: Create one signed generated Factory PR
         if: ${{ steps.decision.outputs.publish == 'true' }}
+        id: publish
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
           DELIVERY_KEY: ${{ inputs.delivery_key }}
-          EVENT_PLUGIN_ID: ${{ inputs.event_plugin_id }}
+          TRIGGER_LABEL: ${{ inputs.trigger_label }}
         run: |
           set -euo pipefail
           [ -n "$GH_TOKEN" ] || { echo "XSEC_MARKETPLACE_PUBLISH_TOKEN is not configured." >&2; exit 1; }
+          [[ "$DELIVERY_KEY" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$ ]] || { echo "Factory delivery key is invalid." >&2; exit 1; }
+          [[ "$TRIGGER_LABEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$ ]] || { echo "Factory trigger label is invalid." >&2; exit 1; }
           git add -A .agents/plugins .xsec-factory plugins
           git diff --cached --quiet && { echo "Current batch was not staged." >&2; exit 1; }
           git config user.name "xsec-marketplace[bot]"
@@ -197,8 +206,9 @@ jobs:
           branch="xsec-marketplace/batch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
-          body="Generated from Cloud delivery ${DELIVERY_KEY} after reading all ten active Registry source heads. This PR contains one immutable, fully KMS-signed Factory batch. It is automatically source-gated and final-merged only while every recorded beta/main ref remains exact. Trigger plugin: ${EVENT_PLUGIN_ID}."
+          body="Generated from Factory trigger ${TRIGGER_LABEL} with delivery ${DELIVERY_KEY} after reading all ten active Registry source heads. This PR contains one immutable, fully KMS-signed Factory batch. It is automatically source-gated and final-merged only while every recorded beta/main ref remains exact."
           pull_url="$(gh pr create --base main --head "$branch" --title "chore: synchronize Marketplace source batch" --body "$body")"
           pull_number="${pull_url##*/}"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated Factory PR number is invalid." >&2; exit 1; }
           gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pull_number}/comments" -f body='@coderabbitai review' >/dev/null
+          echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"

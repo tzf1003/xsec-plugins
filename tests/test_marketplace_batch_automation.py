@@ -12,6 +12,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 BATCH_RECONCILE = ROOT / ".github" / "workflows" / "reconcile-marketplace-batch.yml"
 BATCH_PUBLISH = ROOT / ".github" / "workflows" / "publish-marketplace-batch.yml"
+STALE_BATCH_RECOVERY = ROOT / ".github" / "workflows" / "rebuild-stale-marketplace-batch.yml"
 AUTO_FINALIZER = ROOT / ".github" / "workflows" / "auto-finalize-generated-marketplace-pr.yml"
 FINALIZER = ROOT / ".github" / "workflows" / "final-merge-generated-marketplace-pr.yml"
 SOURCE_PREFLIGHT = ROOT / ".github" / "workflows" / "first-party-source-preflight.yml"
@@ -78,6 +79,35 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             workflow["jobs"]["build-current-batch"]["permissions"],
             {"contents": "write", "id-token": "write", "pull-requests": "write"},
         )
+
+    def test_stale_signed_batch_is_rebuilt_and_superseded_automatically(self) -> None:
+        recovery = STALE_BATCH_RECOVERY.read_text(encoding="utf-8")
+        publisher = BATCH_PUBLISH.read_text(encoding="utf-8")
+
+        for rule in (
+            "name: Rebuild stale generated Marketplace batch",
+            "branches: [main]",
+            "group: xsec-marketplace-stale-batch-recovery",
+            "cancel-in-progress: false",
+            'git/ref/heads/main" --jq .object.sha',
+            'test("^xsec-marketplace/batch-[0-9]+-[0-9]+$")',
+            "source-gate source-freshness-gate",
+            'creator.login == "coderabbitai[bot]"',
+            "reviewThreads(first:100,after:$endCursor)",
+            "Verify the signed stale batch as data",
+            "--verify-active-marketplace-signatures",
+            "python scripts/external_source_factory.py --root \"$candidate\" validate",
+            "uses: ./.github/workflows/publish-marketplace-batch.yml",
+            "factory-stale-batch:",
+            "Close unchanged stale batches replaced by the new candidate",
+            'gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${old_number}" -f state=closed',
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, recovery)
+        self.assertIn("trigger_label:", publisher)
+        self.assertIn("outputs:\n      pull_number:", publisher)
+        self.assertIn('Factory trigger label is invalid.', publisher)
+        self.assertIn('echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"', publisher)
 
     def test_only_successful_exact_generated_prs_enter_the_automatic_finalizer(self) -> None:
         workflow = AUTO_FINALIZER.read_text(encoding="utf-8")

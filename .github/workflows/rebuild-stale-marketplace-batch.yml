@@ -1,0 +1,211 @@
+name: Rebuild stale generated Marketplace batch
+
+on:
+  push:
+    branches: [main]
+  pull_request_review:
+    types: [submitted]
+  status:
+  workflow_run:
+    workflows: [Validate marketplace, Verify generated Marketplace publication merge]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: xsec-marketplace-stale-batch-recovery
+  cancel-in-progress: false
+
+jobs:
+  select-stale-batch:
+    if: >-
+      (github.event_name == 'push' && github.ref_protected) ||
+      (github.event_name == 'pull_request_review' && github.event.pull_request.state == 'open') ||
+      (github.event_name == 'status' && github.event.sender.login == 'coderabbitai[bot]' && github.event.sender.type == 'Bot' && github.event.context == 'CodeRabbit' && github.event.state == 'success') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      eligible: ${{ steps.candidate.outputs.eligible }}
+      pull_number: ${{ steps.candidate.outputs.pull_number }}
+      head_ref: ${{ steps.candidate.outputs.head_ref }}
+      head_sha: ${{ steps.candidate.outputs.head_sha }}
+      stale_batches: ${{ steps.candidate.outputs.stale_batches }}
+    steps:
+      - name: Select one reviewed stale Factory batch candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pulls="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          [[ "$main_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Protected Factory main revision is invalid." >&2; exit 1; }
+          candidates="$(printf '%s' "$pulls" | jq -cer --arg repository "$GITHUB_REPOSITORY" '
+            [.[][]
+              | select(.head.repo.full_name == $repository)
+              | select(.head.ref | test("^xsec-marketplace/batch-[0-9]+-[0-9]+$"))
+            ]
+          ')"
+          stale_batches='[]'
+          while IFS= read -r candidate; do
+            number="$(printf '%s' "$candidate" | jq -er .number)"
+            head_sha="$(printf '%s' "$candidate" | jq -er .head.sha)"
+            [[ "$number" =~ ^[1-9][0-9]*$ && "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "Generated Marketplace batch has malformed metadata." >&2
+              exit 1
+            }
+            comparison="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${head_sha}...${main_sha}")"
+            behind_by="$(printf '%s' "$comparison" | jq -er '.behind_by | if type == "number" and floor == . and . >= 0 then . else error("invalid comparison") end')"
+            if [ "$behind_by" -gt 0 ]; then
+              stale_batches="$(printf '%s' "$stale_batches" | jq -cer --argjson candidate "$candidate" '. + [$candidate]')"
+            fi
+          done < <(printf '%s' "$candidates" | jq -rc '.[]')
+          stale_count="$(printf '%s' "$stale_batches" | jq -er length)"
+          if [ "$stale_count" = "0" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          latest="$(printf '%s' "$stale_batches" | jq -cer 'sort_by(.created_at) | last')"
+          pull_number="$(printf '%s' "$latest" | jq -er .number)"
+          head_ref="$(printf '%s' "$latest" | jq -er .head.ref)"
+          head_sha="$(printf '%s' "$latest" | jq -er .head.sha)"
+          checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
+          for name in source-gate source-freshness-gate; do
+            if ! printf '%s' "$checks" | jq -e --arg name "$name" '
+              any(.check_runs[]?; .name == $name and .status == "completed" and .conclusion == "success")
+            ' >/dev/null; then
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/statuses?per_page=100")"
+          if ! printf '%s' "$statuses" | jq -e '
+            [.[][] | select(.context == "CodeRabbit" and .creator.login == "coderabbitai[bot]" and .creator.type == "Bot")]
+            | if length > 0 then sort_by(.created_at) | last | .state == "success" else false end
+          ' >/dev/null; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # shellcheck disable=SC2016
+          threads="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          if ! printf '%s' "$threads" | jq -e '
+            (type == "array" and length > 0)
+            and all(.[]?; .data.repository.pullRequest.reviewThreads.nodes | type == "array")
+            and (.[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
+            and all(.[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
+          ' >/dev/null; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "eligible=true"
+            echo "pull_number=$pull_number"
+            echo "head_ref=$head_ref"
+            echo "head_sha=$head_sha"
+            echo "stale_batches=$stale_batches"
+          } >> "$GITHUB_OUTPUT"
+
+  verify-stale-batch:
+    needs: select-stale-batch
+    if: needs.select-stale-batch.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      verified: ${{ steps.verify.outputs.verified }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify the signed stale batch as data
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_NUMBER: ${{ needs.select-stale-batch.outputs.pull_number }}
+          HEAD_REF: ${{ needs.select-stale-batch.outputs.head_ref }}
+          HEAD_SHA: ${{ needs.select-stale-batch.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          live="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}")"
+          printf '%s' "$live" | jq -e --arg ref "$HEAD_REF" --arg sha "$HEAD_SHA" '
+            .state == "open" and .head.repo.full_name == $ENV.GITHUB_REPOSITORY and .head.ref == $ref and .head.sha == $sha
+          ' >/dev/null || { echo "Generated Marketplace batch changed before recovery." >&2; exit 1; }
+          git fetch --no-tags origin "pull/${PULL_NUMBER}/head:refs/xsec-stale-batch/${PULL_NUMBER}"
+          [ "$(git rev-parse "refs/xsec-stale-batch/${PULL_NUMBER}")" = "$HEAD_SHA" ] || {
+            echo "Fetched Marketplace batch does not match its live head." >&2
+            exit 1
+          }
+          candidate="$RUNNER_TEMP/xsec-stale-batch"
+          git worktree add --detach "$candidate" "$HEAD_SHA"
+          base="$(git merge-base "$HEAD_SHA" origin/main)"
+          [[ "$base" =~ ^[a-f0-9]{40}$ ]] || { echo "Stale Marketplace batch has no Factory merge base." >&2; exit 1; }
+          git diff --quiet "$base" "$HEAD_SHA" && { echo "Stale Marketplace batch has no transition." >&2; exit 1; }
+          transition="$(python scripts/verify_merged_stable_promotion.py --root "$candidate" --before "$base" --after "$HEAD_SHA" --classify)"
+          printf '%s' "$transition" | jq -e '
+            (.kind == "beta" or .kind == "beta-smoke-ready")
+            and (.promotions | type == "array" and length > 0 and length <= 10)
+            and all(.promotions[]; (.plugin_id | type) == "string" and (.source | type) == "object")
+          ' >/dev/null || { echo "Stale candidate is not a signed Marketplace batch transition." >&2; exit 1; }
+          signatures="$(python scripts/kms_marketplace_publisher.py --root "$candidate" --verify-active-marketplace-signatures)"
+          source_revision="$(printf '%s' "$signatures" | jq -er .source_revision)"
+          git -C "$candidate" merge-base --is-ancestor "$source_revision" "$HEAD_SHA" || {
+            echo "Stale batch KMS source revision is not retained by its exact head." >&2
+            exit 1
+          }
+          python scripts/external_source_factory.py --root "$candidate" validate
+          git worktree remove --force "$candidate"
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+
+  rebuild-current-batch:
+    needs: [select-stale-batch, verify-stale-batch]
+    if: needs.verify-stale-batch.outputs.verified == 'true'
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/publish-marketplace-batch.yml
+    with:
+      delivery_key: factory-stale-batch:${{ needs.select-stale-batch.outputs.pull_number }}:${{ needs.select-stale-batch.outputs.head_sha }}
+      trigger_label: stale-candidate:${{ needs.select-stale-batch.outputs.pull_number }}:${{ needs.select-stale-batch.outputs.head_sha }}
+    secrets: inherit
+
+  close-superseded-batch:
+    needs: [select-stale-batch, rebuild-current-batch]
+    if: >-
+      needs.rebuild-current-batch.result == 'success' &&
+      needs.rebuild-current-batch.outputs.pull_number != ''
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Close unchanged stale batches replaced by the new candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STALE_BATCHES: ${{ needs.select-stale-batch.outputs.stale_batches }}
+          NEW_PULL_NUMBER: ${{ needs.rebuild-current-batch.outputs.pull_number }}
+        run: |
+          set -euo pipefail
+          new="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${NEW_PULL_NUMBER}")"
+          printf '%s' "$new" | jq -e '
+            .state == "open" and .base.ref == "main" and .head.repo.full_name == $ENV.GITHUB_REPOSITORY
+          ' >/dev/null || { echo "Replacement candidate is not an open Factory PR." >&2; exit 1; }
+          while IFS= read -r stale; do
+            old_number="$(printf '%s' "$stale" | jq -er .number)"
+            old_ref="$(printf '%s' "$stale" | jq -er .head.ref)"
+            old_sha="$(printf '%s' "$stale" | jq -er .head.sha)"
+            [ "$old_number" != "$NEW_PULL_NUMBER" ] || { echo "Replacement candidate must be distinct." >&2; exit 1; }
+            old="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${old_number}")"
+            if ! printf '%s' "$old" | jq -e --arg ref "$old_ref" --arg sha "$old_sha" '
+              .state == "open" and .head.repo.full_name == $ENV.GITHUB_REPOSITORY and .head.ref == $ref and .head.sha == $sha
+            ' >/dev/null; then
+              continue
+            fi
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${old_number}" -f state=closed >/dev/null
+          done < <(printf '%s' "$STALE_BATCHES" | jq -rc '.[]')

@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       delivery_key: ${{ steps.request.outputs.delivery_key }}
-      event_plugin_id: ${{ steps.request.outputs.plugin_id }}
+      trigger_label: source-event:${{ steps.request.outputs.plugin_id }}
     steps:
       - name: Require the dedicated Cloud dispatcher App and protected Factory main
         env:
@@ -91,5 +91,5 @@ jobs:
     uses: ./.github/workflows/publish-marketplace-batch.yml
     with:
       delivery_key: ${{ needs.validate-source-event.outputs.delivery_key }}
-      event_plugin_id: ${{ needs.validate-source-event.outputs.event_plugin_id }}
+      trigger_label: source-event:${{ needs.validate-source-event.outputs.event_plugin_id }}
     secrets: inherit

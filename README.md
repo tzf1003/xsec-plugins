@@ -167,6 +167,13 @@ The protected-main dispatcher sends the Desktop Beta smoke; its success enters
 the existing protected Stable path automatically. No maintainer needs to
 create, approve or manually merge a per-plugin Factory PR in this normal path.
 
+If protected Factory `main` advances while a signed batch is under review, the
+trusted recovery workflow rechecks that exact candidate's source gates,
+CodeRabbit status, resolved review threads, transition shape, and KMS proofs.
+It then rebuilds from the current source heads and closes the original PR only
+after the replacement signed candidate exists. The replacement follows the
+same source gate, review, final-merge, and Desktop smoke path.
+
 The older `Publish immutable marketplace beta release` workflow remains for
 explicit legacy/recovery transitions. It preserves every existing record and
 artifact, appends a new record only when the current deterministic package is

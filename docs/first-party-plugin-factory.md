@@ -191,6 +191,11 @@ slot 后，批处理再次读取全部 10 个活跃来源的 `beta` 与 `main` e
 Beta source、一次性重建 release/status/provenance，并对完整候选请求 KMS sidecar。晚到或排队的
 单个事件不会覆盖较新的 Beta：它只会促使当前全局 source snapshot 被重新计算。
 
+若候选审查期间受保护 Factory `main` 前进，`rebuild-stale-marketplace-batch.yml` 只会接受同仓库的
+`xsec-marketplace/batch-*` 精确头，并复核 source gate、CodeRabbit bot 状态、全部已解决的 review
+thread、候选 transition 与 KMS proof。它从当前 10 个来源头生成替代候选；替代 PR 创建成功后，才以
+精确 PR number、branch 与 head SHA 复读并关闭旧候选。该恢复不移动 channel pointer，也不直接合并候选。
+
 每个 Beta reconcile 都从只读 Source App 的同一固定 HTTPS fetch 中 materialize 当前注册的
 `main`，并确定性重建当前 Beta releaseId。若两者不一致，Factory 只把已 KMS 绑定到该 Beta
 provenance 的可读状态置为 `waiting_for_beta`：它不会请求 Desktop smoke、调用 Stable publisher、
