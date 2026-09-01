@@ -207,17 +207,17 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
                     jwks_bytes=TEST_KMS_JWKS,
                 )
 
-    def test_pinned_issuer_jwks_uses_one_snapshot_per_verifier_process(self) -> None:
+    def test_active_sidecar_batch_uses_one_real_issuer_snapshot(self) -> None:
         publisher.download_pinned_issuer_jwks.cache_clear()
         self.addCleanup(publisher.download_pinned_issuer_jwks.cache_clear)
-        with patch.object(
-            publisher,
-            "_download_pinned_issuer_jwks",
-            return_value=TEST_KMS_JWKS,
-        ) as download:
-            self.assertEqual(publisher.download_pinned_issuer_jwks(), TEST_KMS_JWKS)
-            self.assertEqual(publisher.download_pinned_issuer_jwks(), TEST_KMS_JWKS)
-        download.assert_called_once_with()
+        documents = publisher.documents_for_active_signature_verification(ROOT)
+        self.assertGreater(len(documents), 1)
+        for document in documents:
+            sidecar = publisher.sidecar_path_for(document)
+            publisher.verify_historical_sidecar_signature(sidecar.read_bytes(), document)
+        cache_info = publisher.download_pinned_issuer_jwks.cache_info()
+        self.assertEqual(cache_info.misses, 1)
+        self.assertEqual(cache_info.hits, len(documents) - 1)
 
     def test_retained_historical_sidecar_verifies_detached_rfc_7797_jws(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-kms-history-") as directory:
