@@ -6,6 +6,8 @@ import json
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BATCH_RECONCILE = ROOT / ".github" / "workflows" / "reconcile-marketplace-batch.yml"
@@ -61,18 +63,14 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
                 self.assertIn(rule, publisher)
 
     def test_batch_caller_grants_write_scope_only_to_the_publisher(self) -> None:
-        workflow = BATCH_RECONCILE.read_text(encoding="utf-8")
-        top_level = workflow.split("concurrency:", maxsplit=1)[0]
-        publisher_job = workflow.split("  build-current-batch:", maxsplit=1)[1]
+        """Keep write authority on the reusable publication job."""
 
-        self.assertIn("permissions:\n  actions: read\n  contents: read", top_level)
-        self.assertNotIn("id-token: write", top_level)
-        self.assertIn(
-            "permissions:\n"
-            "      contents: write\n"
-            "      id-token: write\n"
-            "      pull-requests: write",
-            publisher_job,
+        workflow = yaml.safe_load(BATCH_RECONCILE.read_text(encoding="utf-8"))
+
+        self.assertEqual(workflow["permissions"], {"actions": "read", "contents": "read"})
+        self.assertEqual(
+            workflow["jobs"]["build-current-batch"]["permissions"],
+            {"contents": "write", "id-token": "write", "pull-requests": "write"},
         )
 
     def test_only_successful_exact_generated_prs_enter_the_automatic_finalizer(self) -> None:
