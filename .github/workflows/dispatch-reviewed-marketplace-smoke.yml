@@ -354,12 +354,10 @@ jobs:
           # the real PR or, worse, select the wrong same-commit PR.
           prs="$(gh api --paginate --slurp -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100")"
           pr="$(printf '%s' "$prs" | jq -cer --arg browser_recovery "$BROWSER_RECOVERY" '
-            [.[][] | select(
-              .merged_at != null
-              and .base.ref == "main"
+            [.[][] | select(.merged_at != null and .base.ref == "main"
               and ($browser_recovery == "true" or (.head.ref | startswith("xsec-marketplace/")))
             )]
-            | if length == 1 then .[0] else error("expected exactly one merged Factory publication PR") end
+            | if length == 1 then .[0] else error("expected exactly one merged Factory generated PR") end
           ')"
           head_sha="$(printf '%s' "$pr" | jq -er .head.sha)"
           head_ref="$(printf '%s' "$pr" | jq -er .head.ref)"
