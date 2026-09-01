@@ -1833,7 +1833,7 @@ def frontend_returned_helper_lifecycle_methods(
     seen: set[str] = set()
     while pending:
         name = pending.pop()
-        if name in seen or name not in blocks:
+        if name in seen or name not in blocks or lexical_declaration_shadows_helper(tokens, name):
             continue
         seen.add(name)
         body = frontend_named_function_body(tokens, blocks[name])
@@ -1877,7 +1877,7 @@ def matching_opening_delimiter(
 
 
 def frontend_destructures_request_from_host(tokens: list[tuple[str, str]]) -> bool:
-    """Reject aliases that detach request from the reviewed broker."""
+    """Reject aliases that detach any member from the reviewed broker."""
 
     for closing, token in enumerate(tokens[:-2]):
         if token != ("punctuation", "}"):
@@ -1888,10 +1888,7 @@ def frontend_destructures_request_from_host(tokens: list[tuple[str, str]]) -> bo
         ]:
             continue
         opening = matching_opening_delimiter(tokens, closing, "{", "}")
-        if opening is None:
-            continue
-        bound = tokens[opening + 1:closing]
-        if any(kind in {"identifier", "string"} and value == "request" for kind, value in bound):
+        if opening is not None:
             return True
     return False
 
@@ -2042,7 +2039,10 @@ def frontend_arrow_is_event_assignment(
     for cursor in range(arrow - 1, max(-1, arrow - 12), -1):
         if tokens[cursor] != ("punctuation", "="):
             continue
-        return cursor >= 2 and tokens[cursor - 2] == ("punctuation", ".")
+        if cursor < 2 or tokens[cursor - 2] != ("punctuation", "."):
+            return False
+        property_name = tokens[cursor - 1]
+        return property_name[0] == "identifier" and property_name[1].lower().startswith("on")
     return False
 
 
@@ -2089,6 +2089,8 @@ def frontend_arrow_is_registered(
     if frontend_arrow_is_immediately_invoked(tokens, arrow, body):
         return True
     if not binding:
+        return False
+    if frontend_binding_counts(tokens).get(binding) != 1:
         return False
     for index in range(body[1] + 1, activation[1] - 1):
         if frontend_bare_arrow_call(tokens, index, binding):

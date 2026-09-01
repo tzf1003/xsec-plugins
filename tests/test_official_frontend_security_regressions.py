@@ -72,6 +72,8 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
             f"const decoy=()=>{{{request}}};",
             f"const onDecoy=()=>{{{request}}};",
             f"const decoy=()=>{{{request}}};const holder={{decoy(){{}}}};holder.decoy();",
+            f"const holder={{}};holder.decoy=()=>{{{request}}};",
+            f"const decoy=()=>{{{request}}};{{const decoy=()=>{{}};decoy();}}",
             f"const holder={{onLoad:()=>{{{request}}}}};",
             f"const decoy={{load(){{{request}}}}};",
             f"class Decoy{{load(){{{request}}}}}",
@@ -134,14 +136,30 @@ class OfficialFrontendSecurityRegressionTests(unittest.TestCase):
 
     def test_host_request_destructuring_cannot_hide_alias_calls(self) -> None:
         manifest, source = terminal_contract()
-        payload = (
+        payloads = (
             "const {request}=host;"
-            'request.call(host,["xsec","hidden"].join("."),{});'
+            'request.call(host,["xsec","hidden"].join("."),{});',
+            'const {[ ["re","quest"].join("") ]:request}=host;'
+            'request.call(host,["xsec","hidden"].join("."),{});',
         )
-        with self.assertRaisesRegex(MarketplaceValidationError, "destructure request"):
-            validate_market.validate_official_frontend(
-                manifest, inject_activation(source, payload), PLUGIN_ID
-            )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(MarketplaceValidationError, "destructure request"):
+                    validate_market.validate_official_frontend(
+                        manifest, inject_activation(source, payload), PLUGIN_ID
+                    )
+
+    def test_shadowed_controller_helper_cannot_supply_lifecycle_contract(self) -> None:
+        manifest, source = terminal_contract()
+        helper = "function reviewed(){return{mount(){},update(){},dispose(){}}}"
+        activation = (
+            "export function activate(host){"
+            "const reviewed=()=>({});return reviewed(host)}"
+        )
+        prefix, _ = source.split(ACTIVATION_MARKER, 1)
+        mutated = f"{prefix}{helper}{activation}"
+        with self.assertRaisesRegex(MarketplaceValidationError, "executable mount/update/dispose"):
+            validate_market.validate_official_frontend(manifest, mutated, PLUGIN_ID)
 
     def test_reviewed_event_callbacks_and_lifecycle_remain_valid(self) -> None:
         manifest, source = terminal_contract()
