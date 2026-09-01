@@ -228,7 +228,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         payload = fixture.read_bytes()
         self.assertEqual(
             hashlib.sha256(payload).hexdigest(),
-            "392c49eaf32d7ef9c1cb7d492dea0d63a6479f8019b1da98ba69dd1e9ab62978",
+            "4858d71e58d75133c1f740d4db53bda0fb81db283ed8d2890d876c2bd0133559",
         )
         assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
 
