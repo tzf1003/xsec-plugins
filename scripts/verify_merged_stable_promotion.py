@@ -966,7 +966,7 @@ def verify_source_only_beta(
     }
 
 
-def verify_beta_smoke_ready(
+def verify_beta_smoke_ready_one(
     root: Path,
     before: str,
     after: str,
@@ -1163,6 +1163,51 @@ def verify_beta_smoke_ready(
             }
         ],
     }
+
+
+def verify_beta_smoke_ready(
+    root: Path,
+    before: str,
+    after: str,
+    paths: list[str],
+    *,
+    allow_unsigned_official_status_plugin_id: str | None = None,
+) -> dict[str, object]:
+    """Authenticate one or more independent no-pointer Beta smoke rechecks."""
+
+    plugin_ids = [match.group(1) for path in paths if (match := STATUS_PATH_PATTERN.fullmatch(path))]
+    if not plugin_ids:
+        fail("no-pointer Beta smoke transition must change a Factory status document")
+    if len(plugin_ids) == 1:
+        return verify_beta_smoke_ready_one(
+            root, before, after, paths, allow_unsigned_official_status_plugin_id=allow_unsigned_official_status_plugin_id
+        )
+    if len(plugin_ids) != len(set(plugin_ids)):
+        fail("no-pointer Beta smoke transition cannot change one Factory status more than once")
+    if allow_unsigned_official_status_plugin_id is not None:
+        fail("a pending status authentication must name one no-pointer Beta plugin")
+    shared_paths = {
+        path
+        for path in paths
+        if path == MARKETPLACE_SIDECAR
+        or RELEASE_SIDECAR_PATTERN.fullmatch(path)
+        or PUBLICATION_PROOF_PATTERN.fullmatch(path)
+        or STATUS_PROOF_PATTERN.fullmatch(path)
+    }
+    claimed_paths = set(shared_paths)
+    promotions: list[dict[str, object]] = []
+    for plugin_id in sorted(plugin_ids):
+        plugin_paths = [
+            path
+            for path in paths
+            if path in shared_paths or path in {f".xsec-factory/official-status/{plugin_id}.json", f"plugins/{plugin_id}"}
+        ]
+        claimed_paths.update(plugin_paths)
+        result = verify_beta_smoke_ready_one(root, before, after, plugin_paths)
+        promotions.extend(result["promotions"])
+    if set(paths) != claimed_paths:
+        fail("batched no-pointer Beta smoke transition changed an unauthorized path")
+    return {"kind": "beta-smoke-ready", "promotions": promotions}
 
 
 def classify_merged_change(
