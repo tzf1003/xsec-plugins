@@ -69,12 +69,14 @@ jobs:
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          review_state="$(gh api graphql -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}}}' \
-            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number")"
-          printf '%s' "$review_state" | jq -e '
-            (.data.repository.pullRequest.reviewThreads.nodes | type == "array")
-            and (.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
-            and all(.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
+          # shellcheck disable=SC2016
+          review_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          printf '%s' "$review_pages" | jq -e '
+            (type == "array" and length > 0)
+            and all(.[]?; .data.repository.pullRequest.reviewThreads.nodes | type == "array")
+            and (.[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
+            and all(.[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
           ' >/dev/null || {
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
