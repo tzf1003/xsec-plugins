@@ -293,9 +293,11 @@ def allowed_paths(
     *,
     renewable_sidecars: set[str],
     first_party_gitlink_ids: set[str] | None = None,
+    generated_metadata_ids: set[str] | None = None,
 ) -> None:
     """Permit only the generated Factory surfaces for a signed release PR."""
 
+    authorized_ids = promoted_ids | (generated_metadata_ids or set())
     for path in paths:
         if path in renewable_sidecars or RELEASE_PATH_PATTERN.fullmatch(path):
             continue
@@ -310,24 +312,36 @@ def allowed_paths(
         if channel == "beta" and gitlink_path and first_party_gitlink_ids and gitlink_path.group(1) in first_party_gitlink_ids:
             continue
         publication_path = PUBLICATION_PATH_PATTERN.fullmatch(path)
-        if publication_path and publication_path.group(1) in promoted_ids:
+        if publication_path and publication_path.group(1) in authorized_ids:
             continue
         publication_proof = PUBLICATION_PROOF_PATTERN.fullmatch(path)
-        if publication_proof and publication_proof.group(1) in promoted_ids:
+        if publication_proof and publication_proof.group(1) in authorized_ids:
             continue
         adoption_path = ADOPTION_PATH_PATTERN.fullmatch(path)
-        if adoption_path and adoption_path.group(1) in promoted_ids:
+        if adoption_path and adoption_path.group(1) in authorized_ids:
             continue
         adoption_proof = ADOPTION_PROOF_PATTERN.fullmatch(path)
-        if adoption_proof and adoption_proof.group(1) in promoted_ids:
+        if adoption_proof and adoption_proof.group(1) in authorized_ids:
             continue
         status_path = STATUS_PATH_PATTERN.fullmatch(path)
-        if status_path and status_path.group(1) in promoted_ids:
+        if status_path and status_path.group(1) in authorized_ids:
             continue
         status_proof = STATUS_PROOF_PATTERN.fullmatch(path)
-        if status_proof and status_proof.group(1) in promoted_ids:
+        if status_proof and status_proof.group(1) in authorized_ids:
             continue
         fail(f"merged {channel} publication changed an unauthorized path: {path}")
+
+
+def generated_metadata_plugin_ids(paths: list[str]) -> set[str]:
+    """Collect plugin ids represented by generated Factory metadata paths."""
+
+    patterns = (PUBLICATION_PATH_PATTERN, PUBLICATION_PROOF_PATTERN, STATUS_PATH_PATTERN, STATUS_PROOF_PATTERN)
+    return {
+        match.group(1)
+        for path in paths
+        for pattern in patterns
+        if (match := pattern.fullmatch(path))
+    }
 
 
 def renewable_sidecars(root: Path, promoted_ids: set[str]) -> set[str]:
@@ -690,6 +704,10 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
 
     promoted: list[dict[str, object]] = []
     promoted_ids = {plugin_id for plugin_id, _ in release_paths}
+    metadata_ids = generated_metadata_plugin_ids(paths)
+    for plugin_id in metadata_ids:
+        if active_registered_source(root, after, plugin_id=plugin_id) is None:
+            fail("generated Factory metadata must belong to an active registered plugin")
     first_party_gitlink_ids = {
         plugin_id
         for plugin_id in promoted_ids
@@ -702,6 +720,7 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         promoted_ids,
         renewable_sidecars=renewable_sidecars(root, promoted_ids),
         first_party_gitlink_ids=first_party_gitlink_ids,
+        generated_metadata_ids=metadata_ids,
     )
     for plugin_id, release_path in release_paths:
         sidecar = f"{SNAPSHOT_ROOT}/{plugin_id}/.xsec-market/releases.json.sig.jws.json"
@@ -743,7 +762,8 @@ def verify_merged_publication(root: Path, before: str, after: str, channel: str)
         if source is not None:
             record["source"] = source
             if channel == "beta":
-                require_first_party_gitlink(root, before, after, plugin_id=plugin_id, source=source)
+                if f"plugins/{plugin_id}" in paths:
+                    require_first_party_gitlink(root, before, after, plugin_id=plugin_id, source=source)
                 record["main_source"] = beta_main_gate_binding(
                     root,
                     after,

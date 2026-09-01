@@ -108,6 +108,13 @@ def mutate_terminal_activation(source: str, body: str, prefix: str = "") -> str:
 def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> None:
     """Assert that asset settings failures remain isolated by surface."""
 
+    if "function useSettingsReader(api)" in source:
+        case.assertIn("const[error,setError]", source)
+        case.assertIn("setSettingsReady(false)", source)
+        case.assertIn("const next=await api.settings()", source)
+        case.assertIn("if(!settingsReady)return false", source)
+        case.assertIn("reader.error&&!reader.settings", source)
+        return
     if "setRuns(await api.runs())" in source:
         case.assertIn("setRunsError(", source)
         case.assertIn("setSettings(await api.settings())", source)
