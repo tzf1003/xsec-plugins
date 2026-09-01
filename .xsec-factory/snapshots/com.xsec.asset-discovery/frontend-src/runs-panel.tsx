@@ -18,6 +18,7 @@ type RunsPanelProps = {
   filter: CollectionStatusFilter;
   query: string;
   onSelect: (id?: string) => void;
+  onDeleted: (runId: string) => void;
   onFilter: (filter: CollectionStatusFilter) => void;
   onQuery: (query: string) => void;
   onRefresh: () => Promise<void>;
@@ -36,12 +37,13 @@ function moveIndex(index: number, length: number, key: string): number {
 
 export function RunsPanel({
   api, runs, loading, error, selectedRunId, filter, query, onSelect, onFilter, onQuery,
-  onRefresh, onStart, onOpenAssets, onOpenSettings,
+  onRefresh, onStart, onOpenAssets, onOpenSettings, onDeleted,
 }: RunsPanelProps) {
   const runRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const metrics = useMemo(() => collectionMetrics(runs), [runs]);
   const visible = useMemo(() => filterRuns(runs, filter, query), [filter, query, runs]);
   const selected = visible.find((run) => run.id === selectedRunId) ?? visible[0];
+  const initialLoading = loading && !runs.length;
   useEffect(() => {
     if (selectedRunId && !visible.some((run) => run.id === selectedRunId)) onSelect(visible[0]?.id);
   }, [onSelect, selectedRunId, visible]);
@@ -64,8 +66,8 @@ export function RunsPanel({
 
   return <section className="ad-runs">
     <div className="ad-toolbar"><div className="ad-status-tabs" role="tablist" aria-label="收集任务状态筛选">{STATUS_FILTERS.map((item) => <button className={`ad-status-tab ${filter === item.key ? "active" : ""}`} type="button" role="tab" aria-selected={filter === item.key} key={item.key} onClick={() => onFilter(item.key)} onKeyDown={(event) => activateFilter(item.key, event)}><span>{item.label}</span><strong>{item.key === "all" ? runs.length : metrics[item.key]}</strong></button>)}</div><input className="ad-input search" value={query} placeholder="搜索任务名 / 范围 / 数据源 / ID" onChange={(event) => onQuery(event.target.value)} /><Button onClick={() => void onRefresh()}>刷新</Button></div>
-    <div className="ad-master-detail"><aside className="ad-run-list" aria-busy={loading}>{error ? <ErrorState error={error} onRetry={() => void onRefresh()} /> : null}{!error && !visible.length ? <EmptyState>{runs.length ? "没有匹配的收集任务" : <><p>还没有收集任务</p><Button className="primary" onClick={onStart}>启动资产收集</Button></>}</EmptyState> : null}<div role="listbox" aria-label="资产收集任务">{visible.map((run, index) => <button className={`ad-run-card ${run.id === selected?.id ? "active" : ""}`} type="button" role="option" aria-selected={run.id === selected?.id} ref={(node) => { runRefs.current[run.id] = node; }} key={run.id} onClick={() => onSelect(run.id)} onFocus={() => onSelect(run.id)} onKeyDown={(event) => activateRun(run, index, event)}><span className="ad-run-card-title"><strong>{runTitle(run)}</strong><StatusBadge status={run.status} /></span><p>{runSubtitle(run)}</p>{collectionResultDescription(run) ? <span className="ad-run-outcome">{collectionResultDescription(run)}</span> : null}<span className="ad-metadata"><span>{providerLabel(run.provider)}</span><span>{run.total} 项 · {formatTime(run.updated_at)}</span></span></button>)}</div></aside>
-      <CollectionConsole api={api} run={selected} onChanged={onRefresh} onDeleted={() => onSelect(undefined)} onOpenAssets={onOpenAssets} onOpenSettings={onOpenSettings} />
+    <div className="ad-master-detail"><aside className="ad-run-list" aria-busy={loading}>{initialLoading ? <EmptyState>正在读取收集任务…</EmptyState> : null}{!initialLoading && error ? <ErrorState error={error} onRetry={() => void onRefresh()} /> : null}{!initialLoading && !error && !visible.length ? <EmptyState>{runs.length ? "没有匹配的收集任务" : <><p>还没有收集任务</p><Button className="primary" onClick={onStart}>启动资产收集</Button></>}</EmptyState> : null}{!initialLoading ? <div role="listbox" aria-label="资产收集任务">{visible.map((run, index) => <button className={`ad-run-card ${run.id === selected?.id ? "active" : ""}`} type="button" role="option" aria-selected={run.id === selected?.id} ref={(node) => { runRefs.current[run.id] = node; }} key={run.id} onClick={() => onSelect(run.id)} onFocus={() => onSelect(run.id)} onKeyDown={(event) => activateRun(run, index, event)}><span className="ad-run-card-title"><strong>{runTitle(run)}</strong><StatusBadge status={run.status} /></span><p>{runSubtitle(run)}</p>{collectionResultDescription(run) ? <span className="ad-run-outcome">{collectionResultDescription(run)}</span> : null}<span className="ad-metadata"><span>{providerLabel(run.provider)}</span><span>{run.total} 项 · {formatTime(run.updated_at)}</span></span></button>)}</div> : null}</aside>
+      <CollectionConsole key={selected?.id ?? "empty"} api={api} run={selected} onChanged={onRefresh} onDeleted={onDeleted} onOpenAssets={onOpenAssets} onOpenSettings={onOpenSettings} />
     </div>
   </section>;
 }

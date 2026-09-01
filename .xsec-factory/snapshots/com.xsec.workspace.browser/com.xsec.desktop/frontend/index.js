@@ -1,19 +1,54 @@
 const FRAME_HEADER = "XSBF", EVENT_HEADER = "XSBE"; const PAGE_POLL_MS = 1000, LIVE_SESSION_POLL_MS = 2000, CLOSED_SESSION_POLL_MS = 5000;
-const NEW_PAGE_GRACE_MS = 5000, POINTER_MOVE_MS = 33, FRAME_ACK_INTERVAL_MS = 40, VIEWPORT_WIDTH = 1280, VIEWPORT_HEIGHT = 800, NO_MOUSE_BUTTONS = 0, MOUSE_BUTTON_MASKS = [1, 4, 2, 8, 16];
+const NEW_PAGE_GRACE_MS = 5000, POINTER_MOVE_MS = 33, FRAME_ACK_INTERVAL_MS = 40, VIEWPORT_WIDTH = 1280, VIEWPORT_HEIGHT = 800, MAX_FRAME_WIDTH = VIEWPORT_WIDTH * 4, MAX_FRAME_HEIGHT = VIEWPORT_HEIGHT * 4, MAX_FRAME_JPEG_BYTES = 8 * 1024 * 1024, NO_MOUSE_BUTTONS = 0, MOUSE_BUTTON_MASKS = [1, 4, 2, 8, 16], JPEG_SOF_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 const element = (tag, className, value) => { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; };
 function errorText(value) { return value instanceof Error ? value.message : String(value); }
 function items(value, label) { if (Array.isArray(value)) return value; if (Array.isArray(value?.items)) return value.items; throw new Error(`${label}响应格式无效`); }
 function displayUrl(url) { if (!url || url === "about:blank") return "新标签页"; try { return new URL(url).hostname || url; } catch { return url; } }
 function pageLabel(page) { return page.title?.trim() || displayUrl(page.url); }
 function normalizeUrl(value) { const source = value.trim(); if (!source) throw new Error("请输入地址"); const hostPort = /^[^/:?#]+:\d+(?:[/?#]|$)/.test(source); const url = new URL(hostPort || !/^[a-z][a-z\d+.-]*:/i.test(source) ? `https://${source}` : source); if (!/^https?:$/.test(url.protocol)) throw new Error("只允许 HTTP 或 HTTPS 地址"); return url.toString(); }
+function validateChromePath(value) {
+  const path = value.trim();
+  if (!path) return "";
+  if (/[\0-\x1F\x7F]/.test(path)) throw new Error("浏览器路径包含非法字符");
+  if (path.startsWith("\\\\?\\")) {
+    const extendedPath = path.slice(4);
+    if (/^UNC\\/i.test(extendedPath) || !/^[A-Za-z]:[\\/]/.test(extendedPath)) throw new Error("请输入浏览器可执行文件的绝对路径");
+    return path;
+  }
+  if (path.startsWith("\\\\")) throw new Error("不支持网络共享路径");
+  if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)) return path;
+  throw new Error("请输入浏览器可执行文件的绝对路径");
+}
 function packetHeader(raw) { const bytes = new Uint8Array(raw); return String.fromCharCode(...bytes.subarray(0, 4)); }
 function parseEvent(raw) { if (packetHeader(raw) !== EVENT_HEADER) return undefined; const bytes = new Uint8Array(raw); if (bytes.byteLength <= 4) throw new Error("浏览器画面事件无效"); const event = JSON.parse(new TextDecoder().decode(bytes.subarray(4))); if (!event || !["started", "closed", "error"].includes(event.kind)) throw new Error("浏览器画面事件无效"); return event; }
-function parseFrame(raw) { if (packetHeader(raw) !== FRAME_HEADER) return undefined; const bytes = new Uint8Array(raw); if (bytes.byteLength <= 16) throw new Error("浏览器画面帧无效"); const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const width = view.getUint32(8, true); const height = view.getUint32(12, true); if (!width || !height) throw new Error("浏览器画面尺寸无效"); return { width, height, jpeg: bytes.slice(16).buffer }; }
+function jpegDimensions(jpeg) {
+  if (jpeg.byteLength < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error("浏览器画面 JPEG 无效");
+  let offset = 2;
+  while (offset < jpeg.byteLength) {
+    if (jpeg[offset] !== 0xff) throw new Error("浏览器画面 JPEG 无效");
+    while (jpeg[offset] === 0xff) offset += 1;
+    const marker = jpeg[offset++];
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (marker === 0x01 || marker >= 0xd0 && marker <= 0xd8) continue;
+    if (offset + 2 > jpeg.byteLength) throw new Error("浏览器画面 JPEG 无效");
+    const length = jpeg[offset] << 8 | jpeg[offset + 1];
+    if (length < 2 || offset + length > jpeg.byteLength) throw new Error("浏览器画面 JPEG 无效");
+    if (JPEG_SOF_MARKERS.has(marker)) {
+      if (length < 7) throw new Error("浏览器画面 JPEG 无效");
+      const height = jpeg[offset + 3] << 8 | jpeg[offset + 4]; const width = jpeg[offset + 5] << 8 | jpeg[offset + 6];
+      if (!width || !height || width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT) throw new Error("浏览器画面 JPEG 尺寸超出限制");
+      return { width, height };
+    }
+    offset += length;
+  }
+  throw new Error("浏览器画面 JPEG 缺少尺寸");
+}
+function parseFrame(raw) { if (packetHeader(raw) !== FRAME_HEADER) return undefined; const bytes = new Uint8Array(raw); if (bytes.byteLength <= 16) throw new Error("浏览器画面帧无效"); const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const width = view.getUint32(8, true); const height = view.getUint32(12, true); if (!width || !height) throw new Error("浏览器画面尺寸无效"); if (width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT) throw new Error("浏览器画面尺寸超出限制"); if (bytes.byteLength - 16 > MAX_FRAME_JPEG_BYTES) throw new Error("浏览器画面数据过大"); const jpeg = bytes.subarray(16); const dimensions = jpegDimensions(jpeg); if (dimensions.width !== width || dimensions.height !== height) throw new Error("浏览器画面尺寸与帧头不一致"); return { width, height, jpeg: jpeg.slice().buffer }; }
 function eventModifiers(event) { return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0); }
 function mouseButton(button) { return ["left", "middle", "right", "back", "forward"][button] || "none"; } function mouseButtonMask(button) { return MOUSE_BUTTON_MASKS[button] || NO_MOUSE_BUTTONS; }
 function mouseButtonReleases(buttons, point, modifiers) { let remaining = buttons; return MOUSE_BUTTON_MASKS.flatMap((mask, index) => { if (!(buttons & mask)) return []; remaining &= ~mask; return [{ kind: "mouse", event_type: "up", ...point, button: mouseButton(index), buttons: remaining, modifiers }]; }); }
 function pageAfterClose(pages, id) { const index = pages.findIndex((page) => page.id === id); return index < 0 ? null : pages[index + 1]?.id || pages[index - 1]?.id || null; }
-function selectSession(sessions, currentId, runId, userSelected) { const current = sessions.find((session) => session.id === currentId); if (current && (userSelected || current.live)) return current.id; return sessions.find((session) => session.live && (!runId || session.run_id === runId))?.id || sessions.find((session) => session.live)?.id || current?.id || sessions[0]?.id || null; }
+function selectSession(sessions, currentId, runId, userSelected) { const current = sessions.find((session) => session.id === currentId); if (current && (userSelected || current.live)) return current.id; if (runId) return sessions.find((session) => session.live && session.run_id === runId)?.id || null; return sessions.find((session) => session.live)?.id || current?.id || sessions[0]?.id || null; }
 function selectPage(pages, groups, activeId, follow, pendingId) { if (pendingId) return pendingId; const ids = new Set(pages.map((page) => page.id)); const parent = groups.filter((group) => group.owner === "parent" && ids.has(group.current_page_id)).sort((left, right) => right.updated_at - left.updated_at)[0]?.current_page_id; if (follow && parent) return parent; return ids.has(activeId) ? activeId : parent || pages[0]?.id || null; }
 function surfaceStatus(value) { if (value === "connecting") return "正在连接真实浏览器…"; if (value === "closed") return "页面连接已关闭"; if (value === "error") return "浏览器画面不可用"; return ""; }
 function workspaceKey(context) { const binding = context?.workspace?.binding || {}; return [binding.projectId, binding.assignmentId || binding.runId, binding.sessionId].map((value) => value || "").join(":"); }
@@ -26,7 +61,7 @@ class BrowserController {
     this.rpc = rpc; this.context = context || {}; this.key = workspaceKey(this.context);
     this.state = { sessions: [], sessionId: null, userSelected: false, pages: [], groups: [], pageId: null, pageUrl: null, follow: true, focus: false, address: "", error: "", surfaceError: "", busy: "", loading: true, pending: null, observed: null, surfaceState: "" };
     this.timer = 0; this.revision = 0; this.refreshing = false; this.refreshQueued = false; this.refreshChain = Promise.resolve(); this.refreshLoopPromise = Promise.resolve(); this.disposed = false; this.surface = undefined; this.subscription = undefined; this.surfaceGeneration = 0; this.surfaceErrorKey = "";
-    this.moveTimer = 0; this.pendingMove = undefined; this.inputTail = Promise.resolve(); this.surfaceCloseTail = Promise.resolve(); this.surfaceClosePromises = new Map(); this.surfaceTransitionTail = Promise.resolve(); this.surfaceTeardownPromise = undefined; this.closingSurfaceId = ""; this.addressEditPageId = null; this.presentationTails = new Map(); this.sessionControlsKey = ""; this.tabControlsKey = ""; this.canvasContext = undefined; this.composing = false; this.compositionSurfaceId = ""; this.compositionCancelled = false; this.ignoredText = undefined; this.pressedKeys = new Map(); this.mouseButtons = 0; this.mouseSurfaceId = ""; this.lastPoint = { x: 0, y: 0 }; this.frameSurfaceId = ""; this.nextFrameAckAt = 0; this.focusTail = Promise.resolve(); this.focusTarget = false; this.focusRevision = 0; this.visibilityRevision = 0; this.settingsReady = false; this.settingsRevision = 0;
+    this.moveTimer = 0; this.pendingMove = undefined; this.inputTail = Promise.resolve(); this.surfaceCloseTail = Promise.resolve(); this.surfaceClosePromises = new Map(); this.orphanedSurfaces = new Map(); this.closingPages = new Set(); this.surfaceTransitionTail = Promise.resolve(); this.surfaceTeardownPromise = undefined; this.closingSurfaceId = ""; this.addressEditPageId = null; this.presentationTails = new Map(); this.sessionControlsKey = ""; this.tabControlsKey = ""; this.canvasContext = undefined; this.composing = false; this.compositionSurfaceId = ""; this.compositionCancelled = false; this.ignoredText = undefined; this.pressedKeys = new Map(); this.mouseButtons = 0; this.mouseSurfaceId = ""; this.lastPoint = { x: 0, y: 0 }; this.frameSurfaceId = ""; this.nextFrameAckAt = 0; this.focusTail = Promise.resolve(); this.focusTarget = false; this.focusRevision = 0; this.visibilityRevision = 0; this.settingsReady = false; this.settingsRevision = 0;
     this.onEscape = (event) => { if (this.focusTarget && event.key === "Escape") void this.setFocus(false).catch((error) => this.fail(error, "presentation")); };
     this.onVisibilityChange = () => void this.handleVisibilityChange(); this.onWindowBlur = () => { const modifiers = this.activeModifierMask(); this.releaseMouseButtons({ modifiers }); this.releasePressedKeys(); };
   }
@@ -50,6 +85,7 @@ class BrowserController {
   visible() { return !this.disposed && this.context.visible !== false && document.visibilityState !== "hidden"; }
   session() { return this.state.sessions.find((item) => item.id === this.state.sessionId) || null; }
   page() { return this.state.pages.find((item) => item.id === this.state.pageId) || null; }
+  inputBusy() { return document.activeElement === this.controls?.keyboard || this.pressedKeys.size > 0 || this.mouseButtons !== NO_MOUSE_BUTTONS; }
   surfaceKey(sessionId, pageId) { return `${sessionId}:${pageId}`; }
   clearTimer() { if (this.timer) window.clearTimeout(this.timer); this.timer = 0; }
   clearPendingMove() { if (this.moveTimer) window.clearTimeout(this.moveTimer); this.moveTimer = 0; this.pendingMove = undefined; this.mouseButtons = 0; }
@@ -59,7 +95,7 @@ class BrowserController {
   clearSurfaceError() { this.surfaceErrorKey = ""; this.state.surfaceError = ""; if (["error", "closed"].includes(this.state.surfaceState)) this.state.surfaceState = ""; }
   async teardownWorkspace(visibilityRevision) { try { await this.setFocus(false); } finally { if (visibilityRevision === undefined || visibilityRevision === this.visibilityRevision && !this.visible()) await this.closeSurface(); } }
   async resetPages() {
-    this.clearSurfaceError(); Object.assign(this.state, { pages: [], groups: [], pageId: null, pageUrl: null, pending: null, observed: null, address: "" }); await this.closeSurface();
+    this.clearSurfaceError(); this.closingPages.clear(); Object.assign(this.state, { pages: [], groups: [], pageId: null, pageUrl: null, pending: null, observed: null, address: "" }); await this.closeSurface();
   }
   async handleVisibilityChange() {
     const visibilityRevision = ++this.visibilityRevision;
@@ -92,7 +128,8 @@ class BrowserController {
     const opened = this.state.observed && this.state.pageId ? snapshot.pages.find((page) => !this.state.observed.has(page.id) && page.opener_id === this.state.pageId)?.id : null;
     this.state.observed = new Set(snapshot.pages.map((page) => page.id)); this.state.pages = snapshot.pages; this.state.groups = snapshot.groups;
     const pending = this.state.pending?.expiresAt > Date.now() ? this.state.pending.pageId : null; if (!pending || snapshot.pages.some((page) => page.id === pending)) this.state.pending = null;
-    if (opened) this.state.follow = false; const next = selectPage(snapshot.pages, snapshot.groups, this.state.pageId, this.state.follow, opened || pending);
+    const busy = this.inputBusy(); const adoptPopup = opened && !busy;
+    if (adoptPopup) this.state.follow = false; const next = selectPage(snapshot.pages, snapshot.groups, this.state.pageId, busy ? false : this.state.follow, adoptPopup ? opened : pending);
     if (next !== this.state.pageId) { this.state.pageId = next; this.clearSurfaceError(); } this.updateAddress(); await this.ensureSurface();
   }
   updateAddress(force = false) {
@@ -113,6 +150,7 @@ class BrowserController {
     this.invalidateRefresh(); this.state.userSelected = true; this.state.sessionId = id; this.state.follow = true; await this.resetPages(); console.info("browser.session.selected", { source: "user" }); await this.manualRefresh();
   }
   async choosePage(id) {
+    if (this.closingPages.has(id)) return;
     this.state.pending = null; this.state.follow = false; this.state.pageId = id; this.clearSurfaceError(); this.updateAddress(); console.info("browser.page.selected", { source: "user" }); await this.ensureSurface(); this.render();
   }
   async createPage() {
@@ -129,14 +167,23 @@ class BrowserController {
     await this.action(action, () => this.rpc.pageAction(session.id, page.id, action));
   }
   async closePage(id) {
-    const session = this.session(); const key = this.key; if (!session?.live) return; const next = this.state.pageId === id ? pageAfterClose(this.state.pages, id) : null;
-    await this.action("close", async (scope) => { await this.rpc.closePage(session.id, id); if (next && this.key === key && this.session()?.id === session.id && this.state.pageId === id) { this.state.follow = false; this.state.pageId = next; scope.pageId = next; this.clearSurfaceError(); this.updateAddress(); } });
+    const session = this.session(); const key = this.key; if (!session?.live || this.closingPages.has(id)) return; const next = this.state.pageId === id ? pageAfterClose(this.state.pages, id) : null;
+    this.closingPages.add(id); this.render();
+    try {
+      await this.action("close", async (scope) => {
+        await this.rpc.closePage(session.id, id);
+        if (this.key !== key || this.session()?.id !== session.id) return;
+        if (next && this.state.pageId === id) { this.state.follow = false; this.state.pageId = next; this.clearSurfaceError(); this.updateAddress(); }
+        scope.key = this.key; scope.sessionId = this.state.sessionId; scope.pageId = this.state.pageId;
+      });
+    } finally { this.closingPages.delete(id); if (!this.disposed) this.render(); }
   }
   async closeSurface(clearState = true, invalidate = true) { if (this.surfaceTeardownPromise) return this.surfaceTeardownPromise; this.surfaceTeardownPromise = this.closeSurfaceNow(clearState, invalidate).finally(() => { this.surfaceTeardownPromise = undefined; }); return this.surfaceTeardownPromise;
   } async closeSurfaceNow(clearState = true, invalidate = true) {
     const surface = this.surface; const subscription = this.subscription; const heldKeys = [...this.pressedKeys.values()]; const heldModifiers = this.activeModifierMask(); this.pressedKeys.clear(); this.closingSurfaceId = this.mouseSurfaceId || surface?.id || ""; const release = this.releaseMouseButtons({ modifiers: heldModifiers, propagate: true }); this.surface = undefined; this.subscription = undefined; if (invalidate) this.surfaceGeneration += 1; this.frameSurfaceId = ""; this.controls?.canvas && (this.controls.canvas.hidden = true); const releaseKeys = async () => { for (const input of heldKeys) await this.rpc.sendSurfaceInput(surface.id, { ...input, event_type: "up", auto_repeat: false }); }; const keyRelease = surface ? this.inputTail.then(releaseKeys, releaseKeys) : Promise.resolve(); const results = await Promise.allSettled([keyRelease, release]); this.clearSurfaceInput(); subscription?.dispose?.(); if (clearState) this.state.surfaceState = ""; await this.closeNativeSurface(surface); const failure = results.find((result) => result.status === "rejected"); if (failure) throw failure.reason;
-  } closeNativeSurface(surface) { if (!surface) return this.surfaceCloseTail; const existing = this.surfaceClosePromises.get(surface.id); if (existing) return existing; const close = async () => { console.debug("browser.surface.close.started", { pageId: surface.pageId }); await this.rpc.closeSurface(surface.id); }; const operation = this.surfaceCloseTail.then(close, close); const presentation = this.presentationTails.get(surface.id); this.surfaceClosePromises.set(surface.id, operation); void operation.then(() => this.clearSurfaceTails(surface.id, operation, presentation), () => this.clearSurfaceTails(surface.id, operation, presentation)); this.surfaceCloseTail = operation.catch((error) => console.error("browser.surface.close.failed", { message: errorText(error) })); return operation; }
+  } closeNativeSurface(surface) { if (!surface) return this.surfaceCloseTail; const existing = this.surfaceClosePromises.get(surface.id); if (existing) return existing; const close = async () => { console.debug("browser.surface.close.started", { pageId: surface.pageId }); await this.rpc.closeSurface(surface.id); }; const operation = this.surfaceCloseTail.then(close, close); const presentation = this.presentationTails.get(surface.id); this.surfaceClosePromises.set(surface.id, operation); void operation.then(() => { this.orphanedSurfaces.delete(surface.id); this.clearSurfaceTails(surface.id, operation, presentation); }, () => { this.orphanedSurfaces.set(surface.id, { id: surface.id, pageId: surface.pageId }); this.clearSurfaceTails(surface.id, operation, presentation); }); this.surfaceCloseTail = operation.catch((error) => console.error("browser.surface.close.failed", { message: errorText(error) })); return operation; }
   clearSurfaceTails(surfaceId, operation, presentation) { if (this.surfaceClosePromises.get(surfaceId) === operation) this.surfaceClosePromises.delete(surfaceId); if (this.presentationTails.get(surfaceId) === presentation) this.presentationTails.delete(surfaceId); }
+  async closeOrphanedSurfaces() { const results = await Promise.allSettled([...this.orphanedSurfaces.values()].map((surface) => this.closeNativeSurface(surface))); const failure = results.find((result) => result.status === "rejected"); if (failure) throw failure.reason; }
   surfaceRequestCurrent(generation, sessionId, pageId) { return generation === this.surfaceGeneration && this.visible() && this.session()?.id === sessionId && this.page()?.id === pageId; }
   async ensureSurface() { const run = () => this.ensureSurfaceNow(); this.surfaceTransitionTail = this.surfaceTransitionTail.then(run, run); return this.surfaceTransitionTail; } async ensureSurfaceNow() {
     const session = this.session(); const page = this.page(); if (!this.visible() || !session?.live || !page) { await this.closeSurface(); return; }
@@ -159,7 +206,7 @@ class BrowserController {
       console.info("browser.surface.open.completed", { pageId: page.id });
     } catch (error) { if (generation !== this.surfaceGeneration || this.session()?.id !== session.id || this.page()?.id !== page.id) return; await this.failSurface(error, undefined, generation); }
   }
-  async retrySurface() { this.clearSurfaceError(); await this.ensureSurface(); }
+  async retrySurface() { await this.closeOrphanedSurfaces(); this.clearSurfaceError(); await this.ensureSurface(); }
   async acknowledgeFrame(surfaceId) {
     const delay = Math.max(0, this.nextFrameAckAt - performance.now()); if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
     if (this.surface?.id !== surfaceId) return; this.nextFrameAckAt = performance.now() + FRAME_ACK_INTERVAL_MS; await this.rpc.acknowledgeSurface(surfaceId);
@@ -177,7 +224,7 @@ class BrowserController {
   }
   async presentFrame(frame, surfaceId) {
     try {
-      const image = await createImageBitmap(new Blob([frame.jpeg], { type: "image/jpeg" })); if (this.surface?.id !== surfaceId) { image.close(); return; }
+      const image = await createImageBitmap(new Blob([frame.jpeg], { type: "image/jpeg" })); if (this.surface?.id !== surfaceId) { image.close(); return; } if (image.width !== frame.width || image.height !== frame.height) { image.close(); throw new Error("浏览器画面尺寸与帧头不一致"); }
       const firstFrame = this.frameSurfaceId !== surfaceId; const canvas = this.controls.canvas; if (canvas.width !== frame.width) canvas.width = frame.width; if (canvas.height !== frame.height) canvas.height = frame.height; this.canvasContext ||= canvas.getContext("2d", { alpha: false }); this.canvasContext?.drawImage(image, 0, 0, frame.width, frame.height); image.close(); this.frameSurfaceId = surfaceId;
       if (firstFrame || this.state.surfaceState !== "live") { this.state.surfaceState = "live"; this.render(); }
     } finally { await this.acknowledgeFrame(surfaceId); }
@@ -207,7 +254,7 @@ class BrowserController {
   async flushPendingMove() { const input = this.takePendingMove(); if (input) await this.queuePointer(this.surface?.id, [input]); }
   render() {
     if (!this.controls) return; const session = this.session(); const page = this.page(); const live = Boolean(session?.live);
-    this.controls.app.classList.toggle("focus", this.state.focus); const sessionKey = JSON.stringify([this.state.sessionId, this.state.sessions.map((item) => [item.id, item.live])]); if (sessionKey !== this.sessionControlsKey) { const focused = document.activeElement === this.controls.select; this.controls.select.replaceChildren(...this.state.sessions.map((item) => sessionOption(item, item.id === this.state.sessionId))); if (focused) this.controls.select.focus({ preventScroll: true }); this.sessionControlsKey = sessionKey; }
+    this.controls.app.classList.toggle("focus", this.state.focus); const sessionKey = JSON.stringify([this.state.sessionId, this.state.sessions.map((item) => [item.id, item.live])]); if (sessionKey !== this.sessionControlsKey) { const focused = document.activeElement === this.controls.select; const options = this.state.sessionId ? this.state.sessions.map((item) => sessionOption(item, item.id === this.state.sessionId)) : [sessionOption(null, true), ...this.state.sessions.map((item) => sessionOption(item, false))]; this.controls.select.replaceChildren(...options); if (focused) this.controls.select.focus({ preventScroll: true }); this.sessionControlsKey = sessionKey; }
     const tabKey = JSON.stringify([this.state.pageId, this.state.busy, this.state.pages.map((item) => [item.id, item.title, item.url]), this.state.groups.map((item) => [item.current_page_id, item.owner])]); if (tabKey !== this.tabControlsKey) { const active = document.activeElement; const pageId = active?.closest?.(".tab")?.dataset.pageId; const className = active?.className; const newTabFocused = active === this.controls.newTab; this.controls.tabs.replaceChildren(...this.state.pages.map((item) => pageTab(this, item)), this.controls.newTab); if (newTabFocused) this.controls.newTab.focus({ preventScroll: true }); else if (pageId && (className === "tab-open" || className === "close")) this.controls.tabs.querySelector(`.tab[data-page-id="${CSS.escape(pageId)}"] .${className}`)?.focus({ preventScroll: true }); this.tabControlsKey = tabKey; }
     this.controls.sessionDot.classList.toggle("live", live); this.controls.sessionText.textContent = live ? "真实 Chrome 已连接" : "浏览器已离线"; if (document.activeElement !== this.controls.address) this.controls.address.value = this.state.address;
     this.controls.follow.classList.toggle("active", this.state.follow); this.controls.focus.classList.toggle("active", this.state.focus); this.controls.error.textContent = this.state.error; this.controls.error.hidden = !this.state.error; this.controls.address.disabled = Boolean(this.state.busy); this.controls.canvas.hidden = !live || !page || this.frameSurfaceId !== this.surface?.id;
@@ -229,20 +276,25 @@ class BrowserController {
   }
   settingsMessage(message, failed) { this.controls.settingsStatus.textContent = message; this.controls.settingsStatus.classList.toggle("error", failed); }
   async saveSettings() {
-    const settingsReady = this.settingsReady; if (!settingsReady) return; const revision = this.settingsRevision; const button = this.controls.settingsSave; button.disabled = true; this.controls.settingsInput.disabled = true; this.settingsMessage("正在保存…", false); console.info("browser.settings.save.started");
-    try { const result = await this.rpc.writeSettings(this.controls.settingsInput.value.trim()); if (revision !== this.settingsRevision) return; this.controls.settingsInput.value = result.chromePath || ""; this.settingsMessage("浏览器路径已保存；新建浏览器会话时生效", false); console.info("browser.settings.save.completed"); }
+    if (!this.settingsReady) return;
+    let chromePath;
+    try { chromePath = validateChromePath(this.controls.settingsInput.value); }
+    catch (error) { this.settingsMessage(errorText(error), true); return; }
+    const revision = this.settingsRevision; const button = this.controls.settingsSave; button.disabled = true; this.controls.settingsInput.disabled = true; this.settingsMessage("正在保存…", false); console.info("browser.settings.save.started");
+    try { const result = await this.rpc.writeSettings(chromePath); if (revision !== this.settingsRevision) return; this.controls.settingsInput.value = result.chromePath || ""; this.settingsMessage("浏览器路径已保存；新建浏览器会话时生效", false); console.info("browser.settings.save.completed"); }
     catch (error) { if (revision !== this.settingsRevision) return; this.settingsMessage(`保存浏览器路径失败：${errorText(error)}`, true); console.error("browser.settings.save.failed", { message: errorText(error) }); } finally { if (revision === this.settingsRevision) { this.controls.settingsInput.disabled = false; button.disabled = false; } }
   }
 }
 function sessionOption(session, selected) {
+  if (!session) { const option = element("option", "", "未匹配当前浏览器会话"); option.value = ""; option.disabled = true; option.selected = true; return option; }
   const option = element("option", "", `${session.live ? "运行中" : "已结束"} · ${session.id.slice(0, 10)}`);
   option.value = session.id; option.selected = selected; return option;
 }
 function pageTab(controller, page) {
   const tab = element("div", `tab${page.id === controller.state.pageId ? " active" : ""}`); const open = element("button", "tab-open"); const close = element("button", "close", "×");
-  tab.dataset.pageId = page.id; open.type = "button"; open.setAttribute("role", "tab"); open.setAttribute("aria-selected", String(page.id === controller.state.pageId)); open.append(element("span", "", "◉"), element("span", "label", pageLabel(page)));
+  const closing = controller.closingPages.has(page.id); tab.dataset.pageId = page.id; open.type = "button"; open.disabled = closing; open.setAttribute("role", "tab"); open.setAttribute("aria-selected", String(page.id === controller.state.pageId)); open.append(element("span", "", "◉"), element("span", "label", pageLabel(page)));
   const groups = controller.state.groups.filter((group) => group.current_page_id === page.id); if (groups.length) open.append(element("em", "owner", groups.some((group) => group.owner === "parent") ? "主" : "子"));
-  open.onclick = () => void controller.choosePage(page.id).catch((error) => controller.fail(error, "page-select")); close.type = "button"; close.setAttribute("aria-label", `关闭 ${pageLabel(page)}`); close.disabled = Boolean(controller.state.busy); close.onclick = () => void controller.closePage(page.id); tab.append(open, close); return tab;
+  open.onclick = () => void controller.choosePage(page.id).catch((error) => controller.fail(error, "page-select")); close.type = "button"; close.setAttribute("aria-label", `关闭 ${pageLabel(page)}`); close.disabled = Boolean(controller.state.busy) || closing; close.onclick = () => void controller.closePage(page.id); tab.append(open, close); return tab;
 }
 function icon(text, label, handler) {
   const button = element("button", "icon", text); button.type = "button"; button.setAttribute("aria-label", label); button.onclick = handler; return button;

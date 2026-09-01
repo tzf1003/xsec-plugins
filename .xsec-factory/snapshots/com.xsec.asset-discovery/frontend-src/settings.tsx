@@ -50,12 +50,12 @@ function useSettingsReader(api: AssetDiscoveryApi) {
     let settingsReady = false;
     setLoading(true);
     setSettingsReady(false);
-    setError(undefined);
     try {
       const next = await api.settings();
       if (generation !== requestGeneration.current) return false;
       setSettings(next);
       setDraft((current) => replaceDraft || !current ? draftFrom(next) : current);
+      setError(undefined);
       settingsReady = true;
     } catch (reason) {
       if (generation === requestGeneration.current) setError(`读取资产发现设置失败：${String(reason)}`);
@@ -82,13 +82,14 @@ function useSettingsSave({ api, draft, settingsReady, setSettings, setDraft, set
   setSettings: (value: CollectorSettings) => void;
   setDraft: (value: SettingsDraft) => void;
   setError: (value: string | undefined) => void;
-  setNotice: (value: string) => void;
+  setNotice: (value: string | undefined) => void;
 }) {
   const [saving, setSaving] = useState(false);
   const save = async () => {
     if (!settingsReady || !draft) return;
     setSaving(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       const next = await api.saveSettings(normalizedDraft(draft));
       setSettings(next);
@@ -103,21 +104,24 @@ function useSettingsSave({ api, draft, settingsReady, setSettings, setDraft, set
   return { saving, save };
 }
 
-function useCredentials({ api, refresh, setError, setNotice }: {
+function useCredentials({ api, refresh, settingsReady, setError, setNotice }: {
   api: AssetDiscoveryApi;
   refresh: () => Promise<void>;
+  settingsReady: boolean;
   setError: (value: string | undefined) => void;
-  setNotice: (value: string) => void;
+  setNotice: (value: string | undefined) => void;
 }) {
   const [credentials, setCredentials] = useState<Credentials>({ hunter: "", fofa: "", tianyan: "" });
   const [saving, setSaving] = useState(false);
   const [clearKind, setClearKind] = useState<CredentialKind>();
   const setCredential = (kind: CredentialKind, value: string) => setCredentials((current) => ({ ...current, [kind]: value }));
   const save = async (kind: CredentialKind) => {
+    if (!settingsReady) return;
     const value = credentials[kind].trim();
     if (!value) return setError("请输入要保存的密钥。");
     setSaving(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       await api.saveCredential(kind, value);
       setCredentials((current) => ({ ...current, [kind]: "" }));
@@ -130,9 +134,10 @@ function useCredentials({ api, refresh, setError, setNotice }: {
     }
   };
   const clear = async () => {
-    if (!clearKind) return;
+    if (!settingsReady || !clearKind) return;
     setSaving(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       await api.clearCredential(clearKind);
       setClearKind(undefined);
@@ -147,51 +152,51 @@ function useCredentials({ api, refresh, setError, setNotice }: {
   return { credentials, saving, clearKind, setCredential, save, clear, setClearKind };
 }
 
-function SettingsFields({ draft, saving, onUpdate }: {
+function SettingsFields({ draft, disabled, onUpdate }: {
   draft: SettingsDraft;
-  saving: boolean;
+  disabled: boolean;
   onUpdate: <K extends keyof SettingsDraft>(key: K, value: SettingsDraft[K]) => void;
 }) {
   return <>
     <label className="ad-field">默认收集数据源
-      <select className="ad-select" value={draft.provider} disabled={saving} onChange={(event) => onUpdate("provider", event.target.value as CollectorProvider)}>
+      <select className="ad-select" value={draft.provider} disabled={disabled} onChange={(event) => onUpdate("provider", event.target.value as CollectorProvider)}>
         <option value="hunter">鹰图 Hunter</option><option value="fofa">FOFA + 天眼查</option>
       </select>
     </label>
-    <label className="ad-field">鹰图 API Host<input className="ad-input" value={draft.hunterApiBaseUrl} disabled={saving} onChange={(event) => onUpdate("hunterApiBaseUrl", event.target.value)} /></label>
-    <label className="ad-field">FOFA API Host<input className="ad-input" value={draft.fofaApiBaseUrl} disabled={saving} onChange={(event) => onUpdate("fofaApiBaseUrl", event.target.value)} /></label>
-    <label className="ad-field">鹰图 Skill 路径（可选）<input className="ad-input" value={draft.hunterSkillPath} disabled={saving} onChange={(event) => onUpdate("hunterSkillPath", event.target.value)} /></label>
-    <label className="ad-field">FOFA Skill 路径（可选）<input className="ad-input" value={draft.fofaSkillPath} disabled={saving} onChange={(event) => onUpdate("fofaSkillPath", event.target.value)} /></label>
+    <label className="ad-field">鹰图 API Host<input className="ad-input" value={draft.hunterApiBaseUrl} disabled={disabled} onChange={(event) => onUpdate("hunterApiBaseUrl", event.target.value)} /></label>
+    <label className="ad-field">FOFA API Host<input className="ad-input" value={draft.fofaApiBaseUrl} disabled={disabled} onChange={(event) => onUpdate("fofaApiBaseUrl", event.target.value)} /></label>
+    <label className="ad-field">鹰图 Skill 路径（可选）<input className="ad-input" value={draft.hunterSkillPath} disabled={disabled} onChange={(event) => onUpdate("hunterSkillPath", event.target.value)} /></label>
+    <label className="ad-field">FOFA Skill 路径（可选）<input className="ad-input" value={draft.fofaSkillPath} disabled={disabled} onChange={(event) => onUpdate("fofaSkillPath", event.target.value)} /></label>
   </>;
 }
 
-function Credential({ name, kind, value, isConfigured, saving, onChange, onSave, onClear }: {
+function Credential({ name, kind, value, isConfigured, disabled, onChange, onSave, onClear }: {
   name: string;
   kind: CredentialKind;
   value: string;
   isConfigured: boolean;
-  saving: boolean;
+  disabled: boolean;
   onChange: (value: string) => void;
   onSave: (kind: CredentialKind) => void;
   onClear: (kind: CredentialKind) => void;
 }) {
   return <label className="ad-field">{name}（{configured(isConfigured)}）
-    <span className="ad-credential"><input className="ad-input" type="password" autoComplete="new-password" value={value} disabled={saving} onChange={(event) => onChange(event.target.value)} /><Button className="compact" disabled={saving} onClick={() => onSave(kind)}>保存</Button><Button className="compact danger" disabled={saving} onClick={() => onClear(kind)}>清除</Button></span>
+    <span className="ad-credential"><input className="ad-input" type="password" autoComplete="new-password" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} /><Button className="compact" disabled={disabled} onClick={() => onSave(kind)}>保存</Button><Button className="compact danger" disabled={disabled} onClick={() => onClear(kind)}>清除</Button></span>
   </label>;
 }
 
-function CredentialFields({ settings, credentials, saving, onChange, onSave, onClear }: {
+function CredentialFields({ settings, credentials, disabled, onChange, onSave, onClear }: {
   settings: CollectorSettings;
   credentials: Credentials;
-  saving: boolean;
+  disabled: boolean;
   onChange: (kind: CredentialKind, value: string) => void;
   onSave: (kind: CredentialKind) => void;
   onClear: (kind: CredentialKind) => void;
 }) {
   return <>
-    <Credential name="Hunter API 密钥" kind="hunter" value={credentials.hunter} isConfigured={settings.hunterApiKeyConfigured} saving={saving} onChange={(value) => onChange("hunter", value)} onSave={onSave} onClear={onClear} />
-    <Credential name="FOFA API 密钥" kind="fofa" value={credentials.fofa} isConfigured={settings.fofaApiKeyConfigured} saving={saving} onChange={(value) => onChange("fofa", value)} onSave={onSave} onClear={onClear} />
-    <Credential name="天眼查 API 密钥" kind="tianyan" value={credentials.tianyan} isConfigured={settings.tianyanApiKeyConfigured} saving={saving} onChange={(value) => onChange("tianyan", value)} onSave={onSave} onClear={onClear} />
+    <Credential name="Hunter API 密钥" kind="hunter" value={credentials.hunter} isConfigured={settings.hunterApiKeyConfigured} disabled={disabled} onChange={(value) => onChange("hunter", value)} onSave={onSave} onClear={onClear} />
+    <Credential name="FOFA API 密钥" kind="fofa" value={credentials.fofa} isConfigured={settings.fofaApiKeyConfigured} disabled={disabled} onChange={(value) => onChange("fofa", value)} onSave={onSave} onClear={onClear} />
+    <Credential name="天眼查 API 密钥" kind="tianyan" value={credentials.tianyan} isConfigured={settings.tianyanApiKeyConfigured} disabled={disabled} onChange={(value) => onChange("tianyan", value)} onSave={onSave} onClear={onClear} />
   </>;
 }
 
@@ -207,8 +212,9 @@ export function SettingsPage({ api }: { api: AssetDiscoveryApi }) {
     return () => { retryButton.onclick = null; };
   }, [reader.error, reader.loading, reader.load]);
   const settingsSave = useSettingsSave({ api, draft: reader.draft, settingsReady: reader.isSettingsReady, setSettings: reader.setSettings, setDraft: reader.setDraft, setError: reader.setError, setNotice: reader.setNotice });
-  const credentials = useCredentials({ api, refresh: async () => { await reader.load(false); }, setError: reader.setError, setNotice: reader.setNotice });
+  const credentials = useCredentials({ api, refresh: async () => { await reader.load(false); }, settingsReady: reader.isSettingsReady, setError: reader.setError, setNotice: reader.setNotice });
   const saving = settingsSave.saving || credentials.saving;
+  const settingsDisabled = saving || !reader.isSettingsReady;
   if (reader.loading && !reader.settings) return <div className="ad-app ad-settings"><p className="ad-muted">正在读取资产发现设置…</p></div>;
   if (reader.error && !reader.settings) return <div className="ad-app ad-settings"><div className="ad-error"><p>{reader.error}</p><button ref={retryButtonRef} className="ad-button compact" type="button" disabled={reader.loading}>重新读取</button></div></div>;
   if (!reader.settings || !reader.draft) throw new Error("资产发现设置状态不完整");
@@ -216,8 +222,8 @@ export function SettingsPage({ api }: { api: AssetDiscoveryApi }) {
     <p className="ad-eyebrow">ASSET DISCOVERY SETTINGS</p><h1 className="ad-title">资产发现</h1>
     <p className="ad-description">配置默认数据源、API Host 和 Skill 路径。密钥仅由宿主系统密钥库存储。</p>
     <div className="ad-runs">
-      <SettingsFields draft={reader.draft} saving={saving} onUpdate={reader.update} />
-      <CredentialFields settings={reader.settings} credentials={credentials.credentials} saving={saving} onChange={credentials.setCredential} onSave={(kind) => void credentials.save(kind)} onClear={credentials.setClearKind} />
+      <SettingsFields draft={reader.draft} disabled={settingsDisabled} onUpdate={reader.update} />
+      <CredentialFields settings={reader.settings} credentials={credentials.credentials} disabled={settingsDisabled} onChange={credentials.setCredential} onSave={(kind) => void credentials.save(kind)} onClear={credentials.setClearKind} />
       <p className="ad-muted">当前 Skill 解析：Hunter {reader.settings.resolvedHunterSkillPath || "—"}；FOFA {reader.settings.resolvedFofaSkillPath || "—"}</p>
       {reader.error ? <p className="ad-field-error">{reader.error}</p> : null}{reader.notice ? <p className="ad-muted">{reader.notice}</p> : null}
       <div className="ad-form-actions"><Button className="primary" disabled={saving || !reader.isSettingsReady} onClick={() => void settingsSave.save()}>保存设置</Button><Button disabled={saving || reader.loading} onClick={() => void reader.load()}>重新读取设置</Button></div>
