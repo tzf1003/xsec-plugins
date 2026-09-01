@@ -104,7 +104,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             'test("^xsec-marketplace/batch-[0-9]+-[0-9]+$")',
             "for name in source-gate; do",
             'creator.login == "coderabbitai[bot]"',
-            'if length > 0 then .[0].state == "success"',
+            '.[0].state == "success"',
+            '.[0].description == "Review completed"',
             "reviewThreads(first:100,after:$endCursor)",
             "Verify the signed stale batch as data",
             "--verify-active-marketplace-signatures",
@@ -148,7 +149,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', workflow)
         self.assertIn('creator.login == "coderabbitai[bot]"', workflow)
         self.assertIn('creator.type == "Bot"', workflow)
-        self.assertIn('if length > 0 then .[0].state == "success"', workflow)
+        self.assertIn('.[0].state == "success"', workflow)
+        self.assertIn('.[0].description == "Review completed"', workflow)
         self.assertNotIn('sort_by(.created_at)', workflow)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertIn("gh api graphql --paginate --slurp", workflow)
@@ -174,7 +176,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('commits/${head_sha}/statuses?per_page=100', selected_finalizer)
         self.assertIn('creator.login == "coderabbitai[bot]"', selected_finalizer)
         self.assertIn('creator.type == "Bot"', selected_finalizer)
-        self.assertIn('if length > 0 then .[0].state == "success"', selected_finalizer)
+        self.assertIn('.[0].state == "success"', selected_finalizer)
+        self.assertIn('.[0].description == "Review completed"', selected_finalizer)
         self.assertNotIn('sort_by(.created_at)', selected_finalizer)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", selected_finalizer)
         self.assertIn("needs.select-exact-generated-pr.result == 'success'", selected_finalizer)

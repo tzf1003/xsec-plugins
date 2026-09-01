@@ -88,9 +88,10 @@ jobs:
                     and .creator.login == "coderabbitai[bot]"
                     and .creator.type == "Bot"
                     and (.created_at | type == "string")
+                    and (.description | type == "string")
                   )
               ]
-              | if length > 0 then .[0].state == "success" else false end
+              | if length > 0 then (.[0].state == "success" and .[0].description == "Review completed") else false end
             )
           ' >/dev/null; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
