@@ -587,6 +587,112 @@ class MarketplaceValidationTests(unittest.TestCase):
         )
         self.assertEqual(validate_market.frontend_reachable_token_indices(tokens) is not None, True)
 
+    def test_frontend_request_identifier_must_be_the_complete_argument(self) -> None:
+        source = (
+            'const METHOD="xsec.good";'
+            'host.request(METHOD.replace("good","bad"),{})'
+        )
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+            validate_market.frontend_host_requests(tokens, "frontend")
+
+    def test_frontend_rejects_unsupported_request_invocation_forms(self) -> None:
+        cases = (
+            'host.request.call(host,"xsec.bad",{})',
+            '(host.request)("xsec.bad",{})',
+            'const h=host;h["request"]("xsec.bad",{})',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                tokens = validate_market.javascript_contract_tokens(source, "frontend")
+                with self.assertRaisesRegex(MarketplaceValidationError, "unresolved receiver"):
+                    validate_market.frontend_host_requests(tokens, "frontend")
+
+    def test_frontend_rejects_request_in_unsupported_helper_shapes(self) -> None:
+        source = (
+            'const helper=()=>host.request("xsec.bad",{});'
+            'const object={send(){host.request("xsec.bad",{})}};'
+            'export function activate(host){host.request("xsec.good",{});helper();object.send()}'
+        )
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        with self.assertRaisesRegex(MarketplaceValidationError, "activation-reachable"):
+            validate_market.frontend_host_requests(tokens, "frontend")
+
+    def test_frontend_rejects_noncanonical_parenthesized_and_alias_receivers(self) -> None:
+        cases = (
+            '(true?fake:host).request("xsec.bad",{})',
+            'const broker=host;broker?.request("xsec.bad",{})',
+            'const broker=host;broker["request"]("xsec.bad",{})',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                tokens = validate_market.javascript_contract_tokens(source, "frontend")
+                with self.assertRaisesRegex(MarketplaceValidationError, "unresolved receiver"):
+                    validate_market.frontend_host_requests(tokens, "frontend")
+
+    def test_frontend_callback_reachability_rejects_property_key_decoy(self) -> None:
+        source = (
+            'export function activate(host){'
+            'function decoy(){host.request("xsec.bad",{})}'
+            'const value={decoy:1};host.request("xsec.good",{});return value}'
+        )
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        with self.assertRaisesRegex(MarketplaceValidationError, "activation-reachable"):
+            validate_market.frontend_host_requests(tokens, "frontend")
+
+    def test_frontend_rpc_binding_requires_source_order_and_block_scope(self) -> None:
+        cases = (
+            'host.request(METHOD,{});const METHOD="xsec.good";',
+            'if(true){const METHOD="xsec.good"}host.request(METHOD,{})',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                tokens = validate_market.javascript_contract_tokens(source, "frontend")
+                with self.assertRaisesRegex(MarketplaceValidationError, "unresolved host RPC request argument"):
+                    validate_market.frontend_host_requests(tokens, "frontend")
+
+    def test_frontend_rpc_map_preserves_property_level_values(self) -> None:
+        source = (
+            'const RPC={chosen:["xsec.good"],decoy:["xsec.bad"]};'
+            'const [METHOD]=RPC.chosen;host.request(METHOD,{})'
+        )
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        self.assertEqual(validate_market.frontend_host_requests(tokens, "frontend"), {"xsec.good"})
+
+    def test_frontend_rpc_map_unions_genuinely_dynamic_property_values(self) -> None:
+        source = (
+            'const RPC={chosen:["xsec.good"],other:["xsec.other"]};'
+            'const [METHOD]=RPC[key];host.request(METHOD,{})'
+        )
+        tokens = validate_market.javascript_contract_tokens(source, "frontend")
+        self.assertEqual(
+            validate_market.frontend_host_requests(tokens, "frontend"),
+            {"xsec.good", "xsec.other"},
+        )
+
+    def test_frontend_excludes_requests_in_literal_dead_expressions(self) -> None:
+        cases = (
+            'export function activate(host){false&&host.request("xsec.bad",{})}',
+            'export function activate(host){true?undefined:host.request("xsec.bad",{})}',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                tokens = validate_market.javascript_contract_tokens(source, "frontend")
+                with self.assertRaisesRegex(MarketplaceValidationError, "activation-reachable"):
+                    validate_market.frontend_host_requests(tokens, "frontend")
+
+    def test_template_expression_braces_do_not_hide_request_division(self) -> None:
+        cases = (
+            '`${{}/host.request("xsec.bad")/1}`',
+            '`${function(){}/host.request("xsec.bad")/1}`',
+            '`${class X{}/host.request("xsec.bad")/1}`',
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                tokens = validate_market.javascript_contract_tokens(source, "frontend")
+                self.assertNotIn("regex", {kind for kind, _ in tokens})
+                self.assertEqual(validate_market.frontend_host_requests(tokens, "frontend"), {"xsec.bad"})
+
     def test_javascript_contract_tokens_scan_division_heavy_source_incrementally(self) -> None:
         divisions = 2000
         source = "x=1" + "/2" * divisions + ";"

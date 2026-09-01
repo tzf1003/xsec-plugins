@@ -157,6 +157,21 @@ FORBIDDEN_OFFICIAL_FRONTEND_MARKERS = (
     "mock",
     "fallback-module",
 )
+FRONTEND_CALLBACK_APIS = frozenset({
+    "IntersectionObserver",
+    "MutationObserver",
+    "ResizeObserver",
+    "addEventListener",
+    "catch",
+    "finally",
+    "forEach",
+    "map",
+    "requestAnimationFrame",
+    "setInterval",
+    "setTimeout",
+    "then",
+})
+FRONTEND_REQUEST_FORWARDERS = frozenset({"call", "apply", "bind"})
 # The browser-side approvals frontend is explicitly reviewed and pinned.  The
 # hash includes its isolated settings surface, so any source change still
 # requires an intentional validation update in the same review.
@@ -375,14 +390,16 @@ def javascript_class_declaration_before_brace(tokens: list[tuple[str, str]], ope
     return javascript_declaration_boundary(tokens, cursor - 1)
 
 
-def javascript_statement_brace_closed(tokens: list[tuple[str, str]]) -> bool:
+def javascript_statement_brace_closed(
+    tokens: list[tuple[str, str]], *, expression_context: bool = False
+) -> bool:
     """Return whether the last `}` closes a statement, so a regex may follow."""
 
     opening = matching_opening_brace(tokens, len(tokens) - 1)
     if opening is None:
         return False
     if opening == 0:
-        return True
+        return not expression_context
     previous = tokens[opening - 1]
     if previous[1] in STATEMENT_BOUNDARY_PUNCTUATION:
         return True
@@ -395,12 +412,15 @@ def javascript_statement_brace_closed(tokens: list[tuple[str, str]]) -> bool:
     ):
         return True
     if previous != ("punctuation", ")"):
-        return javascript_class_declaration_before_brace(tokens, opening)
+        return (
+            not expression_context
+            and javascript_class_declaration_before_brace(tokens, opening)
+        )
     if javascript_control_header_closed(tokens[:opening]):
         return True
     if javascript_function_declaration_before_brace(tokens, opening):
-        return True
-    return javascript_class_declaration_before_brace(tokens, opening)
+        return not expression_context
+    return not expression_context and javascript_class_declaration_before_brace(tokens, opening)
 
 
 def javascript_for_of_keyword(tokens: list[tuple[str, str]]) -> bool:
@@ -425,7 +445,9 @@ def javascript_for_of_keyword(tokens: list[tuple[str, str]]) -> bool:
     return False
 
 
-def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
+def javascript_regex_allowed(
+    tokens: list[tuple[str, str]], *, expression_context: bool = False
+) -> bool:
     """Return whether the next slash can begin a JavaScript regex literal."""
 
     cursor = len(tokens) - 1
@@ -462,7 +484,9 @@ def javascript_regex_allowed(tokens: list[tuple[str, str]]) -> bool:
     if kind in {"number", "regex", "string", "template"} or value == "]":
         return False
     if value == "}":
-        return javascript_statement_brace_closed(tokens[: cursor + 1])
+        return javascript_statement_brace_closed(
+            tokens[: cursor + 1], expression_context=expression_context
+        )
     if value == ")":
         return javascript_control_header_closed(tokens[: cursor + 1])
     previous = cursor - 1
@@ -528,7 +552,9 @@ def tokenize_javascript(
                 fail(f"{label} contains an unterminated JavaScript block comment")
             index = end + 2
             continue
-        if character == "/" and javascript_regex_allowed(tokens):
+        if character == "/" and javascript_regex_allowed(
+            tokens, expression_context=stop_at_unmatched_brace
+        ):
             end = consume_javascript_regex(source, index)
             if end is not None:
                 tokens.append(("regex", source[index:end]))
@@ -1480,36 +1506,43 @@ def matching_square_bracket(tokens: list[tuple[str, str]], opening_index: int) -
 
 def static_rpc_array_values(
     tokens: list[tuple[str, str]], opening: int, closing: int
-) -> set[str] | None:
-    values: set[str] = set()
+) -> dict[str, str] | None:
+    values: dict[str, str] = {}
     cursor = opening + 1
     while cursor < closing:
         if tokens[cursor] == ("punctuation", ","):
             cursor += 1
             continue
-        if tokens[cursor][0] not in {"identifier", "string"}:
+        entry = static_rpc_array_entry(tokens, cursor, closing)
+        if entry is None:
             return None
-        if tokens[cursor + 1:cursor + 3] != [("punctuation", ":"), ("punctuation", "[")]:
+        property_name, value, cursor = entry
+        if property_name in values:
             return None
-        array_closing = matching_square_bracket(tokens, cursor + 2)
-        if array_closing is None or array_closing >= closing:
-            return None
-        value = tokens[cursor + 3]
-        if value[0] != "string" or not re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value[1]):
-            return None
-        value_end = cursor + 4
-        if value_end < closing and tokens[value_end] not in {
-            ("punctuation", ","),
-            ("punctuation", "]"),
-        }:
-            return None
-        values.add(value[1])
-        cursor = array_closing + 1
+        values[property_name] = value
     return values or None
 
 
-def static_rpc_array_objects(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
-    objects: dict[str, set[str]] = {}
+def static_rpc_array_entry(
+    tokens: list[tuple[str, str]], cursor: int, closing: int
+) -> tuple[str, str, int] | None:
+    if tokens[cursor][0] not in {"identifier", "string"}:
+        return None
+    if tokens[cursor + 1:cursor + 3] != [("punctuation", ":"), ("punctuation", "[")]:
+        return None
+    array_closing = matching_square_bracket(tokens, cursor + 2)
+    if array_closing is None or array_closing >= closing:
+        return None
+    value = tokens[cursor + 3]
+    if value[0] != "string" or not re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value[1]):
+        return None
+    if tokens[cursor + 4] not in {("punctuation", ","), ("punctuation", "]")}:
+        return None
+    return tokens[cursor][1], value[1], array_closing + 1
+
+
+def static_rpc_array_objects(tokens: list[tuple[str, str]]) -> dict[str, dict[str, str]]:
+    objects: dict[str, dict[str, str]] = {}
     for index in range(len(tokens) - 3):
         if (
             tokens[index] != ("identifier", "const")
@@ -1524,37 +1557,61 @@ def static_rpc_array_objects(tokens: list[tuple[str, str]]) -> dict[str, set[str
     return objects
 
 
+def frontend_rpc_selector(
+    tokens: list[tuple[str, str]], source_index: int, properties: dict[str, str]
+) -> tuple[set[str] | None, int]:
+    cursor = source_index + 1
+    if tokens[cursor:cursor + 1] == [("punctuation", ".")]:
+        if cursor + 1 >= len(tokens) or tokens[cursor + 1][0] != "identifier":
+            return None, cursor
+        value = properties.get(tokens[cursor + 1][1])
+        return ({value} if value else None), cursor + 2
+    if tokens[cursor:cursor + 1] != [("punctuation", "[")]:
+        return None, cursor
+    closing = matching_square_bracket(tokens, cursor)
+    if closing is None:
+        return None, cursor
+    key_tokens = tokens[cursor + 1:closing]
+    if len(key_tokens) == 1 and key_tokens[0][0] == "string":
+        value = properties.get(key_tokens[0][1])
+        return ({value} if value else None), closing + 1
+    return set(properties.values()), closing + 1
+
+
+def frontend_rpc_destructuring(
+    tokens: list[tuple[str, str]], index: int
+) -> tuple[str, int, int] | None:
+    if tokens[index:index + 2] != [("identifier", "const"), ("punctuation", "[")]:
+        return None
+    closing = matching_square_bracket(tokens, index + 1)
+    if closing is None or tokens[index + 2][0] != "identifier":
+        return None
+    if closing + 2 >= len(tokens) or tokens[closing + 1] != ("punctuation", "="):
+        return None
+    return tokens[index + 2][1], closing + 2, closing
+
+
 def frontend_rpc_bindings(tokens: list[tuple[str, str]]) -> dict[str, set[str]]:
     bindings = {name: {value} for name, value in frontend_string_constants(tokens).items()}
     objects = static_rpc_array_objects(tokens)
     for index in range(len(tokens) - 4):
-        if tokens[index:index + 2] != [("identifier", "const"), ("punctuation", "[")]:
+        destructuring = frontend_rpc_destructuring(tokens, index)
+        if destructuring is None:
             continue
-        closing = matching_square_bracket(tokens, index + 1)
-        if closing is None or tokens[index + 2][0] != "identifier":
-            continue
-        if closing + 2 >= len(tokens) or tokens[closing + 1] != ("punctuation", "="):
-            continue
-        source_index = closing + 2
+        target, source_index, _ = destructuring
         source = tokens[source_index][1] if tokens[source_index][0] == "identifier" else ""
-        rhs_end = source_index + 1
-        if (
-            rhs_end + 1 < len(tokens)
-            and tokens[rhs_end] == ("punctuation", ".")
-            and tokens[rhs_end + 1][0] == "identifier"
-        ):
-            rhs_end += 2
-        elif rhs_end < len(tokens) and tokens[rhs_end] == ("punctuation", "["):
-            rhs_end = matching_square_bracket(tokens, rhs_end) or rhs_end
-            rhs_end += 1
+        properties = objects.get(source)
+        if not properties:
+            continue
+        selected, rhs_end = frontend_rpc_selector(tokens, source_index, properties)
         if rhs_end >= len(tokens) or tokens[rhs_end] not in {
             ("punctuation", ";"),
             ("punctuation", ","),
             ("punctuation", "}"),
         }:
             continue
-        if source in objects:
-            bindings[tokens[index + 2][1]] = objects[source]
+        if selected:
+            bindings[target] = selected
     return bindings
 
 
@@ -1618,82 +1675,102 @@ def frontend_activation_body_range(tokens: list[tuple[str, str]]) -> tuple[int, 
     return None
 
 
-def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] | None:
-    """Return token indices reachable from exported activation and lifecycle code.
+def frontend_direct_helper_calls(
+    tokens: list[tuple[str, str]], blocks: dict[str, tuple[int, int]], span: tuple[int, int]
+) -> list[str]:
+    calls: list[str] = []
+    for index in range(span[0], span[1] - 1):
+        if tokens[index][0] != "identifier" or tokens[index + 1] != ("punctuation", "("):
+            continue
+        name = tokens[index][1]
+        if name not in blocks or frontend_is_member_helper_call(tokens, index):
+            continue
+        closing = matching_parenthesis(tokens, index + 1)
+        if closing is None or closing + 1 >= len(tokens):
+            calls.append(name)
+        elif tokens[closing + 1] != ("punctuation", "{"):
+            calls.append(name)
+    return calls
 
-    Frontends commonly keep host-request helpers in named functions above the
-    exported activation.  A small call-graph walk includes helpers called by
-    activation while excluding unrelated demonstrations or shadowed functions.
-    A source fragment without an activation (used by unit tests) retains the
-    historical whole-fragment behavior.
-    """
+
+def frontend_is_member_helper_call(tokens: list[tuple[str, str]], index: int) -> bool:
+    if not index or tokens[index - 1] != ("punctuation", "."):
+        return False
+    return tokens[index - 3:index] != [
+        ("punctuation", "."),
+        ("punctuation", "."),
+        ("punctuation", "."),
+    ]
+
+
+def frontend_enclosing_call_name(
+    tokens: list[tuple[str, str]], index: int
+) -> str | None:
+    depth = 0
+    for cursor in range(index - 1, -1, -1):
+        token = tokens[cursor]
+        if token in {("punctuation", ")"), ("punctuation", "]"), ("punctuation", "}")}:
+            depth += 1
+        elif token in {("punctuation", "("), ("punctuation", "["), ("punctuation", "{")}:
+            if depth:
+                depth -= 1
+            elif token == ("punctuation", "(") and cursor:
+                callee = tokens[cursor - 1]
+                return callee[1] if callee[0] == "identifier" else None
+            else:
+                return None
+        elif depth == 0 and token == ("punctuation", ";"):
+            return None
+    return None
+
+
+def frontend_is_callback_reference(tokens: list[tuple[str, str]], index: int) -> bool:
+    if index >= 2 and tokens[index - 1] == ("punctuation", "="):
+        property_name = tokens[index - 2]
+        if property_name[0] == "identifier" and property_name[1].startswith("on"):
+            return True
+    return frontend_enclosing_call_name(tokens, index) in FRONTEND_CALLBACK_APIS
+
+
+def frontend_referenced_helpers(
+    tokens: list[tuple[str, str]], blocks: dict[str, tuple[int, int]], span: tuple[int, int]
+) -> list[str]:
+    referenced: list[str] = []
+    for index in range(span[0], span[1] + 1):
+        token = tokens[index]
+        if token[0] != "identifier" or token[1] not in blocks:
+            continue
+        block_start, block_end = blocks[token[1]]
+        if block_start <= index <= block_end:
+            continue
+        if frontend_is_callback_reference(tokens, index):
+            referenced.append(token[1])
+    return referenced
+
+
+def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] | None:
+    """Return token indices proven reachable from exported activation."""
 
     activation = frontend_activation_body_range(tokens)
     if activation is None:
         return None
     blocks = frontend_named_function_blocks(tokens)
     reachable: set[int] = set(range(activation[0], activation[1]))
-    nested_blocks = {
-        span for name, span in blocks.items()
-        if name != "activate" and activation[0] <= span[0] < span[1] <= activation[1]
-    }
-    for start, end in nested_blocks:
-        reachable.difference_update(range(start, end + 1))
-    queued: list[str] = []
-
-    def enqueue_calls(start: int, end: int) -> None:
-        for index in range(start, end - 1):
-            if tokens[index][0] != "identifier" or tokens[index + 1] != ("punctuation", "("):
-                continue
-            name = tokens[index][1]
-            spread_call = (
-                index >= 3
-                and tokens[index - 3:index] == [
-                    ("punctuation", "."),
-                    ("punctuation", "."),
-                    ("punctuation", "."),
-                ]
-            )
-            if name not in blocks or (
-                index and tokens[index - 1] == ("punctuation", ".") and not spread_call
-            ):
-                continue
-            closing = matching_parenthesis(tokens, index + 1)
-            if closing is not None and closing + 1 < len(tokens) and tokens[closing + 1] == ("punctuation", "{"):
-                continue
-            queued.append(name)
-
-    enqueue_calls(*activation)
-    # Event/timer APIs often receive a named helper as a callback rather than
-    # invoking it directly (``setTimeout(resize, 100)``).  Only references in
-    # the currently reachable activation statements may enqueue that helper.
-    for name, (start, end) in blocks.items():
-        if name == "activate" or not (activation[0] <= start < end <= activation[1]):
-            continue
-        if any(
-            tokens[index] == ("identifier", name)
-            and not (start <= index <= end)
-            for index in reachable
-        ):
-            queued.append(name)
+    for name, span in blocks.items():
+        if name != "activate" and activation[0] <= span[0] < span[1] <= activation[1]:
+            reachable.difference_update(range(span[0], span[1] + 1))
+    queued = frontend_direct_helper_calls(tokens, blocks, activation)
+    queued.extend(frontend_referenced_helpers(tokens, blocks, activation))
     seen: set[str] = set()
     while queued:
         name = queued.pop()
         if name in seen or name not in blocks:
             continue
         seen.add(name)
-        start, end = blocks[name]
-        reachable.update(range(start, end + 1))
-        enqueue_calls(start, end)
-        for candidate, (candidate_start, candidate_end) in blocks.items():
-            if candidate == "activate":
-                continue
-            if any(
-                tokens[index] == ("identifier", candidate)
-                and not (candidate_start <= index <= candidate_end)
-                for index in range(start, end + 1)
-            ):
-                queued.append(candidate)
+        span = blocks[name]
+        reachable.update(range(span[0], span[1] + 1))
+        queued.extend(frontend_direct_helper_calls(tokens, blocks, span))
+        queued.extend(frontend_referenced_helpers(tokens, blocks, span))
     return reachable
 
 
@@ -1786,22 +1863,20 @@ def frontend_binding_counts(tokens: list[tuple[str, str]]) -> dict[str, int]:
     return counts
 
 
-def frontend_binding_declared_in_scope(
-    tokens: list[tuple[str, str]], name: str, request_index: int
-) -> bool:
-    """Require a resolved RPC binding to be visible at its request site."""
+def frontend_function_owner(
+    blocks: dict[str, tuple[int, int]], index: int
+) -> str | None:
+    candidates = [
+        (function_name, start, end)
+        for function_name, (start, end) in blocks.items()
+        if start < index < end
+    ]
+    return min(candidates, key=lambda item: item[2] - item[1])[0] if candidates else None
 
-    blocks = frontend_named_function_blocks(tokens)
 
-    def owner(index: int) -> str | None:
-        candidates = [
-            (function_name, start, end)
-            for function_name, (start, end) in blocks.items()
-            if start < index < end
-        ]
-        return min(candidates, key=lambda item: item[2] - item[1])[0] if candidates else None
-
-    request_owner = owner(request_index)
+def frontend_rpc_declarations(
+    tokens: list[tuple[str, str]], name: str
+) -> list[int]:
     declarations: list[int] = []
     for index in range(len(tokens) - 3):
         if tokens[index:index + 3] == [
@@ -1817,10 +1892,38 @@ def frontend_binding_declared_in_scope(
             ("identifier", name),
         ]:
             declarations.append(index)
+    return declarations
+
+
+def frontend_enclosing_braces(
+    tokens: list[tuple[str, str]], index: int
+) -> set[int]:
+    stack: list[int] = []
+    for cursor in range(index):
+        if tokens[cursor] == ("punctuation", "{"):
+            stack.append(cursor)
+        elif tokens[cursor] == ("punctuation", "}") and stack:
+            stack.pop()
+    return set(stack)
+
+
+def frontend_binding_declared_in_scope(
+    tokens: list[tuple[str, str]], name: str, request_index: int
+) -> bool:
+    """Require a resolved RPC binding to be visible at its request site."""
+
+    declarations = frontend_rpc_declarations(tokens, name)
     if len(declarations) != 1:
         return False
-    declaration_owner = owner(declarations[0])
-    return declaration_owner is None or declaration_owner == request_owner
+    declaration = declarations[0]
+    if not frontend_enclosing_braces(tokens, declaration) <= frontend_enclosing_braces(tokens, request_index):
+        return False
+    blocks = frontend_named_function_blocks(tokens)
+    declaration_owner = frontend_function_owner(blocks, declaration)
+    request_owner = frontend_function_owner(blocks, request_index)
+    if declaration_owner is None:
+        return request_owner is not None or declaration < request_index
+    return declaration_owner == request_owner and declaration < request_index
 
 
 def _bracket_request_length(dense: list[tuple[str, str]], index: int) -> int:
@@ -1834,139 +1937,223 @@ def _bracket_request_length(dense: list[tuple[str, str]], index: int) -> int:
     return 0
 
 
-def host_request_argument_index(dense: list[tuple[str, str]], index: int) -> int | None:
-    """Return the first-argument index of host.request / host?.request / host["request"]."""
+def javascript_parenthesis_pairs(tokens: list[tuple[str, str]]) -> dict[int, int]:
+    stack: list[int] = []
+    pairs: dict[int, int] = {}
+    for index, token in enumerate(tokens):
+        if token == ("punctuation", "("):
+            stack.append(index)
+        elif token == ("punctuation", ")") and stack:
+            opening = stack.pop()
+            pairs[opening] = index
+            pairs[index] = opening
+    return pairs
 
-    if index >= len(dense):
-        return None
-    # Parenthesized receivers are semantically equivalent to the bare broker
-    # binding.  Accept a simple comma expression whose final value is ``host``
-    # as well (for example ``(0, host).request(...)``); any other expression is
-    # left unresolved and therefore fails closed in the caller.
+
+def frontend_host_receiver_end(
+    dense: list[tuple[str, str]], index: int, pairs: dict[int, int]
+) -> int | None:
     if dense[index] == ("identifier", "host"):
-        cursor = index + 1
-    elif dense[index] == ("punctuation", "("):
-        closing = matching_parenthesis(dense, index)
-        if closing is None:
-            return None
-        inner = dense[index + 1:closing]
-        if not inner or inner[-1] != ("identifier", "host"):
-            return None
-        cursor = closing + 1
-    else:
+        return index + 1
+    if dense[index] != ("punctuation", "(") or index not in pairs:
         return None
-    if (
-        cursor + 1 < len(dense)
-        and dense[cursor] == ("punctuation", "?")
-        and dense[cursor + 1] == ("punctuation", ".")
-    ):
+    closing = pairs[index]
+    inner = dense[index + 1:closing]
+    if inner == [("identifier", "host")]:
+        return closing + 1
+    if len(inner) >= 3 and inner[-2:] == [
+        ("punctuation", ","),
+        ("identifier", "host"),
+    ]:
+        return closing + 1
+    return None
+
+
+def frontend_request_member(
+    dense: list[tuple[str, str]], cursor: int
+) -> tuple[int, int] | None:
+    if dense[cursor:cursor + 2] == [("punctuation", "?"), ("punctuation", ".")]:
         cursor += 2
-        bracket = _bracket_request_length(dense, cursor)
-        if bracket:
-            cursor += bracket
-        elif cursor < len(dense) and dense[cursor] == ("identifier", "request"):
-            cursor += 1
-        else:
-            return None
     elif cursor < len(dense) and dense[cursor] == ("punctuation", "."):
         cursor += 1
-        if cursor >= len(dense) or dense[cursor] != ("identifier", "request"):
-            return None
-        cursor += 1
     else:
         bracket = _bracket_request_length(dense, cursor)
-        if not bracket:
-            return None
-        cursor += bracket
-    if (
-        cursor + 1 < len(dense)
-        and dense[cursor] == ("punctuation", "?")
-        and dense[cursor + 1] == ("punctuation", ".")
+        return (cursor + bracket, cursor + 1) if bracket else None
+    bracket = _bracket_request_length(dense, cursor)
+    if bracket:
+        return cursor + bracket, cursor + 1
+    if cursor < len(dense) and dense[cursor] == ("identifier", "request"):
+        return cursor + 1, cursor
+    return None
+
+
+def frontend_host_request_call(
+    dense: list[tuple[str, str]], index: int, pairs: dict[int, int]
+) -> tuple[int, int] | None:
+    cursor = frontend_host_receiver_end(dense, index, pairs)
+    if cursor is None:
+        return None
+    member = frontend_request_member(dense, cursor)
+    if member is None:
+        return None
+    member_end, access = member
+    optional_call = dense[member_end:member_end + 3] == [
+        ("punctuation", "?"),
+        ("punctuation", "."),
+        ("punctuation", "("),
+    ]
+    call_opening = member_end + 2 if optional_call else member_end
+    if call_opening >= len(dense) or dense[call_opening] != ("punctuation", "("):
+        return None
+    if call_opening + 1 >= len(dense):
+        return None
+    return call_opening + 1, access
+
+
+def frontend_host_request_access(
+    dense: list[tuple[str, str]], index: int, pairs: dict[int, int]
+) -> int | None:
+    cursor = frontend_host_receiver_end(dense, index, pairs)
+    if cursor is None:
+        return None
+    member = frontend_request_member(dense, cursor)
+    return member[1] if member else None
+
+
+def host_request_argument_index(dense: list[tuple[str, str]], index: int) -> int | None:
+    call = frontend_host_request_call(dense, index, javascript_parenthesis_pairs(dense))
+    return call[0] if call else None
+
+
+def frontend_request_forwarder_invoked(
+    dense: list[tuple[str, str]], cursor: int
+) -> bool:
+    if cursor + 2 >= len(dense) or dense[cursor] != ("punctuation", "."):
+        return False
+    if dense[cursor + 1][0] != "identifier":
+        return False
+    if dense[cursor + 1][1] not in FRONTEND_REQUEST_FORWARDERS:
+        return False
+    return dense[cursor + 2] == ("punctuation", "(")
+
+
+def frontend_request_access_invoked(dense: list[tuple[str, str]], access: int) -> bool:
+    cursor = access + 2 if dense[access][0] == "string" else access + 1
+    while cursor < len(dense) and dense[cursor] == ("punctuation", ")"):
+        cursor += 1
+    if cursor < len(dense) and dense[cursor] == ("punctuation", "("):
+        return True
+    optional_call = dense[cursor:cursor + 3] == [
+        ("punctuation", "?"),
+        ("punctuation", "."),
+        ("punctuation", "("),
+    ]
+    if optional_call:
+        return True
+    return frontend_request_forwarder_invoked(dense, cursor)
+
+
+def frontend_request_access_indices(dense: list[tuple[str, str]]) -> set[int]:
+    accesses: set[int] = set()
+    for index, token in enumerate(dense):
+        if token == ("identifier", "request"):
+            if index and dense[index - 1] == ("punctuation", "."):
+                accesses.add(index)
+            continue
+        if token != ("string", "request") or not index or index + 1 >= len(dense):
+            continue
+        if dense[index - 1] == ("punctuation", "[") and dense[index + 1] == ("punctuation", "]"):
+            accesses.add(index)
+    return accesses
+
+
+def frontend_canonical_host_calls(
+    dense: list[tuple[str, str]], pairs: dict[int, int]
+) -> tuple[list[tuple[int, int, int]], set[int]]:
+    calls: list[tuple[int, int, int]] = []
+    direct_accesses: set[int] = set()
+    for receiver, token in enumerate(dense):
+        if token not in {("identifier", "host"), ("punctuation", "(")}:
+            continue
+        access = frontend_host_request_access(dense, receiver, pairs)
+        if access is not None:
+            direct_accesses.add(access)
+        call = frontend_host_request_call(dense, receiver, pairs)
+        if call is not None:
+            calls.append((receiver, call[0], call[1]))
+    return calls, direct_accesses
+
+
+def frontend_host_request_calls(
+    dense: list[tuple[str, str]], label: str
+) -> list[tuple[int, int, int]]:
+    pairs = javascript_parenthesis_pairs(dense)
+    calls, direct_accesses = frontend_canonical_host_calls(dense, pairs)
+    canonical_accesses = {access for _, _, access in calls}
+    accesses = frontend_request_access_indices(dense)
+    invoked_accesses = {access for access in accesses if frontend_request_access_invoked(dense, access)}
+    if (direct_accesses | invoked_accesses) - canonical_accesses:
+        fail(f"{label} contains a host RPC request through an unresolved receiver")
+    return calls
+
+
+def frontend_request_methods(
+    dense: list[tuple[str, str]], argument: int,
+    proof: tuple[dict[str, set[str]], dict[str, int]],
+) -> set[str] | None:
+    kind, value = dense[argument]
+    if kind in {"string", "identifier"} and (
+        argument + 1 >= len(dense)
+        or dense[argument + 1] not in {("punctuation", ","), ("punctuation", ")")}
     ):
-        cursor += 2
-    if cursor >= len(dense) or dense[cursor] != ("punctuation", "("):
         return None
-    argument = cursor + 1
-    if argument >= len(dense):
-        return None
-    return argument
+    if kind == "string":
+        return {value}
+    bindings, counts = proof
+    if (
+        kind == "identifier"
+        and value in bindings
+        and counts.get(value, 0) == 1
+        and frontend_binding_declared_in_scope(dense, value, argument)
+    ):
+        return bindings[value]
+    return None
 
 
 def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str]:
     dense = [token for token in tokens if token[0] != "newline"]
-    bindings = frontend_rpc_bindings(dense)
-    binding_counts = frontend_binding_counts(dense)
+    proof = (frontend_rpc_bindings(dense), frontend_binding_counts(dense))
     reachable = frontend_reachable_token_indices(tokens)
+    source_indices = [index for index, token in enumerate(tokens) if token[0] != "newline"]
+    calls = frontend_host_request_calls(dense, label)
     requested: set[str] = set()
-    saw_request = False
-    dense_source_indices = [index for index, token in enumerate(tokens) if token[0] != "newline"]
-    for index in range(len(dense)):
-        is_reachable = reachable is None or dense_source_indices[index] in reachable
-        # Any reachable ``name.request(...)`` call whose receiver is not the
-        # activation host has unverifiable broker provenance (including a
-        # simple ``const broker = host`` alias).  Reject it instead of silently
-        # ignoring a dynamic RPC edge.
-        if (
-            dense[index][0] == "identifier"
-            and index + 3 < len(dense)
-            and dense[index + 1:index + 4] == [
-                ("punctuation", "."),
-                ("identifier", "request"),
-                ("punctuation", "("),
-            ]
-            and dense[index][1] != "host"
-        ):
-            if is_reachable:
-                fail(f"{label} contains a host RPC request through an unresolved receiver")
-        argument_index = host_request_argument_index(dense, index)
-        if argument_index is None:
-            continue
-        argument_kind, argument_value = dense[argument_index]
-        if argument_kind == "string" and (
-            argument_index + 1 >= len(dense)
-            or dense[argument_index + 1] not in {
-                ("punctuation", ","),
-                ("punctuation", ")"),
-            }
-        ):
+    for receiver, argument, _ in calls:
+        methods = frontend_request_methods(dense, argument, proof)
+        if methods is None:
             fail(f"{label} contains an unresolved host RPC request argument")
+        source_index = source_indices[receiver]
+        is_reachable = reachable is None or source_index in reachable
+        if is_in_statically_unreachable_expression(tokens, source_index):
+            is_reachable = False
         if not is_reachable:
-            # Uncalled code cannot contribute to the declared request set, but
-            # malformed dynamic broker calls still invalidate the source.
-            if argument_kind not in {"string", "identifier"} or (
-                argument_kind == "identifier"
-                and not (
-                    argument_value in bindings
-                    and binding_counts.get(argument_value, 0) == 1
-                    and frontend_binding_declared_in_scope(dense, argument_value, argument_index)
-                )
-            ):
-                fail(f"{label} contains an unresolved host RPC request argument")
-            continue
-        saw_request = True
-        if argument_kind == "string":
-            requested.add(argument_value)
-        elif (
-            argument_kind == "identifier"
-            and argument_value in bindings
-            and binding_counts.get(argument_value, 0) == 1
-            and frontend_binding_declared_in_scope(dense, argument_value, argument_index)
-        ):
-            requested.update(bindings[argument_value])
-        else:
-            fail(f"{label} contains an unresolved host RPC request argument")
-    if not saw_request:
+            fail(
+                f"{label} does not reference declared RPC methods through "
+                "activation-reachable requests"
+            )
+        requested.update(methods)
+    if not calls:
         fail(f"{label} does not call the declared host RPC surface")
     return requested
 
 
 def validate_frontend_host_requests(
     methods: dict[str, object], tokens: list[tuple[str, str]], label: str
-) -> None:
+) -> set[str]:
     requested = frontend_host_requests(tokens, label)
     undeclared = requested - set(methods)
     if undeclared:
         fail(f"{label} calls undeclared host RPC methods: {sorted(undeclared)}")
+    return requested
 
 
 def validate_frontend_rpc_literals(
@@ -2048,8 +2235,7 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
         if not re.search(rf"\b{lifecycle_method}\s*\(", source):
             fail(f"{label} must implement lifecycle method {lifecycle_method}")
     tokens = javascript_contract_tokens(source, label)
-    validate_frontend_host_requests(methods, tokens, label)
-    requested = frontend_host_requests(tokens, label)
+    requested = validate_frontend_host_requests(methods, tokens, label)
     validate_frontend_rpc_literals(methods, tokens, label, requested)
 
 
