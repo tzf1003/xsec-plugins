@@ -205,11 +205,6 @@ APPROVALS_FRONTEND_SOURCE_SHA256_BY_VERSION = {
     "1.3.0": "f2a7d1673b7117e7bb44398ed4ae62f08bb702f960463318260546819b0742df",
     "1.3.2": "209e8f2eb043a777a77235bdb4985d7d74f951a86162c913be80c27d9a4dcf18",
 }
-TRAFFIC_FRONTEND_SOURCE_SHA256_BY_VERSION = {
-    "1.3.0": "3cea53b5bed45f4e148a47000f8a65bb53d778b768fe70f994eee6ba146c77d8",
-}
-
-
 class MarketplaceValidationError(ValueError):
     """A marketplace invariant was not met."""
 
@@ -1548,7 +1543,7 @@ def validate_approvals_frontend(manifest: dict[str, object], source: str, label:
 
 
 def validate_traffic_frontend(manifest: dict[str, object], source: str, label: str) -> None:
-    """Bind the reviewed Traffic React bundle to its complete broker contract."""
+    """Validate the Traffic bundle accepted by the signed source-batch flow."""
 
     frontend_api = manifest["extensions"]["com.xsec.desktop"].get("frontendApi")
     methods = frontend_api.get("methods") if isinstance(frontend_api, dict) else None
@@ -1558,12 +1553,40 @@ def validate_traffic_frontend(manifest: dict[str, object], source: str, label: s
         descriptor = methods.get(method)
         if not isinstance(descriptor, dict) or descriptor.get("capability") != capability or descriptor.get("binding") != binding:
             fail(f"{label} must bind the reviewed Traffic RPC contract ({method})")
-    normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
-    expected_source_sha256 = TRAFFIC_FRONTEND_SOURCE_SHA256_BY_VERSION.get(manifest.get("version"))
-    if expected_source_sha256 is None:
-        fail(f"{label} uses a Traffic version without an approved frontend source digest")
-    if hashlib.sha256(normalized_source.encode("utf-8")).hexdigest() != expected_source_sha256:
-        fail(f"{label} must match the reviewed Traffic frontend source")
+    requested = traffic_frontend_rpc_methods(javascript_contract_tokens(source, label), label)
+    if requested != set(methods):
+        fail(f"{label} must use exactly the declared Traffic RPC surface")
+
+
+def traffic_frontend_rpc_methods(
+    tokens: list[tuple[str, str]], label: str
+) -> set[str]:
+    """Prove every Traffic RPC is a direct, stable broker call.
+
+    Traffic is a bundled React application: lifecycle calls cross Preact's
+    renderer rather than ordinary JavaScript helper calls.  The protected beta
+    source commit and KMS-signed Factory release authorize each new bundle;
+    this check independently fixes its complete capability boundary.
+    """
+
+    dense = [token for token in tokens if token[0] != "newline"]
+    calls = frontend_host_request_calls(dense, label)
+    if not calls:
+        fail(f"{label} does not call the declared Traffic RPC surface")
+    proof = (frontend_rpc_bindings(dense), frontend_binding_counts(dense))
+    blocks = frontend_named_function_blocks(tokens)
+    source_indices = [index for index, token in enumerate(tokens) if token[0] != "newline"]
+    requested: set[str] = set()
+    for receiver, argument, _ in calls:
+        source_index = source_indices[receiver]
+        owner = frontend_function_owner(blocks, source_index)
+        if owner is None or host_is_reassigned_before(tokens, source_index, blocks[owner][0]):
+            fail(f"{label} cannot prove the Traffic host broker contract")
+        methods = frontend_request_methods(dense, argument, proof)
+        if methods is None:
+            fail(f"{label} contains an unresolved Traffic RPC request argument")
+        requested.update(methods)
+    return requested
 
 
 def frontend_string_constants(tokens: list[tuple[str, str]]) -> dict[str, str]:
@@ -2712,10 +2735,7 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
         fail(f"{label} must return executable mount/update/dispose lifecycle methods")
     if frontend_contains_dynamic_evaluator(tokens):
         fail(f"{label} contains a dynamic JavaScript evaluator")
-    if (
-        manifest.get("name") == TRAFFIC_PLUGIN_ID
-        and manifest.get("version") in TRAFFIC_FRONTEND_SOURCE_SHA256_BY_VERSION
-    ):
+    if manifest.get("name") == TRAFFIC_PLUGIN_ID:
         validate_traffic_frontend(manifest, source, label)
         return
     requested = validate_frontend_host_requests(methods, tokens, label)

@@ -198,4 +198,7 @@ jobs:
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
           body="Generated from Cloud delivery ${DELIVERY_KEY} after reading all ten active Registry source heads. This PR contains one immutable, fully KMS-signed Factory batch. It is automatically source-gated and final-merged only while every recorded beta/main ref remains exact. Trigger plugin: ${EVENT_PLUGIN_ID}."
-          gh pr create --base main --head "$branch" --title "chore: synchronize Marketplace source batch" --body "$body"
+          pull_url="$(gh pr create --base main --head "$branch" --title "chore: synchronize Marketplace source batch" --body "$body")"
+          pull_number="${pull_url##*/}"
+          [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated Factory PR number is invalid." >&2; exit 1; }
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pull_number}/comments" -f body='@coderabbitai review' >/dev/null
