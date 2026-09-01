@@ -62,8 +62,12 @@ jobs:
               exit 1
             }
             comparison="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${head_sha}...${main_sha}")"
-            behind_by="$(printf '%s' "$comparison" | jq -er '.behind_by | if type == "number" and floor == . and . >= 0 then . else error("invalid comparison") end')"
-            if [ "$behind_by" -gt 0 ]; then
+            # The compare endpoint is queried as candidate...main.  In that
+            # direction, ahead_by is the number of protected-main commits the
+            # candidate lacks; behind_by is the candidate's own delta and must
+            # not make a current-base candidate look stale.
+            ahead_by="$(printf '%s' "$comparison" | jq -er '.ahead_by | if type == "number" and floor == . and . >= 0 then . else error("invalid comparison") end')"
+            if [ "$ahead_by" -gt 0 ]; then
               stale_batches="$(printf '%s' "$stale_batches" | jq -cer --argjson candidate "$candidate" '. + [$candidate]')"
             fi
           done < <(printf '%s' "$candidates" | jq -rc '.[]')

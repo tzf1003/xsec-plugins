@@ -104,6 +104,9 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "cancel-in-progress: false",
             'git/ref/heads/main" --jq .object.sha',
             'test("^xsec-marketplace/batch-[0-9]+-[0-9]+$")',
+            'compare/${head_sha}...${main_sha}',
+            'ahead_by="$(printf \'%s\' "$comparison" | jq -er \'.ahead_by',
+            'if [ "$ahead_by" -gt 0 ]; then',
             "for name in source-gate; do",
             'creator.login == "coderabbitai[bot]"',
             '.[0].state == "success"',
@@ -125,6 +128,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, recovery)
         self.assertNotIn('sort_by(.created_at) | last | .state == "success"', recovery)
+        self.assertNotIn('behind_by="$(printf \'%s\' "$comparison" | jq -er \'.behind_by', recovery)
         self.assertIn("trigger_label:", publisher)
         self.assertIn("outputs:\n      pull_number:", publisher)
         self.assertIn('Factory trigger label is invalid.', publisher)
