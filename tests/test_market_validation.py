@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import hashlib
 import json
 import subprocess
 import sys
@@ -46,8 +47,161 @@ def assert_asset_settings_isolation(case: unittest.TestCase, source: str) -> Non
     case.assertIn('const provider=settings.value?.provider==="fofa"?"fofa":"hunter";const missing=provider==="fofa"?!settings.value?.fofaApiKeyConfigured:!settings.value?.hunterApiKeyConfigured;', source)
 
 
+def frontend_section(case: unittest.TestCase, source: str, start: str, end: str) -> str:
+    before, delimiter, remainder = source.partition(start)
+    case.assertTrue(delimiter, f"missing frontend section: {start}")
+    section, delimiter, _ = remainder.partition(end)
+    case.assertTrue(delimiter, f"missing frontend section boundary: {end}")
+    return section
+
+
+def assert_traffic_react_loaders(case: unittest.TestCase, source: str) -> None:
+    default_filter = frontend_section(case, source, "function DefaultFilterSection({host})", "function samePassiveRule")
+    rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
+    ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
+    case.assertRegex(
+        default_filter,
+        r"setLoading\(!0\),setError\(void 0\),setSaved\(!1\),loadSettings\(host\)"
+        r"\.then\(value=>\{active&&editRevision\.current===startedAtEdit&&"
+        r"\(filterRef\.current=value,setFilter\(value\)\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}\)"
+        r"\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)",
+    )
+    case.assertIn("error?u2(Notice,{action:", default_filter)
+    case.assertIn("children:error", default_filter)
+    case.assertRegex(
+        rules,
+        r"setLoading\(!0\),setError\(void 0\),loadRules\(host\)"
+        r"\.then\(value=>\{active&&setRules\(value\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}\)"
+        r"\.finally\(\(\)=>\{active&&setLoading\(!1\)\}\)",
+    )
+    case.assertIn("error?u2(Notice,{action:", rules)
+    case.assertIn("children:error", rules)
+    case.assertRegex(
+        ca_model,
+        r"setBusy\(!0\),setError\(void 0\),loadCaStatus\(host\)"
+        r"\.then\(value=>\{active&&setStatus\(value\)\}\)"
+        r"\.catch\(reason=>\{active&&setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}\)"
+        r"\.finally\(\(\)=>\{active&&setBusy\(!1\)\}\)",
+    )
+
+
+def assert_traffic_react_rules(case: unittest.TestCase, source: str) -> None:
+    rules = frontend_section(case, source, "function RulesSection({host})", "function SettingsPage")
+    mutations = frontend_section(case, source, "function ruleMutations", "function RulesSection({host})")
+    handlers = (
+        ("save:async()=>{", "},toggle:async", "await saveRule(host,submitted)"),
+        ("toggle:async", "},remove:async", "await toggleRule(host,rule.rule_id,enabled)"),
+        ("remove:async()=>{", "}}}", "await deleteRule(host,ruleId)"),
+    )
+    for start, end, mutation in handlers:
+        handler_source = frontend_section(case, mutations, start, end)
+        case.assertIn(mutation, handler_source)
+        case.assertIn("await refreshRules(reload,setError,", handler_source)
+        case.assertLess(handler_source.index(mutation), handler_source.index("await refreshRules(reload,setError,"))
+        case.assertRegex(
+            handler_source,
+            r"catch\(reason\)\{setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}",
+        )
+    case.assertIn("let reload=async()=>{setRules(await loadRules(host))}", rules)
+    case.assertIn("function refreshRules(reload,setError,completed){try{await reload()}catch(reason){setError(", source)
+    case.assertIn(
+        "{save,toggle:toggle2,remove}=ruleMutations({host,reload,draftRef,updateDraft,deleteId,setDeleteId,setBusy,setError})",
+        rules,
+    )
+    for callback in ("onSave:()=>void save()", "onToggle:(rule,enabled)=>void toggle2(rule,enabled)", "onClick:()=>void remove()"):
+        case.assertIn(callback, rules)
+    rule_actions = (
+        ("async function loadRules(host)", "async function saveRule", 'host.request("xsec.traffic.passive-rules.list",{})'),
+        ("async function saveRule(host,rule)", "async function toggleRule", 'host.request("xsec.traffic.passive-rules.upsert",{'),
+        ("async function toggleRule", "async function deleteRule", 'host.request("xsec.traffic.passive-rules.toggle",{'),
+        ("async function deleteRule", "var EVENT_COALESCE_MS", 'host.request("xsec.traffic.passive-rules.delete",{'),
+    )
+    for start, end, request in rule_actions:
+        case.assertIn(request, frontend_section(case, source, start, end))
+
+
+def assert_traffic_react_ca(case: unittest.TestCase, source: str) -> None:
+    ca_model = frontend_section(case, source, "function useCaModel(host)", "function CaLoading")
+    ca_ui = frontend_section(case, source, "function CaStatusDetails({host,model})", "function DefaultFilterSection")
+    case.assertIn("let model=useCaModel(host)", ca_ui)
+    case.assertIn("u2(CaError,{model})", ca_ui)
+    case.assertIn("u2(CaStatusDetails,{host,model})", ca_ui)
+    case.assertIn("model.run(()=>importCa(host),", ca_ui)
+    case.assertIn("model.run(()=>rotateCa(host),", ca_ui)
+    case.assertRegex(
+        ca_model,
+        r"run:async\(action,name\)=>\{setBusy\(!0\),setError\(void 0\);try\{setStatus\(await action\(\)\)\}"
+        r"catch\(reason\)\{setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}finally\{setBusy\(!1\)\}\}",
+    )
+    ca_actions = (
+        ("async function loadCaStatus(host)", "async function importCa", 'host.request("xsec.traffic.ca.status",{})'),
+        ("async function importCa(host)", "async function rotateCa", 'caStatus(await host.request("xsec.traffic.ca.import",{}))'),
+        ("async function rotateCa(host)", "function passiveRule", 'caStatus(await host.request("xsec.traffic.ca.rotate",{}))'),
+    )
+    for start, end, request in ca_actions:
+        case.assertIn(request, frontend_section(case, source, start, end))
+
+
+def assert_traffic_react_activation(case: unittest.TestCase, source: str) -> None:
+    activation = frontend_section(case, source, "function activate(host)", "return __toCommonJS")
+    plugin_app = frontend_section(case, source, "function PluginApp({host,context})", "function object2")
+    settings_page = frontend_section(case, source, "function SettingsPage({host})", "function workspaceInstanceKey")
+    settings_api = frontend_section(case, source, "async function loadSettings(host)", "async function saveSettings")
+    settings_save = frontend_section(case, source, "async function saveSettings(host,filter)", "function caStatus")
+    default_filter = frontend_section(case, source, "function DefaultFilterSection({host})", "function samePassiveRule")
+    case.assertIn('host.request("xsec.traffic.settings.get",{})', settings_api)
+    case.assertIn('host.request("xsec.traffic.settings.set",{filter:settingsToDomain(filter)})', settings_save)
+    case.assertRegex(
+        default_filter,
+        r"let save=async\(\)=>\{if\(!filter\)return;let submitted=filter;setSaving\(!0\),setError\(void 0\),setSaved\(!1\);"
+        r"try\{let response=await saveSettings\(host,submitted\);[^;]*\}catch\(reason\)\{setError\(`[^`]{1,}\$\{String\(reason\)\}[^`]*`\)\}"
+        r"finally\{setSaving\(!1\)\}\}",
+    )
+    case.assertIn("onClick:()=>void save()", default_filter)
+    case.assertIn("G(u2(PluginApp,{host,context:current}),root)", activation)
+    case.assertIn('if(context.kind==="settings-page")return u2(SettingsPage,{host})', plugin_app)
+    for section in ("DefaultFilterSection", "CaSection", "RulesSection"):
+        case.assertIn(f"u2({section},{{host}})", settings_page)
+
+
+def assert_traffic_react_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    assert_traffic_react_loaders(case, source)
+    assert_traffic_react_rules(case, source)
+    assert_traffic_react_ca(case, source)
+    assert_traffic_react_activation(case, source)
+    for setter in ("setFilter", "setRules", "setStatus"):
+        for cleared_value in ("void 0", "null", "undefined", "[]"):
+            case.assertNotIn(f"{setter}({cleared_value})", source)
+
+
+def assert_traffic_settings_isolation(case: unittest.TestCase, source: str) -> None:
+    if "function RulesSection({host})" in source:
+        assert_traffic_react_settings_isolation(case, source)
+        return
+    case.assertIn('async function loadRules(){renderRules(await host.request("xsec.traffic.passive-rules.list",{}))}', source)
+    case.assertIn('async function loadCa(){const view=await host.request("xsec.traffic.ca.status",{});', source)
+    case.assertIn('settingsReady=true;controls.save.disabled=false;await Promise.all', source)
+    case.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`', source)
+    case.assertIn('enabled.onchange=()=>void toggle(rule.rule_id,enabled.checked,enabled);', source)
+    case.assertIn('control.checked=!enabled;note(`更新被动规则失败：', source)
+    case.assertIn('CA 已导入，但刷新 CA 状态失败', source)
+    case.assertIn('规则已保存，但刷新规则列表失败', source)
+    case.assertIn('规则已删除，但刷新规则列表失败', source)
+
+
 class MarketplaceValidationTests(unittest.TestCase):
     maxDiff = None
+
+    def test_traffic_react_settings_contract_fixture(self) -> None:
+        fixture = ROOT / "tests" / "fixtures" / "traffic-1.3.0-frontend.js"
+        payload = fixture.read_bytes().removesuffix(b"\n")
+        self.assertEqual(
+            hashlib.sha256(payload).hexdigest(),
+            "f8defb39dfdb8b35fec7492b347044bee01998cc1e218343fa71e737332457b2",
+        )
+        assert_traffic_react_settings_isolation(self, payload.decode("utf-8"))
 
     def build_marketplace(self, destination: Path) -> None:
         command = [
@@ -180,24 +334,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         traffic_source = (
             snapshot_dir(ROOT, "com.xsec.workspace.traffic") / "com.xsec.desktop" / "frontend" / "index.js"
         ).read_text(encoding="utf-8")
-        # The helpers deliberately propagate to load().  Its single outer
-        # catch writes the error after the rejected Promise.all, so it cannot
-        # be overwritten by the success-only note("") below it.
-        self.assertIn(
-            'async function loadRules(){renderRules(await host.request("xsec.traffic.passive-rules.list",{}))}',
-            traffic_source,
-        )
-        self.assertIn(
-            'async function loadCa(){const view=await host.request("xsec.traffic.ca.status",{});',
-            traffic_source,
-        )
-        self.assertIn('settingsReady=true;controls.save.disabled=false;await Promise.all', traffic_source)
-        self.assertIn('await Promise.all([loadCa(),loadRules()]);note("")}catch(error){note(`', traffic_source)
-        self.assertIn('enabled.onchange=()=>void toggle(rule.rule_id,enabled.checked,enabled);', traffic_source)
-        self.assertIn('control.checked=!enabled;note(`更新被动规则失败：', traffic_source)
-        self.assertIn('CA 已导入，但刷新 CA 状态失败', traffic_source)
-        self.assertIn('规则已保存，但刷新规则列表失败', traffic_source)
-        self.assertIn('规则已删除，但刷新规则列表失败', traffic_source)
+        assert_traffic_settings_isolation(self, traffic_source)
 
         for plugin_id in validate_market.OFFICIAL_PLUGIN_SETTINGS_CONTRACT:
             frontend = snapshot_dir(ROOT, plugin_id) / "com.xsec.desktop" / "frontend" / "index.js"
