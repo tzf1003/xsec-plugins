@@ -31,6 +31,21 @@
         "url": "artifacts/com.xsec.workspace.approvals-1.3.3-sha256-9be350d2a7b3ac4c-any-any.xsec-plugin"
       },
       "publisher": "xsec-marketplace-bot"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-07225f3c18076e4b8b84ff1d5d2b4ae9480280deee8978bb8b4d41d52b662802",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-approvals",
+        "path": "plugins/com.xsec.workspace.approvals",
+        "ref": "refs/heads/beta",
+        "sha": "464bb75c0fe7c05dcbc958af1b8c793666023bfe"
+      },
+      "artifact": {
+        "sha256": "9be350d2a7b3ac4c9bc101c9a481af42d189735c3eaeab7da4d00a5a057b1108",
+        "url": "artifacts/com.xsec.workspace.approvals-1.3.3-sha256-9be350d2a7b3ac4c-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
     }
   ]
 }
