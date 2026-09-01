@@ -14,6 +14,7 @@ BATCH_RECONCILE = ROOT / ".github" / "workflows" / "reconcile-marketplace-batch.
 BATCH_PUBLISH = ROOT / ".github" / "workflows" / "publish-marketplace-batch.yml"
 STALE_BATCH_RECOVERY = ROOT / ".github" / "workflows" / "rebuild-stale-marketplace-batch.yml"
 AUTO_FINALIZER = ROOT / ".github" / "workflows" / "auto-finalize-generated-marketplace-pr.yml"
+SELECTED_FINALIZER = ROOT / ".github" / "workflows" / "finalize-selected-generated-marketplace-pr.yml"
 FINALIZER = ROOT / ".github" / "workflows" / "final-merge-generated-marketplace-pr.yml"
 SOURCE_PREFLIGHT = ROOT / ".github" / "workflows" / "first-party-source-preflight.yml"
 
@@ -121,6 +122,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
 
     def test_only_successful_exact_generated_prs_enter_the_automatic_finalizer(self) -> None:
         workflow = AUTO_FINALIZER.read_text(encoding="utf-8")
+        selected_finalizer = SELECTED_FINALIZER.read_text(encoding="utf-8")
         finalizer = FINALIZER.read_text(encoding="utf-8")
         for branch in (
             "xsec-marketplace/batch-*",
@@ -149,13 +151,22 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn("checks: read", workflow)
         self.assertIn("source-freshness-gate", workflow)
         self.assertIn('.name == "source-freshness-gate"', workflow)
-        self.assertIn("needs.select-exact-generated-pr.result == 'success'", workflow)
-        self.assertIn("outputs.eligible == 'true'", workflow)
-        self.assertIn("!cancelled() && needs.select-exact-generated-pr.result == 'success'", workflow)
-        self.assertNotIn("always()", workflow)
-        self.assertIn("fromJSON(needs.select-exact-generated-pr.outputs.coderabbit_status_verified)", workflow)
         self.assertIn("expected at most one open exact-head generated PR", workflow)
         self.assertIn('($branch == "" or .head.ref == $branch)', workflow)
+        self.assertNotIn("final-revalidate-and-merge:", workflow)
+        self.assertIn("workflows: [Automatically finalize generated Marketplace PR]", selected_finalizer)
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", selected_finalizer)
+        self.assertIn("github.event.workflow_run.event == 'workflow_run'", selected_finalizer)
+        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", selected_finalizer)
+        self.assertIn("source-freshness-gate", selected_finalizer)
+        self.assertIn('.name == "source-freshness-gate"', selected_finalizer)
+        self.assertIn("reviews(first:100,after:$endCursor)", selected_finalizer)
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", selected_finalizer)
+        self.assertIn("needs.select-exact-generated-pr.result == 'success'", selected_finalizer)
+        self.assertIn("outputs.eligible == 'true'", selected_finalizer)
+        self.assertIn("!cancelled() && needs.select-exact-generated-pr.result == 'success'", selected_finalizer)
+        self.assertNotIn("always()", selected_finalizer)
+        self.assertIn("coderabbit_status_verified: false", selected_finalizer)
         self.assertIn("workflow_call:", finalizer)
         self.assertIn("coderabbit_status_verified:", finalizer)
         self.assertIn("requires a completed CodeRabbit review", finalizer)

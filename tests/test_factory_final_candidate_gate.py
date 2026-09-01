@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ARM_WORKFLOW = ROOT / ".github" / "workflows" / "arm-generated-marketplace-final-merge.yml"
 FINAL_WORKFLOW = ROOT / ".github" / "workflows" / "final-merge-generated-marketplace-pr.yml"
+SELECTED_FINALIZER_WORKFLOW = ROOT / ".github" / "workflows" / "finalize-selected-generated-marketplace-pr.yml"
 ADOPTION_WORKFLOW = ROOT / ".github" / "workflows" / "adopt-first-party.yml"
 
 
@@ -329,6 +330,28 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
         self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
         self.assertIn("$threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false", workflow)
+
+    def test_protected_finalizer_runs_after_the_unprivileged_selector(self) -> None:
+        selector = (ROOT / ".github" / "workflows" / "auto-finalize-generated-marketplace-pr.yml").read_text(encoding="utf-8")
+        workflow = SELECTED_FINALIZER_WORKFLOW.read_text(encoding="utf-8")
+
+        # Pull-request review/status events have a pull merge ref, which the
+        # protected production Environment correctly rejects. The selector
+        # therefore has no reusable final-merge job; a workflow_run from
+        # protected default-branch configuration reselects the exact candidate
+        # before handing it to the production finalizer.
+        self.assertNotIn("final-revalidate-and-merge:", selector)
+        self.assertIn("workflows: [Automatically finalize generated Marketplace PR]", workflow)
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", workflow)
+        self.assertIn("github.event.workflow_run.event == 'workflow_run'", workflow)
+        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", workflow)
+        self.assertIn("Require the preceding unprivileged selector to have run", workflow)
+        self.assertIn("actions/runs/${UPSTREAM_RUN_ID}/jobs?per_page=100", workflow)
+        self.assertIn("reviews(first:100,after:$endCursor)", workflow)
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
+        self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
+        self.assertIn("refs/heads/main", FINAL_WORKFLOW.read_text(encoding="utf-8"))
+        self.assertIn("coderabbit_status_verified: false", workflow)
 
 
 if __name__ == "__main__":
