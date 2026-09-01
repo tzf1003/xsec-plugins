@@ -226,8 +226,8 @@ production 环境中手工运行，且需要仓库管理权限的
 `factory-final-merge-gate` 分别置于两个边界：它先创建并严格验证只覆盖 `main` 的
 `xsec-marketplace-final-exact-head` Ruleset；该 Ruleset 唯一要求固定 GitHub Actions app 的
 strict final gate，并且唯一 `pull_request` bypass 是配置的 Finalizer App。成功后才把 classic
-branch protection 收敛为严格的 `source-gate`、`enforce_admins` 和 conversation resolution，
-同时保留现有无关 checks/branch restrictions 并移除 PR approval 要求。final merge
+branch protection 收敛为严格的 `source-gate` 与 `enforce_admins`，同时保留现有无关
+checks/branch restrictions 并移除 PR approval 与 conversation resolution 要求。final merge
 不用 Publisher token；它仅在全部 revalidation 后短暂创建独立、仓库范围受限的 Finalizer App
 token，并且只用它合入精确 PR。该 App 只有 `contents: write`，是唯一
 允许绕过持续 pending Factory gate 的 Ruleset 身份。缺失 production 环境策略或 Finalizer 配置时的安全回退是
