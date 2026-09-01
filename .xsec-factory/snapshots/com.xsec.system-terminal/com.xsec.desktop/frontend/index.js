@@ -14,7 +14,7 @@ const css = `
 :root[data-theme="light"]{color-scheme:light;--bg:#fff;--surface:#f6f7f9;--surface-hover:#eceff3;--text:#17191c;--muted:#606773;--border:#d7dbe1;--accent:#3977e8;--danger:#b42318;--danger-bg:#fdeaea;--danger-border:#f4b8b2}
 *{box-sizing:border-box}html,body,[data-xsec-plugin-root]{width:100%;height:100%}body{margin:0;background:var(--bg);color:var(--text)}button,select{font:inherit}[hidden]{display:none!important}
 .app{display:flex;height:100%;flex-direction:column;background:var(--bg)}.screen{min-height:0;flex:1;margin:0;padding:10px 12px;overflow:auto;outline:none;color:var(--text);background:var(--bg);font:12px/1.3 ui-monospace,"SFMono-Regular",Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.screen:focus-visible{box-shadow:inset 0 0 0 1px var(--accent)}
-.status{display:flex;flex:0 0 auto;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--danger-border);background:var(--danger-bg);color:var(--danger);font:600 12px/1.4 ui-monospace,"SFMono-Regular",Consolas,monospace;overflow-wrap:anywhere}.status-text{min-width:0;flex:1}.status button{flex:0 0 auto;min-height:28px;padding:4px 8px;border:1px solid var(--danger-border);border-radius:6px;background:var(--bg);color:inherit;cursor:pointer}
+.status{flex:0 0 auto;padding:8px 12px;border-bottom:1px solid var(--danger-border);background:var(--danger-bg);color:var(--danger);font:600 12px/1.4 ui-monospace,"SFMono-Regular",Consolas,monospace;overflow-wrap:anywhere}
 .settings{min-height:100%;padding:24px;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}.settings-card{width:min(680px,100%);padding:20px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
 .settings h1{margin:0 0 6px;font-size:20px;line-height:1.3}.settings p{margin:0;color:var(--muted)}.settings label{display:grid;gap:7px;margin:20px 0 12px;color:var(--text);font-weight:600}.settings select,.settings button{min-height:36px;padding:7px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text)}
 .settings select:focus-visible,.settings button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}.settings button{cursor:pointer;font-weight:600}.settings button:hover{background:var(--surface-hover)}.settings button:disabled{cursor:default;opacity:.55}.settings .effective{margin-top:10px}.settings .actions{display:flex;gap:8px;margin-top:16px}.settings .primary{border-color:var(--accent);background:var(--accent);color:#fff}.settings .notice{min-height:21px;margin-top:12px}.settings .notice.error{color:var(--danger)}
@@ -112,7 +112,7 @@ function terminalSettings(host) {
     dispose() { console.debug("system-terminal.settings.dispose"); state.generation += 1; state.theme?.dispose(); state.theme = undefined; },
   };
 }
-function clearPoll(state) { if (state.pollTimer) clearTimeout(state.pollTimer); state.pollTimer = 0; } function clearReport(state) { state.controls.statusText.textContent = ""; state.controls.retry.hidden = true; state.controls.status.hidden = true; } function report(state, message) { state.controls.statusText.textContent = message; state.controls.retry.hidden = !state.failed; state.controls.status.hidden = false; }
+function clearPoll(state) { if (state.pollTimer) clearTimeout(state.pollTimer); state.pollTimer = 0; } function clearReport(state) { state.controls.status.textContent = ""; state.controls.status.hidden = true; } function report(state, message) { state.controls.status.textContent = message; state.controls.status.hidden = false; }
 async function failTerminal(host, state, message) {
   if (state.failed) return;
   state.failed = true; state.reading = false; state.writing = false; state.inputBuffer = ""; clearPoll(state);
@@ -157,18 +157,12 @@ async function poll(host, state) {
   }
 }
 function terminalSize(state) { const screen = state.controls.screen, style = getComputedStyle(screen); return { cols: Math.max(MIN_COLUMNS, Math.floor((screen.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / CELL_WIDTH)), rows: Math.max(MIN_ROWS, Math.floor((screen.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / CELL_HEIGHT)) }; }
-async function terminalOpenOptions(host, state) {
-  if (!/Windows/i.test(navigator.userAgent)) return terminalSize(state);
-  const settings = await host.request("xsec.terminal.settings.get", {});
-  return { ...terminalSize(state), profileId: settings?.effectiveProfileId || undefined };
-}
 async function openTerminal(host, state, generation) {
   clearReport(state);
   state.controls.screenText.data = "";
   try {
-    const options = await terminalOpenOptions(host, state);
     if (generation !== state.generation) return;
-    const handle = await host.request("xsec.terminal.open", options);
+    const handle = await host.request("xsec.terminal.open", terminalSize(state));
     if (generation !== state.generation) {
       await host.request("xsec.terminal.close", { terminalId: handle.terminal_id });
       return;
@@ -237,8 +231,8 @@ function resizeTerminal(host, state) {
 }
 function buildTerminal(host, state) {
   replaceDocument(state.root);
-  const app = e("main", "app"), status = e("div", "status"), statusText = e("span", "status-text"), retry = e("button", "", "重新打开终端"), screen = e("pre", "screen", "");
-  status.hidden = true; retry.type = "button"; retry.hidden = true; retry.onclick = () => retryTerminal(host, state); status.append(statusText, retry);
+  const app = e("main", "app"), status = e("div", "status"), screen = e("pre", "screen", "");
+  status.hidden = true;
   screen.tabIndex = 0;
   screen.setAttribute("role", "application");
   screen.setAttribute("aria-label", "系统终端");
@@ -246,7 +240,7 @@ function buildTerminal(host, state) {
   screen.onkeydown = (event) => keyInput(host, state, event);
   app.append(status, screen);
   state.root.append(app);
-  state.controls = { status, statusText, retry, screen, screenText: screen.firstChild };
+  state.controls = { status, screen, screenText: screen.firstChild };
   state.observer = new ResizeObserver(() => {
     clearTimeout(state.resizeTimer);
     state.resizeTimer = setTimeout(() => resizeTerminal(host, state), RESIZE_DELAY_MS);
@@ -258,7 +252,6 @@ function buildTerminal(host, state) {
   state.opening = openTerminal(host, state, generation);
   void state.opening.catch(() => {});
 }
-function retryTerminal(host, state) { if (state.disposed || !state.failed) return; state.failed = false; state.generation += 1; clearReport(state); console.info("system-terminal.surface.retry"); state.opening = openTerminal(host, state, state.generation); void state.opening.catch(() => {}); }
 async function disposeTerminal(host, state) {
   const terminalId = state.terminalId, opening = state.opening, theme = state.theme;
   state.generation += 1;

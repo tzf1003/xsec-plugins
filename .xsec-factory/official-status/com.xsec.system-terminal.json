@@ -9,18 +9,18 @@
       "beta": "refs/heads/beta",
       "stable": "refs/heads/main"
     },
-    "betaSha": "20debf37a41be304fd730fe166f8de695a53f3cf",
+    "betaSha": "e6e651497285243285ab83fa49e486dd8a8cbd6e",
     "stableSha": null,
     "mainGateSha": "e35a21459bd133d92de6955fc858e495e6d66621"
   },
   "release": {
-    "betaReleaseId": "sha256-78d83cef127198f7bc99d18f18c9d868967096074c767df205d24a24213d6487",
+    "betaReleaseId": "sha256-d2dcaf20f2099d772a1dc70a1bdf54d3034e7e31cb6f1371416a27b49e4d6082",
     "stableReleaseId": "sha256-124e5bc1d6f837f280d1f8192c59025eff8ae38bd904b5524ac61e0916c065d0"
   },
   "publication": {
     "state": "waiting_for_beta",
-    "deliveryId": "batch-33525767839.1",
-    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33525767839",
+    "deliveryId": "batch-33570263344.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33570263344",
     "smokeRunUrl": null,
     "marketplaceRevision": null
   }
