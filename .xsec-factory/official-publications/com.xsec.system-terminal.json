@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "com.xsec.system-terminal",
+  "events": [
+    {
+      "channel": "beta",
+      "releaseId": "sha256-2ae0955886fbc8ff9436f29edef351935ea97db35982e2abe3e744184090a1e8",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-system-terminal",
+        "path": "plugins/com.xsec.system-terminal",
+        "ref": "refs/heads/beta",
+        "sha": "f95abab1ba557ca1e92bcdbc51275fc9c3cf3bc8"
+      },
+      "artifact": {
+        "sha256": "fe0394b617b385dcbd1d16f4fc0c8eebe7aa2a4a1c309e78b9882cdda12337a6",
+        "url": "artifacts/com.xsec.system-terminal-1.2.4-sha256-fe0394b617b385dc-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
+    }
+  ]
+}
