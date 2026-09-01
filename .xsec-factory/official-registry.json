@@ -53,7 +53,7 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Security",
-      "status": "active"
+      "status": "disabled"
     },
     {
       "pluginId": "com.xsec.system-terminal",
