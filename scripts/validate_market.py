@@ -78,6 +78,10 @@ APPROVALS_WORKSPACE_TOOL_CONTRIBUTION = {
     "surfaces": ["interactive-dock", "batch-observe"],
 }
 JAVASCRIPT_SYNTAX_CHECK_TIMEOUT_SECONDS = 10
+JAVASCRIPT_LINE_TERMINATORS = frozenset({"\n", "\r", "\u2028", "\u2029"})
+JAVASCRIPT_UNICODE_ESCAPE = re.compile(
+    r"\\u(?:([0-9A-Fa-f]{4})|\{([0-9A-Fa-f]{1,6})\})"
+)
 APPROVALS_FRONTEND_LIFECYCLE_METHODS = frozenset({"mount", "update", "dispose"})
 OFFICIAL_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE = "^1.3.0"
@@ -518,6 +522,113 @@ def consume_javascript_template(source: str, index: int, label: str) -> tuple[in
     fail(f"{label} contains an unterminated JavaScript string")
 
 
+def javascript_line_terminator(source: str, start: int) -> tuple[int, int] | None:
+    positions = [source.find(terminator, start) for terminator in JAVASCRIPT_LINE_TERMINATORS]
+    present = [index for index in positions if index >= 0]
+    if not present:
+        return None
+    index = min(present)
+    width = 2 if source.startswith("\r\n", index) else 1
+    return index, width
+
+
+def decode_javascript_unicode_escapes(value: str, label: str) -> str:
+    def decode(match: re.Match[str]) -> str:
+        codepoint = int(match.group(1) or match.group(2), 16)
+        if codepoint > 0x10FFFF:
+            fail(f"{label} contains an invalid JavaScript Unicode escape")
+        return chr(codepoint)
+
+    return JAVASCRIPT_UNICODE_ESCAPE.sub(decode, value)
+
+
+def javascript_spacing_or_comment(
+    source: str, index: int, label: str
+) -> tuple[int, tuple[str, str] | None] | None:
+    character = source[index]
+    if character in JAVASCRIPT_LINE_TERMINATORS:
+        width = 2 if source.startswith("\r\n", index) else 1
+        return index + width, ("newline", "\n")
+    if character.isspace():
+        return index + 1, None
+    if source.startswith("//", index):
+        terminator = javascript_line_terminator(source, index + 2)
+        return (len(source), None) if terminator is None else (
+            terminator[0] + terminator[1],
+            ("newline", "\n"),
+        )
+    if not source.startswith("/*", index):
+        return None
+    end = source.find("*/", index + 2)
+    if end == -1:
+        fail(f"{label} contains an unterminated JavaScript block comment")
+    has_newline = any(value in source[index + 2:end] for value in JAVASCRIPT_LINE_TERMINATORS)
+    return end + 2, (("newline", "\n") if has_newline else None)
+
+
+def consume_javascript_quoted_string(
+    source: str, index: int, label: str
+) -> tuple[int, str]:
+    quote = source[index]
+    start = index + 1
+    cursor = start
+    escaped = False
+    while cursor < len(source):
+        current = source[cursor]
+        if escaped:
+            escaped = False
+        elif current == "\\":
+            escaped = True
+        elif current == quote:
+            value = decode_javascript_unicode_escapes(source[start:cursor], label)
+            return cursor + 1, value
+        cursor += 1
+    fail(f"{label} contains an unterminated JavaScript string")
+
+
+def javascript_literal_tokens(
+    source: str,
+    index: int,
+    label: str,
+    tokens: list[tuple[str, str]],
+    expression_context: bool,
+) -> tuple[int, list[tuple[str, str]]] | None:
+    character = source[index]
+    if character == "/" and javascript_regex_allowed(tokens, expression_context=expression_context):
+        end = consume_javascript_regex(source, index)
+        if end is not None:
+            return end, [("regex", source[index:end])]
+    if character == "`":
+        end, interpolated, dynamic = consume_javascript_template(source, index, label)
+        literal = source[index + 1:end - 1]
+        value = literal if dynamic else decode_javascript_unicode_escapes(literal, label)
+        return end, [*interpolated, ("template" if dynamic else "string", value)]
+    if character in {"'", '"'}:
+        end, value = consume_javascript_quoted_string(source, index, label)
+        return end, [("string", value)]
+    return None
+
+
+def javascript_word_token(
+    source: str, index: int, label: str
+) -> tuple[int, tuple[str, str]] | None:
+    character = source[index]
+    if character == "\\" and JAVASCRIPT_UNICODE_ESCAPE.match(source, index):
+        fail(f"{label} contains a Unicode escape in executable JavaScript syntax")
+    if character.isdigit():
+        allowed = {"_", "."}
+        kind = "number"
+    elif character.isalpha() or character in {"_", "$"}:
+        allowed = {"_", "$"}
+        kind = "identifier"
+    else:
+        return None
+    end = index + 1
+    while end < len(source) and (source[end].isalnum() or source[end] in allowed):
+        end += 1
+    return end, (kind, source[index:end])
+
+
 def tokenize_javascript(
     source: str,
     index: int,
@@ -528,79 +639,26 @@ def tokenize_javascript(
     """Tokenize source from index, optionally stopping at an unmatched `}`."""
 
     tokens: list[tuple[str, str]] = []
-    length = len(source)
     depth = 1 if stop_at_unmatched_brace else 0
-    while index < length:
+    while index < len(source):
         character = source[index]
-        if character in {"\n", "\r"}:
-            tokens.append(("newline", "\n"))
-            index += 2 if character == "\r" and index + 1 < length and source[index + 1] == "\n" else 1
+        spacing = javascript_spacing_or_comment(source, index, label)
+        if spacing is not None:
+            index, token = spacing
+            if token is not None:
+                tokens.append(token)
             continue
-        if character.isspace():
-            index += 1
+        literal = javascript_literal_tokens(
+            source, index, label, tokens, stop_at_unmatched_brace
+        )
+        if literal is not None:
+            index, emitted = literal
+            tokens.extend(emitted)
             continue
-        if source.startswith("//", index):
-            newline = source.find("\n", index + 2)
-            if newline == -1:
-                index = length
-            else:
-                tokens.append(("newline", "\n"))
-                index = newline + 1
-            continue
-        if source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            if end == -1:
-                fail(f"{label} contains an unterminated JavaScript block comment")
-            index = end + 2
-            continue
-        if character == "/" and javascript_regex_allowed(
-            tokens, expression_context=stop_at_unmatched_brace
-        ):
-            end = consume_javascript_regex(source, index)
-            if end is not None:
-                tokens.append(("regex", source[index:end]))
-                index = end
-                continue
-        if character == "`":
-            end, interpolated, has_interpolation = consume_javascript_template(source, index, label)
-            literal = source[index + 1:end - 1]
-            tokens.extend(interpolated)
-            tokens.append(("template" if has_interpolation else "string", literal))
-            index = end
-            continue
-        if character in {"'", '"'}:
-            quote = character
-            start = index + 1
-            index += 1
-            escaped = False
-            while index < length:
-                current = source[index]
-                if escaped:
-                    escaped = False
-                elif current == "\\":
-                    escaped = True
-                elif current == quote:
-                    literal = source[start:index]
-                    tokens.append(("string", literal))
-                    index += 1
-                    break
-                index += 1
-            else:
-                fail(f"{label} contains an unterminated JavaScript string")
-            continue
-        if character.isdigit():
-            start = index
-            index += 1
-            while index < length and (source[index].isalnum() or source[index] in {"_", "."}):
-                index += 1
-            tokens.append(("number", source[start:index]))
-            continue
-        if character.isalpha() or character in {"_", "$"}:
-            start = index
-            index += 1
-            while index < length and (source[index].isalnum() or source[index] in {"_", "$"}):
-                index += 1
-            tokens.append(("identifier", source[start:index]))
+        word = javascript_word_token(source, index, label)
+        if word is not None:
+            index, token = word
+            tokens.append(token)
             continue
         if stop_at_unmatched_brace and character == "{":
             depth += 1
@@ -1676,6 +1734,185 @@ def frontend_activation_body_range(tokens: list[tuple[str, str]]) -> tuple[int, 
     return None
 
 
+def frontend_lifecycle_method_blocks(
+    tokens: list[tuple[str, str]], activation: tuple[int, int]
+) -> dict[str, tuple[int, int]]:
+    methods: dict[str, tuple[int, int]] = {}
+    depth = 0
+    for index in range(activation[0], activation[1] - 1):
+        token = tokens[index]
+        if token == ("punctuation", "{"):
+            depth += 1
+            continue
+        if token == ("punctuation", "}"):
+            depth = max(0, depth - 1)
+            continue
+        if depth or tokens[index:index + 2] != [("identifier", "return"), ("punctuation", "{")]:
+            continue
+        closing = matching_brace(tokens, index + 1)
+        if closing is None or closing > activation[1]:
+            continue
+        methods.update(frontend_object_lifecycle_methods(tokens, index + 1, closing))
+    return methods
+
+
+def frontend_object_lifecycle_methods(
+    tokens: list[tuple[str, str]], opening: int, closing: int
+) -> dict[str, tuple[int, int]]:
+    methods: dict[str, tuple[int, int]] = {}
+    depth = 1
+    for index in range(opening + 1, closing):
+        token = tokens[index]
+        if depth == 1 and token[0] == "identifier" and token[1] in APPROVALS_FRONTEND_LIFECYCLE_METHODS:
+            block = frontend_method_block(tokens, index, closing)
+            if block is not None:
+                methods[token[1]] = block
+        if token == ("punctuation", "{"):
+            depth += 1
+        elif token == ("punctuation", "}"):
+            depth -= 1
+    return methods
+
+
+def frontend_method_block(
+    tokens: list[tuple[str, str]], name_index: int, limit: int
+) -> tuple[int, int] | None:
+    opening = name_index + 1
+    if opening >= limit or tokens[opening] != ("punctuation", "("):
+        return None
+    parameters_end = matching_parenthesis(tokens, opening)
+    if parameters_end is None or parameters_end + 1 >= limit:
+        return None
+    body_opening = parameters_end + 1
+    if tokens[body_opening] != ("punctuation", "{"):
+        return None
+    body_closing = matching_brace(tokens, body_opening)
+    return (body_opening, body_closing) if body_closing is not None else None
+
+
+def frontend_has_executable_lifecycle(
+    tokens: list[tuple[str, str]], activation: tuple[int, int]
+) -> bool:
+    methods = frontend_lifecycle_method_blocks(tokens, activation)
+    methods.update(frontend_returned_helper_lifecycle_methods(tokens, activation))
+    return set(methods) == set(APPROVALS_FRONTEND_LIFECYCLE_METHODS)
+
+
+def frontend_returned_helper_names(
+    tokens: list[tuple[str, str]], span: tuple[int, int]
+) -> set[str]:
+    names: set[str] = set()
+    depth = 0
+    for index in range(span[0], span[1] - 2):
+        token = tokens[index]
+        if token == ("punctuation", "{"):
+            depth += 1
+        elif token == ("punctuation", "}"):
+            depth = max(0, depth - 1)
+        elif depth == 0 and token == ("identifier", "return"):
+            if tokens[index + 1][0] == "identifier" and tokens[index + 2] == ("punctuation", "("):
+                names.add(tokens[index + 1][1])
+    return names
+
+
+def frontend_named_function_body(
+    tokens: list[tuple[str, str]], span: tuple[int, int]
+) -> tuple[int, int] | None:
+    for index in range(span[0], span[1]):
+        if tokens[index] == ("punctuation", "{"):
+            return index + 1, span[1]
+    return None
+
+
+def frontend_returned_helper_lifecycle_methods(
+    tokens: list[tuple[str, str]], activation: tuple[int, int]
+) -> dict[str, tuple[int, int]]:
+    blocks = frontend_named_function_blocks(tokens)
+    methods: dict[str, tuple[int, int]] = {}
+    pending = list(frontend_returned_helper_names(tokens, activation))
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen or name not in blocks:
+            continue
+        seen.add(name)
+        body = frontend_named_function_body(tokens, blocks[name])
+        if body is None:
+            continue
+        methods.update(frontend_lifecycle_method_blocks(tokens, body))
+        pending.extend(frontend_returned_helper_names(tokens, body))
+    return methods
+
+
+def frontend_contains_dynamic_evaluator(tokens: list[tuple[str, str]]) -> bool:
+    """Reject evaluator spellings whose runtime behavior cannot be proven."""
+
+    forbidden = {"eval", "Function"}
+    for index, (kind, value) in enumerate(tokens):
+        if kind == "identifier" and value in forbidden:
+            return True
+        if kind != "string" or value not in forbidden:
+            continue
+        if index and index + 1 < len(tokens) and tokens[index - 1:index + 2] == [
+            ("punctuation", "["),
+            ("string", value),
+            ("punctuation", "]"),
+        ]:
+            return True
+    return False
+
+
+def matching_opening_delimiter(
+    tokens: list[tuple[str, str]], closing: int, opening_token: str, closing_token: str
+) -> int | None:
+    depth = 0
+    for index in range(closing, -1, -1):
+        if tokens[index] == ("punctuation", closing_token):
+            depth += 1
+        elif tokens[index] == ("punctuation", opening_token):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def frontend_destructures_request_from_host(tokens: list[tuple[str, str]]) -> bool:
+    """Reject aliases that detach request from the reviewed broker."""
+
+    for closing, token in enumerate(tokens[:-2]):
+        if token != ("punctuation", "}"):
+            continue
+        if tokens[closing + 1:closing + 3] != [
+            ("punctuation", "="),
+            ("identifier", "host"),
+        ]:
+            continue
+        opening = matching_opening_delimiter(tokens, closing, "{", "}")
+        if opening is None:
+            continue
+        bound = tokens[opening + 1:closing]
+        if any(kind in {"identifier", "string"} and value == "request" for kind, value in bound):
+            return True
+    return False
+
+
+def frontend_destructuring_writes_host(tokens: list[tuple[str, str]]) -> bool:
+    for closing, token in enumerate(tokens[:-1]):
+        if token not in {("punctuation", "}"), ("punctuation", "]")}:
+            continue
+        if tokens[closing + 1] != ("punctuation", "="):
+            continue
+        opening_token = "{" if token[1] == "}" else "["
+        opening = matching_opening_delimiter(tokens, closing, opening_token, token[1])
+        if opening is not None and ("identifier", "host") in tokens[opening + 1:closing]:
+            return True
+    return False
+
+
+def frontend_host_binding_is_unstable(tokens: list[tuple[str, str]]) -> bool:
+    return host_is_reassigned_before(tokens, len(tokens), 0) or frontend_destructuring_writes_host(tokens)
+
+
 def frontend_direct_helper_calls(
     tokens: list[tuple[str, str]], blocks: dict[str, tuple[int, int]], span: tuple[int, int]
 ) -> list[str]:
@@ -1765,6 +2002,123 @@ def frontend_referenced_helpers(
     return referenced
 
 
+def frontend_arrow_body(
+    tokens: list[tuple[str, str]], arrow: int, limit: int
+) -> tuple[int, int] | None:
+    start = arrow + 2
+    if start >= limit:
+        return None
+    if tokens[start] == ("punctuation", "{"):
+        closing = matching_brace(tokens, start)
+        return (start, closing) if closing is not None else None
+    depth = 0
+    for cursor in range(start, limit):
+        token = tokens[cursor]
+        if token in {("punctuation", "("), ("punctuation", "["), ("punctuation", "{")}:
+            depth += 1
+        elif token in {("punctuation", ")"), ("punctuation", "]"), ("punctuation", "}")}:
+            if depth:
+                depth -= 1
+            else:
+                return start, cursor
+        elif depth == 0 and token in {("punctuation", ","), ("punctuation", ";")}:
+            return start, cursor
+    return start, limit
+
+
+def frontend_arrow_binding(tokens: list[tuple[str, str]], arrow: int) -> str | None:
+    for cursor in range(arrow - 1, max(-1, arrow - 12), -1):
+        if tokens[cursor] != ("punctuation", "="):
+            continue
+        if cursor and tokens[cursor - 1][0] == "identifier":
+            return tokens[cursor - 1][1]
+        return None
+    return None
+
+
+def frontend_arrow_is_event_assignment(
+    tokens: list[tuple[str, str]], arrow: int
+) -> bool:
+    for cursor in range(arrow - 1, max(-1, arrow - 12), -1):
+        if tokens[cursor] != ("punctuation", "="):
+            continue
+        return cursor >= 2 and tokens[cursor - 2] == ("punctuation", ".")
+    return False
+
+
+def frontend_arrow_is_immediately_invoked(
+    tokens: list[tuple[str, str]], arrow: int, body: tuple[int, int]
+) -> bool:
+    closing = body[1] + 1
+    if closing >= len(tokens) or tokens[closing] != ("punctuation", ")"):
+        return False
+    opening = matching_opening_parenthesis(tokens, closing)
+    if opening is None or not opening < arrow < closing:
+        return False
+    if opening and tokens[opening - 1][0] in {"identifier", "number", "string"}:
+        if tokens[opening - 1] not in {
+            ("identifier", "await"),
+            ("identifier", "return"),
+            ("identifier", "throw"),
+            ("identifier", "void"),
+            ("identifier", "yield"),
+        }:
+            return False
+    return closing + 1 < len(tokens) and tokens[closing + 1] == ("punctuation", "(")
+
+
+def frontend_bare_arrow_call(
+    tokens: list[tuple[str, str]], index: int, binding: str
+) -> bool:
+    if tokens[index:index + 2] != [("identifier", binding), ("punctuation", "(")]:
+        return False
+    if index and tokens[index - 1] == ("punctuation", "."):
+        return False
+    closing = matching_parenthesis(tokens, index + 1)
+    return closing is None or closing + 1 >= len(tokens) or tokens[closing + 1] != ("punctuation", "{")
+
+
+def frontend_arrow_is_registered(
+    tokens: list[tuple[str, str]], arrow: int, body: tuple[int, int], activation: tuple[int, int]
+) -> bool:
+    binding = frontend_arrow_binding(tokens, arrow)
+    if frontend_arrow_is_event_assignment(tokens, arrow):
+        return True
+    if frontend_enclosing_call_name(tokens, arrow) in FRONTEND_CALLBACK_APIS:
+        return True
+    if frontend_arrow_is_immediately_invoked(tokens, arrow, body):
+        return True
+    if not binding:
+        return False
+    for index in range(body[1] + 1, activation[1] - 1):
+        if frontend_bare_arrow_call(tokens, index, binding):
+            return True
+        if tokens[index] == ("identifier", binding) and frontend_is_callback_reference(tokens, index):
+            return True
+    return False
+
+
+def frontend_unregistered_closure_blocks(
+    tokens: list[tuple[str, str]], activation: tuple[int, int]
+) -> set[tuple[int, int]]:
+    lifecycle = set(frontend_lifecycle_method_blocks(tokens, activation).values())
+    blocks: set[tuple[int, int]] = set()
+    controls = {"catch", "for", "if", "switch", "while", "with"}
+    for index in range(activation[0], activation[1] - 1):
+        if tokens[index:index + 2] == [("punctuation", "="), ("punctuation", ">")]:
+            body = frontend_arrow_body(tokens, index, activation[1])
+            if body is not None and not frontend_arrow_is_registered(tokens, index, body, activation):
+                blocks.add(body)
+        if tokens[index][0] != "identifier" or tokens[index][1] in controls:
+            continue
+        if index and tokens[index - 1] == ("identifier", "function"):
+            continue
+        block = frontend_method_block(tokens, index, activation[1])
+        if block is not None and block not in lifecycle:
+            blocks.add(block)
+    return blocks
+
+
 def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] | None:
     """Return token indices proven reachable from exported activation."""
 
@@ -1776,6 +2130,8 @@ def frontend_reachable_token_indices(tokens: list[tuple[str, str]]) -> set[int] 
     for name, span in blocks.items():
         if name != "activate" and activation[0] <= span[0] < span[1] <= activation[1]:
             reachable.difference_update(range(span[0], span[1] + 1))
+    for start, end in frontend_unregistered_closure_blocks(tokens, activation):
+        reachable.difference_update(range(start, end + 1))
     queued = frontend_direct_helper_calls(tokens, blocks, activation)
     queued.extend(frontend_referenced_helpers(tokens, blocks, activation))
     seen: set[str] = set()
@@ -1971,6 +2327,8 @@ def frontend_host_receiver_end(
     dense: list[tuple[str, str]], index: int, pairs: dict[int, int]
 ) -> int | None:
     if dense[index] == ("identifier", "host"):
+        if index and dense[index - 1] == ("punctuation", "."):
+            return None
         return index + 1
     if dense[index] != ("punctuation", "(") or index not in pairs:
         return None
@@ -2084,6 +2442,27 @@ def frontend_request_access_indices(dense: list[tuple[str, str]]) -> set[int]:
     return accesses
 
 
+def frontend_has_dynamic_host_member(
+    dense: list[tuple[str, str]], pairs: dict[int, int]
+) -> bool:
+    for receiver, token in enumerate(dense):
+        if token not in {("identifier", "host"), ("punctuation", "(")}:
+            continue
+        cursor = frontend_host_receiver_end(dense, receiver, pairs)
+        if cursor is None:
+            continue
+        if dense[cursor:cursor + 2] == [("punctuation", "?"), ("punctuation", ".")]:
+            cursor += 2
+        if cursor >= len(dense) or dense[cursor] != ("punctuation", "["):
+            continue
+        closing = matching_square_bracket(dense, cursor)
+        if closing is None:
+            return True
+        if dense[cursor + 1:closing] != [("string", "request")]:
+            return True
+    return False
+
+
 def frontend_canonical_host_calls(
     dense: list[tuple[str, str]], pairs: dict[int, int]
 ) -> tuple[list[tuple[int, int, int]], set[int]]:
@@ -2105,6 +2484,8 @@ def frontend_host_request_calls(
     dense: list[tuple[str, str]], label: str
 ) -> list[tuple[int, int, int]]:
     pairs = javascript_parenthesis_pairs(dense)
+    if frontend_has_dynamic_host_member(dense, pairs):
+        fail(f"{label} contains a host RPC request through a dynamic broker member")
     calls, direct_accesses = frontend_canonical_host_calls(dense, pairs)
     canonical_accesses = {access for _, _, access in calls}
     accesses = frontend_request_access_indices(dense)
@@ -2139,6 +2520,10 @@ def frontend_request_methods(
 
 def frontend_host_requests(tokens: list[tuple[str, str]], label: str) -> set[str]:
     dense = [token for token in tokens if token[0] != "newline"]
+    if frontend_host_binding_is_unstable(tokens):
+        fail(f"{label} cannot prove the activation host broker contract")
+    if frontend_destructures_request_from_host(dense):
+        fail(f"{label} cannot destructure request from the activation host broker")
     proof = (frontend_rpc_bindings(dense), frontend_binding_counts(dense))
     reachable = frontend_reachable_token_indices(tokens)
     source_indices = [index for index, token in enumerate(tokens) if token[0] != "newline"]
@@ -2246,12 +2631,14 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
     if len(source.encode("utf-8")) < OFFICIAL_FRONTEND_MIN_BYTES:
         fail(f"{label} is too small to be a functional official frontend")
     validate_javascript_esm_syntax(source, label)
-    if not re.search(r"export\s+function\s+activate\s*\(\s*host\s*\)", source):
-        fail(f"{label} must export activate(host)")
-    for lifecycle_method in APPROVALS_FRONTEND_LIFECYCLE_METHODS:
-        if not re.search(rf"\b{lifecycle_method}\s*\(", source):
-            fail(f"{label} must implement lifecycle method {lifecycle_method}")
     tokens = javascript_contract_tokens(source, label)
+    activation = frontend_activation_body_range(tokens)
+    if activation is None:
+        fail(f"{label} must export an executable activate(host)")
+    if not frontend_has_executable_lifecycle(tokens, activation):
+        fail(f"{label} must return executable mount/update/dispose lifecycle methods")
+    if frontend_contains_dynamic_evaluator(tokens):
+        fail(f"{label} contains a dynamic JavaScript evaluator")
     requested = validate_frontend_host_requests(methods, tokens, label)
     validate_frontend_rpc_literals(methods, tokens, label, requested)
 
