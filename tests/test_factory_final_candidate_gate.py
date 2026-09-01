@@ -74,6 +74,8 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("Require a current source gate", workflow)
         self.assertIn("Require trusted CodeRabbit success and resolved review threads", workflow)
         self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', workflow)
+        self.assertNotIn('creator.login == "coderabbitai[bot]"', workflow)
+        self.assertNotIn('creator.type == "Bot"', workflow)
         self.assertIn('reviews(first:100,after:$endCursor)', workflow)
         self.assertIn('.author.login == "coderabbitai"', workflow)
         self.assertIn('.author.__typename == "Bot"', workflow)
