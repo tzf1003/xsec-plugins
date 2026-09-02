@@ -14,10 +14,6 @@
 	path = plugins/com.xsec.asset-discovery
 	url = https://github.com/tzf1003/xsec-plugin-asset-discovery.git
 	branch = beta
-[submodule "plugins/com.xsec.project-workspace"]
-	path = plugins/com.xsec.project-workspace
-	url = https://github.com/tzf1003/xsec-plugin-project-workspace.git
-	branch = beta
 [submodule "plugins/com.xsec.workspace.sub-agent"]
 	path = plugins/com.xsec.workspace.sub-agent
 	url = https://github.com/tzf1003/xsec-plugin-sub-agent.git
