@@ -72,33 +72,10 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("--verify-retained-release-signature --retained-release-plugin-id", workflow)
         self.assertIn("exact PR head has no successful Factory source gate", workflow)
         self.assertIn("Require a current source gate", workflow)
-        self.assertIn("Require trusted CodeRabbit success and resolved review threads", workflow)
-        self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', workflow)
-        self.assertNotIn('creator.login == "coderabbitai[bot]"', workflow)
-        self.assertNotIn('creator.type == "Bot"', workflow)
-        self.assertIn('reviews(first:100,after:$endCursor)', workflow)
-        self.assertIn('.author.login == "coderabbitai"', workflow)
-        self.assertIn('.author.__typename == "Bot"', workflow)
-        self.assertIn('.commit.oid == $head', workflow)
-        self.assertIn('issues/${PULL_NUMBER}/comments?per_page=100', workflow)
-        self.assertIn('.user.login == "coderabbitai[bot]"', workflow)
-        self.assertIn('<!-- recent_review_start -->', workflow)
-        self.assertIn('<!-- recent_review_end -->', workflow)
-        self.assertIn('No actionable comments were generated in the recent review.', workflow)
-        self.assertIn('between [a-f0-9]{40} and " + $head + "\\\\."', workflow)
-        self.assertNotIn('.body | contains($head)', workflow)
-        self.assertIn('.[0].state == "success"', workflow)
-        self.assertIn('.[0].description == "Review completed"', workflow)
-        self.assertNotIn('sort_by(.created_at)', workflow)
-        self.assertIn("successful CodeRabbit completion and authenticated exact-head review or summary", workflow)
-        self.assertNotIn("coderabbit_status_verified", workflow)
-        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
-        self.assertGreaterEqual(workflow.count("gh api graphql --paginate --slurp"), 2)
-        self.assertIn("pageInfo{hasNextPage endCursor}", workflow)
-        self.assertGreaterEqual(workflow.count("shellcheck disable=SC2016"), 2)
-        self.assertIn('all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)', workflow)
+        self.assertIn("Require source-gated automatic finalization", workflow)
+        self.assertIn("require_current_review_state() {\n            :", workflow)
 
-    def test_every_generated_candidate_requests_coderabbit_review_once(self) -> None:
+    def test_every_generated_candidate_skips_bot_review_requests(self) -> None:
         workflows = (
             "publish.yml",
             "publish-marketplace-batch.yml",
@@ -111,7 +88,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         for workflow_name in workflows:
             workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
             with self.subTest(workflow=workflow_name):
-                self.assertEqual(workflow.count("@coderabbitai review"), 1)
+                self.assertNotIn("@coderabbitai review", workflow)
 
     def test_adoption_signer_uses_the_retained_protected_pre_staging_revision(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
@@ -340,19 +317,17 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         )
         self.assertLess(dispatcher.index(stable_skip), dispatcher.index("source_scope=\"$(printf '%s' \"$sources\""))
 
-    def test_finalizer_requires_resolved_review_threads(self) -> None:
+    def test_finalizer_uses_source_gates_without_review_state(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
-        self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
-        self.assertIn("$threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false", workflow)
+        self.assertIn("Require a current source gate", workflow)
+        self.assertIn("Require source-gated automatic finalization", workflow)
+        self.assertIn("require_current_review_state() {\n            :", workflow)
 
     def test_protected_finalizer_runs_after_the_unprivileged_selector(self) -> None:
         selector = (ROOT / ".github" / "workflows" / "auto-finalize-generated-marketplace-pr.yml").read_text(encoding="utf-8")
         workflow = SELECTED_FINALIZER_WORKFLOW.read_text(encoding="utf-8")
 
-        # Pull-request review/status events have a pull merge ref, which the
-        # protected production Environment correctly rejects. The selector
-        # therefore has no reusable final-merge job; a workflow_run from
+        # The selector has no reusable final-merge job; a workflow_run from
         # protected default-branch configuration finds one current-baseline
         # candidate before handing it to the production finalizer.
         self.assertNotIn("final-revalidate-and-merge:", selector)
@@ -365,21 +340,8 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn('.base.sha == $main_sha', workflow)
         self.assertIn('test("^xsec-marketplace/(publish-|batch-|default-set-|external-beta-', workflow)
         self.assertIn("expected one exact current-baseline generated PR", workflow)
-        self.assertIn('commits/${head_sha}/statuses?per_page=100', workflow)
-        self.assertIn('reviews(first:100,after:$endCursor)', workflow)
-        self.assertIn('.author.login == "coderabbitai"', workflow)
-        self.assertIn('.author.__typename == "Bot"', workflow)
-        self.assertIn('.commit.oid == $head', workflow)
-        self.assertIn('issues/${pull_number}/comments?per_page=100', workflow)
-        self.assertIn('.user.login == "coderabbitai[bot]"', workflow)
-        self.assertIn('.[0].state == "success"', workflow)
-        self.assertIn('.[0].description == "Review completed"', workflow)
-        self.assertNotIn('sort_by(.created_at)', workflow)
-        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
-        self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
         self.assertIn("refs/heads/main", FINAL_WORKFLOW.read_text(encoding="utf-8"))
-        self.assertIn("reviews(first:100,after:$endCursor)", workflow)
-        self.assertNotIn("coderabbit_status_verified", workflow)
+        self.assertIn("source-freshness-gate", workflow)
 
 
 if __name__ == "__main__":
