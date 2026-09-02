@@ -190,7 +190,7 @@ export function normalizeCollectorScope(prompt: string): string {
 function fofaNetworkScope(value: string): boolean {
   if (!networkScope(value)) return false;
   if (value.startsWith("*.") || resemblesIpScope(value)) return true;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) || value.startsWith("//")) return true;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) || value.startsWith("//")) return false;
   return value.includes(".");
 }
 
@@ -206,7 +206,7 @@ export function validateCollectorScope(provider: CollectorProvider, prompt: stri
   if (!lines.length) return error;
   const valid = provider === "hunter"
     ? lines.every(networkScope)
-    : lines.every((line) => networkScope(line) || companyScope(line));
+    : lines.every((line) => fofaNetworkScope(line) || companyScope(line));
   return valid ? undefined : error;
 }
 

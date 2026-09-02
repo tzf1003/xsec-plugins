@@ -191,14 +191,14 @@ function useLogStream(api: AssetDiscoveryApi, runId: string | undefined) {
     logsRef.current = undefined;
     setLogs(undefined); setLogsError(undefined);
   }, [runId]);
-  return { logs, logsError, setLogsError, loadLatestLogs, loadMoreLogs };
+  return { logs, logsError, loadLatestLogs, loadMoreLogs };
 }
 
 function useConsoleContent(api: AssetDiscoveryApi, runId: string | undefined, running: boolean) {
   const [execution, setExecution] = useState<ExecutionSnapshot>();
   const [executionLoading, setExecutionLoading] = useState(true);
   const [executionError, setExecutionError] = useState<string>();
-  const { logs, logsError, setLogsError, loadLatestLogs, loadMoreLogs } = useLogStream(api, runId);
+  const { logs, logsError, loadLatestLogs, loadMoreLogs } = useLogStream(api, runId);
   const refreshInFlight = useRef(false);
   const beginRefreshRequest = useRequestGuard(runId);
   const beginExecutionRequest = useRequestGuard(runId);
@@ -232,22 +232,25 @@ function useConsoleContent(api: AssetDiscoveryApi, runId: string | undefined, ru
     return () => window.clearInterval(timer);
   }, [refreshDetails, running]);
   useTerminalSnapshot(runId, running, refreshDetails);
-  return { execution, executionLoading, logs, executionError, logsError, setLogsError, loadMoreLogs, refreshDetails };
+  return { execution, executionLoading, logs, executionError, logsError, loadMoreLogs, refreshDetails };
 }
 
 export function CollectionConsole({ api, run, onChanged, onDeleted, onOpenAssets, onOpenSettings }: ConsoleProps) {
   const [mutating, setMutating] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [actionError, setActionError] = useState<string>();
   const runId = run?.id;
   const running = run ? collectionBucket(run.status) === "running" : false;
   const stages = useMemo(() => run ? flow(run) : [], [run]);
   const content = useConsoleContent(api, runId, running);
+  useEffect(() => { setActionError(undefined); }, [runId]);
   if (!run) return <section className="ad-console"><EmptyState>选择左侧收集任务，查看范围、日志与任务详情</EmptyState></section>;
-  const stop = async () => { setMutating(true); try { await api.stop(run.id); await onChanged(); } catch (reason) { content.setLogsError(`停止收集失败：${String(reason)}`); } finally { setMutating(false); } };
-  const remove = async () => { setMutating(true); try { await api.deleteRun(run.id); setDeleteOpen(false); onDeleted(run.id); await onChanged(); } catch (reason) { content.setLogsError(`删除收集任务失败：${String(reason)}`); } finally { setMutating(false); } };
+  const stop = async () => { setMutating(true); setActionError(undefined); try { await api.stop(run.id); await onChanged(); } catch (reason) { setActionError(`停止收集失败：${String(reason)}`); } finally { setMutating(false); } };
+  const remove = async () => { setMutating(true); setActionError(undefined); try { await api.deleteRun(run.id); setDeleteOpen(false); onDeleted(run.id); await onChanged(); } catch (reason) { setActionError(`删除收集任务失败：${String(reason)}`); } finally { setMutating(false); } };
   const failure = collectionResultDescription(run);
 
   return <section className="ad-console"><ConsoleHeader run={run} mutating={mutating} onStop={() => void stop()} onOpenAssets={() => onOpenAssets(run.id)} onRefresh={() => void content.refreshDetails()} onDelete={() => setDeleteOpen(true)} /><div className="ad-console-body">
+    {actionError ? <p className="ad-field-error">{actionError}</p> : null}
     {failure ? <Notice action={run.failure_code === "missing_configuration" ? <Button className="compact" onClick={() => void onOpenSettings()}>打开资产发现设置</Button> : undefined}>{failure}</Notice> : null}
     <div className="ad-flow">{stages.map((stage) => <article className={`ad-flow-card ${stage.state}`} key={stage.title}><strong>{stage.title}</strong><small>{stage.text}</small></article>)}</div>
     <Section title="实时执行过程" actions={<span className="ad-muted">{running ? "实时更新" : "执行记录"}</span>}><ExecutionProcess execution={content.execution} loading={content.executionLoading} error={content.executionError} live={running} onRefresh={() => void content.refreshDetails()} /></Section>

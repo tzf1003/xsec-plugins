@@ -96,9 +96,7 @@ function useActiveRunRefresh(runs: CollectionRun[], loadRuns: () => Promise<Runs
   useEffect(() => {
     if (!runs.some((run) => collectionBucket(run.status) === "running")) return;
     const timer = window.setInterval(() => {
-      void loadRuns().then((state) => {
-        if (state === "error") window.clearInterval(timer);
-      });
+      void loadRuns();
     }, RUN_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [loadRuns, runs]);
