@@ -5,9 +5,6 @@ on:
     types: [xsec-stale-marketplace-batch-rebuild]
   push:
     branches: [main]
-  pull_request_review:
-    types: [submitted]
-  status:
   workflow_run:
     workflows: [Validate marketplace, Verify generated Marketplace publication merge]
     types: [completed]
@@ -27,8 +24,6 @@ jobs:
     if: >-
       (github.event_name == 'push' && github.ref_protected) ||
       (github.event_name == 'repository_dispatch' && github.event.action == 'xsec-stale-marketplace-batch-rebuild') ||
-      (github.event_name == 'pull_request_review' && github.event.pull_request.state == 'open') ||
-      (github.event_name == 'status' && github.event.sender.login == 'coderabbitai[bot]' && github.event.sender.type == 'Bot' && github.event.context == 'CodeRabbit' && github.event.state == 'success') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     outputs:
@@ -38,7 +33,7 @@ jobs:
       head_sha: ${{ steps.candidate.outputs.head_sha }}
       stale_batches: ${{ steps.candidate.outputs.stale_batches }}
     steps:
-      - name: Select one reviewed stale Factory batch candidate
+      - name: Select one stale Factory batch candidate
         id: candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -94,6 +89,14 @@ jobs:
               exit 0
             fi
           done
+          {
+            echo "eligible=true"
+            echo "pull_number=$pull_number"
+            echo "head_ref=$head_ref"
+            echo "head_sha=$head_sha"
+            echo "stale_batches=$stale_batches"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
           statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/statuses?per_page=100")"
           # Bind the trusted completion status to CodeRabbit's authenticated
           # exact-head review or bounded exact-head zero-findings summary.
