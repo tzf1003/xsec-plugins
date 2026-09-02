@@ -14,6 +14,18 @@ WORKFLOW = ROOT / ".github" / "workflows" / "reconcile-source.yml"
 
 
 class ReconcileSourceWorkflowTests(unittest.TestCase):
+    def test_smoke_candidate_selection_uses_only_changed_statuses(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'status_relative="${status_path#"$candidate_root"/}"',
+            source,
+        )
+        self.assertIn(
+            'git diff --quiet "$candidate_base" "$head_sha" -- "$status_relative" && continue',
+            source,
+        )
+
     def test_sensitive_reconciliation_scripts_have_valid_bash_syntax(self) -> None:
         bash = shutil.which("bash")
         if bash is None:
