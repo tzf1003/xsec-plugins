@@ -103,6 +103,38 @@ jobs:
           # earlier callback. publish.yml then rechecks the release ID *and*
           # exact Beta source SHA after it acquires the publication slot,
           # before moving only channels.stable.
+          wait_for_publish_queue() {
+            deadline="$((SECONDS + 900))"
+            while :; do
+              queued_runs="$(gh run list --workflow publish.yml --branch main --event workflow_dispatch --limit 100 --json status | jq '[.[] | select(.status == "queued")] | length')"
+              [ "$queued_runs" = "0" ] && return
+              [ "$SECONDS" -lt "$deadline" ] || {
+                echo "Timed out waiting for the Marketplace publication queue." >&2
+                exit 1
+              }
+              sleep 5
+            done
+          }
+          wait_for_dispatched_publish_run() {
+            known_run_ids="$1"
+            deadline="$((SECONDS + 900))"
+            observed=false
+            while :; do
+              runs="$(gh run list --workflow publish.yml --branch main --event workflow_dispatch --limit 100 --json databaseId,status)"
+              if printf '%s' "$runs" | jq -e --arg known "|${known_run_ids}|" '
+                any(.[]; .databaseId as $database_id | ($known | contains("|" + ($database_id | tostring) + "|") | not))
+              ' >/dev/null; then
+                observed=true
+              fi
+              queued_runs="$(printf '%s' "$runs" | jq '[.[] | select(.status == "queued")] | length')"
+              [ "$observed" = "true" ] && [ "$queued_runs" = "0" ] && return
+              [ "$SECONDS" -lt "$deadline" ] || {
+                echo "Timed out waiting for the dispatched Marketplace publication run to leave the queue." >&2
+                exit 1
+              }
+              sleep 5
+            done
+          }
           stable_requests=0
           while IFS= read -r registration; do
             plugin_id="$(printf '%s' "$registration" | jq -r .pluginId)"
@@ -134,10 +166,13 @@ jobs:
             [[ "$smoke_beta_sha" =~ ^[a-f0-9]{40}$ ]] || continue
             main_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${repository}.git" refs/heads/main | awk 'NR == 1 { print $1 }')"
             [ -n "$main_sha" ] || { echo "Cannot resolve registered source main for ${plugin_id}." >&2; exit 1; }
+            wait_for_publish_queue
+            known_run_ids="$(gh run list --workflow publish.yml --branch main --event workflow_dispatch --limit 100 --json databaseId | jq -r '[.[].databaseId | tostring] | join("|")')"
             gh workflow run publish.yml --ref main \
               -f channel=stable -f plugin_id="$plugin_id" -f source_sha="$main_sha" -f release_id="$current_beta" -f expected_beta_sha="$smoke_beta_sha" \
               -f smoke_run_url="https://github.com/tzf1003/xSecDesktop/actions/runs/${SMOKE_RUN_ID}" \
               -f smoke_marketplace_revision="$MARKETPLACE_REVISION"
+            wait_for_dispatched_publish_run "$known_run_ids"
             stable_requests="$((stable_requests + 1))"
           done < <(jq -c '.plugins[]' .xsec-factory/official-registry.json)
           echo "stable_requests=$stable_requests" >> "$GITHUB_OUTPUT"
