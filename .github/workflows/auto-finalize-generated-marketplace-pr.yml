@@ -78,33 +78,62 @@ jobs:
             exit 0
           fi
           statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/statuses?per_page=100")"
-          if ! printf '%s' "$statuses" | jq -e '
-            (type == "array" and length > 0)
-            and all(.[]?; type == "array")
+          # Bind the trusted completion status to its authenticated exact-head
+          # review or bounded exact-head zero-findings summary.
+          # shellcheck disable=SC2016
+          coderabbit_reviews="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviews(first:100,after:$endCursor){nodes{author{login __typename} commit{oid} state submittedAt} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          coderabbit_comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${pull_number}/comments?per_page=100")"
+          if ! jq -ne --arg head "$HEAD_SHA" --argjson statuses "$statuses" --argjson reviews "$coderabbit_reviews" --argjson comments "$coderabbit_comments" '
+            ($statuses | type == "array" and length > 0)
+            and all($statuses[]?; type == "array")
             and (
-              [.[][]
+              [$statuses[][]
                 | select(
                     .context == "CodeRabbit"
-                    and .creator.login == "coderabbitai[bot]"
-                    and .creator.type == "Bot"
                     and (.created_at | type == "string")
                     and (.description | type == "string")
                   )
               ]
               | if length > 0 then (.[0].state == "success" and .[0].description == "Review completed") else false end
             )
+            and ($reviews | type == "array" and length > 0)
+            and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
+            and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
+            and (
+              any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?;
+                .author.login == "coderabbitai"
+                and .author.__typename == "Bot"
+                and .commit.oid == $head
+                and (.submittedAt | type == "string")
+                and (.state == "COMMENTED" or .state == "APPROVED")
+              )
+              or (
+                ($comments | type == "array" and length > 0)
+                and all($comments[]?; type == "array")
+                and any($comments[][]?;
+                  .user.login == "coderabbitai[bot]"
+                  and .user.type == "Bot"
+                  and (.body | type == "string")
+                  and ((try (.body | capture("(?s)<!-- recent_review_start -->\\s*(?<recent>.*?)\\s*<!-- recent_review_end -->").recent) catch "") as $recent
+                    | ($recent | contains("No actionable comments were generated in the recent review."))
+                    and ($recent | test("Reviewing files that changed from the base of the PR and between [a-f0-9]{40} and " + $head + "\\."))
+                  )
+                )
+              )
+            )
           ' >/dev/null; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # shellcheck disable=SC2016
-          review_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
+          thread_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
             -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
-          printf '%s' "$review_pages" | jq -e '
-            (type == "array" and length > 0)
-            and all(.[]?; .data.repository.pullRequest.reviewThreads.nodes | type == "array")
-            and (.[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
-            and all(.[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
+          jq -ne --arg head "$HEAD_SHA" --argjson threads "$thread_pages" '
+            ($threads | type == "array" and length > 0)
+            and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
+            and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
+            and all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
           ' >/dev/null || {
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
