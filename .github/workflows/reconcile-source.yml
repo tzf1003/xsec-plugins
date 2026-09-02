@@ -712,10 +712,17 @@ jobs:
               cleanup_candidate() { git worktree remove --force "$candidate_root" >/dev/null 2>&1 || true; rm -rf -- "$candidate_root"; }
               git fetch --no-tags origin "$head_sha"
               git worktree add --detach "$candidate_root" "$head_sha" >/dev/null
+              candidate_base="$(git merge-base "$head_sha" origin/main)"
+              [[ "$candidate_base" =~ ^[a-f0-9]{40}$ ]] || {
+                echo "Stable candidate #${number} has no canonical Factory merge base." >&2
+                exit 1
+              }
               status_paths=("$candidate_root"/.xsec-factory/official-status/*.json)
               [ -e "${status_paths[0]}" ] || { cleanup_candidate; continue; }
               matching_status=()
               for status_path in "${status_paths[@]}"; do
+                status_relative="${status_path#"$candidate_root"/}"
+                git diff --quiet "$candidate_base" "$head_sha" -- "$status_relative" && continue
                 if jq -e --arg smoke_url "$smoke_url" --arg marketplace_revision "$MARKETPLACE_REVISION" '
                   .publication.state == "published" and .publication.smokeRunUrl == $smoke_url and .publication.marketplaceRevision == $marketplace_revision
                 ' "$status_path" >/dev/null; then
@@ -755,8 +762,6 @@ jobs:
               # KMS provenance must descend from its protected generation
               # revision, but a rebased candidate is classified against its
               # actual delta instead of unrelated intervening main changes.
-              candidate_base="$(git merge-base "$head_sha" origin/main)"
-              [[ "$candidate_base" =~ ^[a-f0-9]{40}$ ]] || { echo "Stable candidate #${number} has no canonical Factory merge base." >&2; exit 1; }
               git diff --quiet "$candidate_base" "$head_sha" -- "$status_relative" && {
                 echo "Stable candidate #${number} did not actually change its terminal Factory status." >&2
                 cleanup_candidate
