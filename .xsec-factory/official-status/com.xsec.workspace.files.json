@@ -9,19 +9,19 @@
       "beta": "refs/heads/beta",
       "stable": "refs/heads/main"
     },
-    "betaSha": "a2bdbf72004b1afd8e337d00a4dd526f04888250",
-    "stableSha": "4ac3d377aae7dc347607c7964422c5662fa27004",
-    "mainGateSha": "4ac3d377aae7dc347607c7964422c5662fa27004"
+    "betaSha": "d676adc0cbb06e4343b9c65d80bb0e7a4aacb056",
+    "stableSha": null,
+    "mainGateSha": "8e5c49180c7e98062146fe48a5d57cd3a16b3b3f"
   },
   "release": {
-    "betaReleaseId": "sha256-daa382607ad5997429cbb3e35f30c02e1155624f9f8360fdbf5d194d30e70218",
+    "betaReleaseId": "sha256-6a94f3a3be61e87624fcdc2c47ab3efac6b50b5c0ace2f48b9de4388828ed92e",
     "stableReleaseId": "sha256-daa382607ad5997429cbb3e35f30c02e1155624f9f8360fdbf5d194d30e70218"
   },
   "publication": {
-    "state": "published",
-    "deliveryId": "33549674745.1",
-    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33525767839",
-    "smokeRunUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/33547102843",
-    "marketplaceRevision": "57fd474d2e4270061b3270132bf8e4f37217aa7f"
+    "state": "waiting_for_beta",
+    "deliveryId": "batch-33646836019.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/33646836019",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
   }
 }
