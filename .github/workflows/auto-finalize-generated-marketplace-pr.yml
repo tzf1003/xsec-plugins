@@ -91,8 +91,6 @@ jobs:
               [$statuses[][]
                 | select(
                     .context == "CodeRabbit"
-                    and .creator.login == "coderabbitai[bot]"
-                    and .creator.type == "Bot"
                     and (.created_at | type == "string")
                     and (.description | type == "string")
                   )
