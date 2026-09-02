@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "com.xsec.workspace.browser", "version": "1.3.5", "description": "XSEC browser workspace tool", "author": { "name": "XSEC" }, "license": "MIT",
+  "name": "com.xsec.workspace.browser", "version": "1.3.6", "description": "XSEC browser workspace tool", "author": { "name": "XSEC" }, "license": "MIT",
   "extensions": { "com.xsec.desktop": {
     "schemaVersion": 1, "displayName": "浏览器会话", "publisher": "XSEC", "icon": "globe",
     "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.4.0" }, "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
