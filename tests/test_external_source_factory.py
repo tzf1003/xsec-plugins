@@ -233,6 +233,26 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "manifest is unavailable"):
                 factory.validate_first_party_subprojects(root, (registration,))
 
+    def test_disabled_first_party_registration_requires_no_git_subproject(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-disabled-first-party-subproject-") as directory:
+            root = Path(directory)
+            git(root, "init", "--quiet", "--initial-branch=main")
+            plugin_id = "com.xsec.project-workspace"
+            registration = factory.Registration(
+                plugin_id=plugin_id,
+                trust_tier="first-party",
+                repository=factory.FIRST_PARTY_APPROVED_SOURCES[plugin_id],
+                source_path=PurePosixPath("plugins") / plugin_id,
+                beta_ref="refs/heads/beta",
+                stable_ref="refs/heads/main",
+                installation="INSTALLED_BY_DEFAULT",
+                authentication="ON_INSTALL",
+                category="Security",
+                status="disabled",
+            )
+
+            factory.validate_first_party_subprojects(root, (registration,))
+
     def registry_entry(self, *, status: str = "active", repository: str = "acme/external-plugin", path: str = "package") -> dict[str, object]:
         return {
             "pluginId": PLUGIN_ID,

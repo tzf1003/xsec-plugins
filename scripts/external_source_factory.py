@@ -3206,7 +3206,11 @@ def validate_first_party_subprojects(
     root: Path,
     registrations: tuple[Registration, ...],
 ) -> None:
-    expected = {item.plugin_id: item.repository for item in registrations if item.trust_tier == "first-party"}
+    expected = {
+        item.plugin_id: item.repository
+        for item in registrations
+        if item.trust_tier == "first-party" and item.status != "disabled"
+    }
     git_metadata = root / ".git"
     layouts = (root / SNAPSHOT_ROOT_RELATIVE_PATH, root / ".gitmodules")
     if not expected or not (git_metadata.exists() or is_link(git_metadata)) or not any(path.exists() or is_link(path) for path in layouts):
