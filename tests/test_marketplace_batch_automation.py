@@ -118,6 +118,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             '.[0].state == "success"',
             '.[0].description == "Review completed"',
             "reviewThreads(first:100,after:$endCursor)",
+            "headRefOid reviewThreads(first:100,after:$endCursor)",
+            ".data.repository.pullRequest.headRefOid == $head",
             "Verify the signed stale batch as data",
             "--verify-active-marketplace-signatures",
             "python scripts/external_source_factory.py --root \"$candidate\" validate",
