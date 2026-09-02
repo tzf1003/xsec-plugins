@@ -339,7 +339,9 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn('git/ref/heads/main" --jq .object.sha', workflow)
         self.assertIn('.base.sha == $main_sha', workflow)
         self.assertIn('test("^xsec-marketplace/(publish-|batch-|default-set-|external-beta-', workflow)
-        self.assertIn("expected one exact current-baseline generated PR", workflow)
+        self.assertIn("ready_matches='[]'", workflow)
+        self.assertIn("done < <(printf '%s' \"$matches\" | jq -rc '.[]')", workflow)
+        self.assertIn("expected one ready current-baseline generated PR", workflow)
         self.assertIn("refs/heads/main", FINAL_WORKFLOW.read_text(encoding="utf-8"))
         self.assertIn("source-freshness-gate", workflow)
 
