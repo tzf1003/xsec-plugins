@@ -73,7 +73,12 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("exact PR head has no successful Factory source gate", workflow)
         self.assertIn("Require a current source gate", workflow)
         self.assertIn("Require source-gated automatic finalization", workflow)
-        self.assertIn("require_current_review_state() {\n            :", workflow)
+        self.assertIn(
+            "require_current_review_state() {\n"
+            "            require_current_coderabbit_status\n"
+            "            require_all_review_threads_resolved",
+            workflow,
+        )
 
     def test_every_generated_candidate_skips_bot_review_requests(self) -> None:
         workflows = (
@@ -317,11 +322,22 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         )
         self.assertLess(dispatcher.index(stable_skip), dispatcher.index("source_scope=\"$(printf '%s' \"$sources\""))
 
-    def test_finalizer_uses_source_gates_without_review_state(self) -> None:
+    def test_finalizer_requires_exact_head_review_state(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Require a current source gate", workflow)
         self.assertIn("Require source-gated automatic finalization", workflow)
-        self.assertIn("require_current_review_state() {\n            :", workflow)
+        review_gate = workflow.split("- name: Require source-gated automatic finalization", 1)[1].split(
+            "- name: Recheck the live PR/source boundary before the isolated final merge", 1
+        )[0]
+        self.assertNotIn("exit 0", review_gate)
+        self.assertIn('description == "Review completed"', review_gate)
+        self.assertIn("reviewThreads(first:100", review_gate)
+        self.assertIn(
+            "require_current_review_state() {\n"
+            "            require_current_coderabbit_status\n"
+            "            require_all_review_threads_resolved",
+            workflow,
+        )
 
     def test_protected_finalizer_runs_after_the_unprivileged_selector(self) -> None:
         selector = (ROOT / ".github" / "workflows" / "auto-finalize-generated-marketplace-pr.yml").read_text(encoding="utf-8")

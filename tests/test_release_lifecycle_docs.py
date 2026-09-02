@@ -188,7 +188,12 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('select(.type == "required_reviewers")', final_merge)
         self.assertIn("length == 0", final_merge)
         self.assertIn("Require source-gated automatic finalization", final_merge)
-        self.assertIn("require_current_review_state() {\n            :", final_merge)
+        self.assertIn(
+            "require_current_review_state() {\n"
+            "            require_current_coderabbit_status\n"
+            "            require_all_review_threads_resolved",
+            final_merge,
+        )
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
         self.assertIn("can_admins_bypass == false", protection)
         self.assertIn("deployment_branch_policy.protected_branches == true", protection)
@@ -353,11 +358,22 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('error("expected exactly one merged Factory generated PR")', workflow)
         self.assertNotIn('gh api -H \'Accept: application/vnd.github+json\' "repos/${GITHUB_REPOSITORY}/commits/${AFTER}/pulls?per_page=100"', workflow)
 
-    def test_final_gate_uses_source_gates_without_review_state(self) -> None:
+    def test_final_gate_uses_source_and_exact_head_review_gates(self) -> None:
         workflow = FINAL_MERGE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Require a current source gate", workflow)
         self.assertIn("Require source-gated automatic finalization", workflow)
-        self.assertIn("require_current_review_state() {\n            :", workflow)
+        review_gate = workflow.split("- name: Require source-gated automatic finalization", 1)[1].split(
+            "- name: Recheck the live PR/source boundary before the isolated final merge", 1
+        )[0]
+        self.assertNotIn("exit 0", review_gate)
+        self.assertIn('description == "Review completed"', review_gate)
+        self.assertIn("reviewThreads(first:100", review_gate)
+        self.assertIn(
+            "require_current_review_state() {\n"
+            "            require_current_coderabbit_status\n"
+            "            require_all_review_threads_resolved",
+            workflow,
+        )
 
 
 if __name__ == "__main__":
