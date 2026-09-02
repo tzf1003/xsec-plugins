@@ -49,11 +49,31 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn('any(.[][]; [.filename, (.previous_filename? // "")]', workflow)
         self.assertIn("git/trees/" + "$" + "{PR_BASE_SHA}?recursive=1", workflow)
         self.assertIn("gitlink_changed", workflow)
-        self.assertIn('|| [ "$factory_content" = "true" ]', workflow)
-        self.assertIn('|| [ "$gitlink_changed" = "true" ]', workflow)
+        self.assertIn('|| { [ "$factory_content" = "true" ]', workflow)
+        self.assertIn('|| { [ "$gitlink_changed" = "true" ]', workflow)
+        self.assertIn("disabled_subproject_retirement", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("never checks out or executes PR content", workflow)
         self.assertNotIn("actions/checkout", workflow)
+
+    def test_disabled_subproject_retirement_needs_a_trusted_disabled_registry_entry(self) -> None:
+        workflow = ARM_WORKFLOW.read_text(encoding="utf-8")
+
+        # Removing an inactive source checkout is maintenance, but only after
+        # the trusted base Registry proves every removed Gitlink is disabled
+        # first-party identity. Additions, revision changes, release records
+        # and active subprojects stay on the protected Finalizer path.
+        for required_rule in (
+            "missing trusted Factory registry",
+            "disabled_subproject_retirement=false",
+            ".trustTier == \"first-party\"",
+            ".status == \"disabled\"",
+            "($added | length == 0)",
+            "all($head_gitlinks[]; $base_by_path[.path] == .sha)",
+            "($factory_files | index(\".gitmodules\") != null)",
+        ):
+            with self.subTest(required_rule=required_rule):
+                self.assertIn(required_rule, workflow)
 
     def test_final_gate_revalidates_narrow_adoption_and_sidecar_candidates(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
