@@ -189,6 +189,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("length == 0", final_merge)
         self.assertIn("successful CodeRabbit completion and authenticated exact-head review or summary", final_merge)
         self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', final_merge)
+        self.assertNotIn('creator.login == "coderabbitai[bot]"', final_merge)
+        self.assertNotIn('creator.type == "Bot"', final_merge)
         self.assertIn('reviews(first:100,after:$endCursor)', final_merge)
         self.assertIn('.author.login == "coderabbitai"', final_merge)
         self.assertIn('.author.__typename == "Bot"', final_merge)
