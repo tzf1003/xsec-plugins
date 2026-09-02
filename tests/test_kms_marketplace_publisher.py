@@ -1030,7 +1030,7 @@ class KmsMarketplacePublisherTests(unittest.TestCase):
         self.assertIn('git rev-parse origin/main', workflow)
         self.assertIn('XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}', workflow)
         self.assertNotIn('"repos/${GITHUB_REPOSITORY}/pulls/${pull_number}/merge"', workflow)
-        self.assertNotIn("@coderabbitai review", workflow)
+        self.assertEqual(workflow.count("@coderabbitai review"), 1)
         self.assertIn("This workflow intentionally does not merge this PR", workflow)
         self.assertIn("Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge", workflow)
         self.assertNotIn("steps.publish.outputs.published == 'true'", workflow)

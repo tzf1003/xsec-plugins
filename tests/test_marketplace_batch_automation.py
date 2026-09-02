@@ -108,6 +108,18 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             'ahead_by="$(printf \'%s\' "$comparison" | jq -er \'.ahead_by',
             'if [ "$ahead_by" -gt 0 ]; then',
             "for name in source-gate; do",
+            'reviews(first:100,after:$endCursor)',
+            '.author.login == "coderabbitai"',
+            '.author.__typename == "Bot"',
+            '.commit.oid == $head',
+            'issues/${pull_number}/comments?per_page=100',
+            '.user.login == "coderabbitai[bot]"',
+            '<!-- recent_review_end -->',
+            '.[0].state == "success"',
+            '.[0].description == "Review completed"',
+            "reviewThreads(first:100,after:$endCursor)",
+            "headRefOid reviewThreads(first:100,after:$endCursor)",
+            ".data.repository.pullRequest.headRefOid == $head",
             "Verify the signed stale batch as data",
             "--verify-active-marketplace-signatures",
             "python scripts/external_source_factory.py --root \"$candidate\" validate",
@@ -144,14 +156,40 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             self.assertIn(branch, workflow)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", workflow)
         self.assertIn("Verify generated Marketplace publication merge", workflow)
+        self.assertIn("pull_request_review:", workflow)
+        self.assertIn("types: [submitted]", workflow)
+        self.assertNotIn("pull_request_review:\n    branches:", workflow)
+        self.assertIn("status:", workflow)
+        self.assertIn("github.event.sender.login == 'coderabbitai[bot]'", workflow)
+        self.assertIn("github.event.sender.type == 'Bot'", workflow)
+        self.assertIn("github.event.context == 'CodeRabbit'", workflow)
+        self.assertIn("github.event.state == 'success'", workflow)
+        self.assertIn("github.event.sha", workflow)
+        self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', workflow)
+        self.assertNotIn('creator.login == "coderabbitai[bot]"', workflow)
+        self.assertNotIn('creator.type == "Bot"', workflow)
+        self.assertIn('reviews(first:100,after:$endCursor)', workflow)
+        self.assertIn('.author.login == "coderabbitai"', workflow)
+        self.assertIn('.author.__typename == "Bot"', workflow)
+        self.assertIn('issues/${pull_number}/comments?per_page=100', workflow)
+        self.assertIn('.user.login == "coderabbitai[bot]"', workflow)
+        self.assertIn('.[0].state == "success"', workflow)
+        self.assertIn('.[0].description == "Review completed"', workflow)
+        self.assertNotIn('sort_by(.created_at)', workflow)
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", workflow)
+        self.assertIn("gh api graphql --paginate --slurp", workflow)
+        self.assertIn("all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)", workflow)
+        self.assertIn("$threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false", workflow)
         self.assertIn("startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/')", workflow)
+        self.assertIn("startsWith(github.event.pull_request.head.ref, 'xsec-marketplace/')", workflow)
         self.assertIn("checks: read", workflow)
         self.assertIn("source-freshness-gate", workflow)
         self.assertIn('.name == "source-freshness-gate"', workflow)
-        self.assertIn("expected one open exact-head generated PR", workflow)
-        self.assertIn(".head.ref == $branch", workflow)
+        self.assertIn("expected at most one open exact-head generated PR", workflow)
+        self.assertIn('($branch == "" or .head.ref == $branch)', workflow)
         self.assertIn('*) echo "eligible=false" >> "$GITHUB_OUTPUT"; exit 0 ;;', workflow)
         self.assertNotIn("final-revalidate-and-merge:", workflow)
+        self.assertNotIn("coderabbit_status_verified", workflow)
         self.assertIn("workflows: [Automatically finalize generated Marketplace PR]", selected_finalizer)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", selected_finalizer)
         self.assertNotIn("github.event.workflow_run.head_branch", selected_finalizer)
@@ -160,6 +198,16 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('test("^xsec-marketplace/(publish-|batch-|default-set-|external-beta-', selected_finalizer)
         self.assertIn("source-freshness-gate", selected_finalizer)
         self.assertIn('.name == "source-freshness-gate"', selected_finalizer)
+        self.assertIn('commits/${head_sha}/statuses?per_page=100', selected_finalizer)
+        self.assertIn('reviews(first:100,after:$endCursor)', selected_finalizer)
+        self.assertIn('.author.login == "coderabbitai"', selected_finalizer)
+        self.assertIn('.author.__typename == "Bot"', selected_finalizer)
+        self.assertIn('issues/${pull_number}/comments?per_page=100', selected_finalizer)
+        self.assertIn('.user.login == "coderabbitai[bot]"', selected_finalizer)
+        self.assertIn('.[0].state == "success"', selected_finalizer)
+        self.assertIn('.[0].description == "Review completed"', selected_finalizer)
+        self.assertNotIn('sort_by(.created_at)', selected_finalizer)
+        self.assertIn("reviewThreads(first:100,after:$endCursor)", selected_finalizer)
         self.assertIn("needs.select-exact-generated-pr.result == 'success'", selected_finalizer)
         self.assertIn("outputs.eligible == 'true'", selected_finalizer)
         self.assertIn("!cancelled() && needs.select-exact-generated-pr.result == 'success'", selected_finalizer)
@@ -167,8 +215,14 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn("group: xsec-marketplace-final-merge-main", finalizer)
         self.assertNotIn("group: xsec-marketplace-final-merge-main", selected_finalizer)
         self.assertNotIn("always()", selected_finalizer)
+        self.assertIn("reviews(first:100,after:$endCursor)", selected_finalizer)
+        self.assertNotIn("coderabbit_status_verified", selected_finalizer)
         self.assertIn("workflow_call:", finalizer)
-        self.assertIn("Require source-gated automatic finalization", finalizer)
+        self.assertIn("successful CodeRabbit completion and authenticated exact-head review or summary", finalizer)
+        self.assertIn('commits/${HEAD_SHA}/statuses?per_page=100', finalizer)
+        self.assertIn('issues/${PULL_NUMBER}/comments?per_page=100', finalizer)
+        self.assertNotIn("coderabbit_status_verified", finalizer)
+        self.assertIn("reviews(first:100,after:$endCursor)", finalizer)
         self.assertIn("workflow_dispatch|workflow_call|workflow_run", finalizer)
         self.assertIn("xsec-marketplace/batch-*", finalizer)
 

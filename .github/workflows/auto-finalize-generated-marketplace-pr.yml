@@ -4,6 +4,9 @@ on:
   workflow_run:
     workflows: [Validate marketplace, Verify generated Marketplace publication merge]
     types: [completed]
+  pull_request_review:
+    types: [submitted]
+  status:
 
 permissions:
   actions: read
@@ -14,10 +17,25 @@ permissions:
 jobs:
   select-exact-generated-pr:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/')
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        startsWith(github.event.workflow_run.head_branch, 'xsec-marketplace/')
+      ) || (
+        github.event_name == 'pull_request_review' &&
+        github.event.pull_request.state == 'open' &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        startsWith(github.event.pull_request.head.ref, 'xsec-marketplace/')
+      ) || (
+        github.event_name == 'status' &&
+        github.event.sender.login == 'coderabbitai[bot]' &&
+        github.event.sender.type == 'Bot' &&
+        github.event.context == 'CodeRabbit' &&
+        github.event.state == 'success'
+      )
     runs-on: ubuntu-latest
     outputs:
       pull_number: ${{ steps.pr.outputs.pull_number }}
@@ -27,22 +45,22 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.event_name == 'pull_request_review' && github.event.pull_request.head.ref || '' }}
+          HEAD_REPOSITORY: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name || github.event_name == 'pull_request_review' && github.event.pull_request.head.repo.full_name || github.repository }}
+          HEAD_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'pull_request_review' && github.event.pull_request.head.sha || github.event.sha }}
         run: |
           set -euo pipefail
           [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Finalizer trigger has an invalid head SHA." >&2; exit 1; }
           prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
           matches="$(printf '%s' "$prs" | jq -cer --arg repository "$HEAD_REPOSITORY" --arg branch "$HEAD_BRANCH" --arg sha "$HEAD_SHA" '
-            [.[][] | select(.head.repo.full_name == $repository and .head.sha == $sha and .head.ref == $branch)]
+            [.[][] | select(.head.repo.full_name == $repository and .head.sha == $sha and ($branch == "" or .head.ref == $branch))]
           ')"
           count="$(printf '%s' "$matches" | jq -er 'length')"
           if [ "$count" = "0" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          [ "$count" = "1" ] || { echo "expected one open exact-head generated PR" >&2; exit 1; }
+          [ "$count" = "1" ] || { echo "expected at most one open exact-head generated PR" >&2; exit 1; }
           pull_number="$(printf '%s' "$matches" | jq -er '.[0].number')"
           head_branch="$(printf '%s' "$matches" | jq -er '.[0].head.ref')"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
@@ -59,5 +77,66 @@ jobs:
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/statuses?per_page=100")"
+          # Bind the trusted completion status to its authenticated exact-head
+          # review or bounded exact-head zero-findings summary.
+          # shellcheck disable=SC2016
+          coderabbit_reviews="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviews(first:100,after:$endCursor){nodes{author{login __typename} commit{oid} state submittedAt} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          coderabbit_comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${pull_number}/comments?per_page=100")"
+          if ! jq -ne --arg head "$HEAD_SHA" --argjson statuses "$statuses" --argjson reviews "$coderabbit_reviews" --argjson comments "$coderabbit_comments" '
+            ($statuses | type == "array" and length > 0)
+            and all($statuses[]?; type == "array")
+            and (
+              [$statuses[][]
+                | select(
+                    .context == "CodeRabbit"
+                    and (.created_at | type == "string")
+                    and (.description | type == "string")
+                  )
+              ]
+              | if length > 0 then (.[0].state == "success" and .[0].description == "Review completed") else false end
+            )
+            and ($reviews | type == "array" and length > 0)
+            and all($reviews[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviews.nodes | type == "array"))
+            and ($reviews[-1].data.repository.pullRequest.reviews.pageInfo.hasNextPage == false)
+            and (
+              any($reviews[]?.data.repository.pullRequest.reviews.nodes[]?;
+                .author.login == "coderabbitai"
+                and .author.__typename == "Bot"
+                and .commit.oid == $head
+                and (.submittedAt | type == "string")
+                and (.state == "COMMENTED" or .state == "APPROVED")
+              )
+              or (
+                ($comments | type == "array" and length > 0)
+                and all($comments[]?; type == "array")
+                and any($comments[][]?;
+                  .user.login == "coderabbitai[bot]"
+                  and .user.type == "Bot"
+                  and (.body | type == "string")
+                  and ((try (.body | capture("(?s)<!-- recent_review_start -->\\s*(?<recent>.*?)\\s*<!-- recent_review_end -->").recent) catch "") as $recent
+                    | ($recent | contains("No actionable comments were generated in the recent review."))
+                    and ($recent | test("Reviewing files that changed from the base of the PR and between [a-f0-9]{40} and " + $head + "\\."))
+                  )
+                )
+              )
+            )
+          ' >/dev/null; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # shellcheck disable=SC2016
+          thread_pages="$(gh api graphql --paginate --slurp -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$endCursor){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}' \
+            -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$pull_number" -F endCursor=null)"
+          jq -ne --arg head "$HEAD_SHA" --argjson threads "$thread_pages" '
+            ($threads | type == "array" and length > 0)
+            and all($threads[]?; .data.repository.pullRequest.headRefOid == $head and (.data.repository.pullRequest.reviewThreads.nodes | type == "array"))
+            and ($threads[-1].data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
+            and all($threads[]?.data.repository.pullRequest.reviewThreads.nodes[]?; .isResolved == true)
+          ' >/dev/null || {
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
           echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"

@@ -842,6 +842,7 @@ jobs:
           pull_url="$(gh pr create --base main --head "$branch" --title "$COMMIT_TITLE" --body "$body")"
           pull_number="${pull_url##*/}"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated Factory PR number is invalid." >&2; exit 1; }
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pull_number}/comments" -f body='@coderabbitai review' >/dev/null
           {
             echo "## Marketplace publication PR awaiting status authentication"
             echo

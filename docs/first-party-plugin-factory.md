@@ -191,10 +191,10 @@ slot 后，批处理再次读取全部 10 个活跃来源的 `beta` 与 `main` e
 Beta source、一次性重建 release/status/provenance，并对完整候选请求 KMS sidecar。晚到或排队的
 单个事件不会覆盖较新的 Beta：它只会促使当前全局 source snapshot 被重新计算。
 
-若候选期间受保护 Factory `main` 前进，`rebuild-stale-marketplace-batch.yml` 只会接受同仓库的
-`xsec-marketplace/batch-*` 精确头，并复核 source gate、候选 transition 与 KMS proof。它从当前 10 个
-来源头生成替代候选；替代 PR 创建成功后，才以精确 PR number、branch 与 head SHA 复读并关闭旧候选。
-该恢复不移动 channel pointer，也不直接合并候选。
+若候选审查期间受保护 Factory `main` 前进，`rebuild-stale-marketplace-batch.yml` 只会接受同仓库的
+`xsec-marketplace/batch-*` 精确头，并复核 source gate、CodeRabbit bot 状态、全部已解决的 review
+thread、候选 transition 与 KMS proof。它从当前 10 个来源头生成替代候选；替代 PR 创建成功后，才以
+精确 PR number、branch 与 head SHA 复读并关闭旧候选。该恢复不移动 channel pointer，也不直接合并候选。
 
 每个 Beta reconcile 都从只读 Source App 的同一固定 HTTPS fetch 中 materialize 当前注册的
 `main`，并确定性重建当前 Beta releaseId。若两者不一致，Factory 只把已 KMS 绑定到该 Beta
@@ -213,11 +213,15 @@ main 已精确重建该 Beta 时才转回 `waiting_for_smoke` 并请求一个**�
 workflow 和 GitHub 注入的 PR metadata，**从不 checkout 或执行 PR head**。它为同仓、受允许
 `xsec-marketplace/*` Factory 分支（包括 `adopt-first-party-*` 和
 `refresh-retained-sidecar-*`）写入 pending 的 `factory-final-merge-gate`；其他 main PR 写入
-success/not-applicable，故所需的 Factory context 不会卡住普通产品、文档或 fork PR。生成候选通过
-source gate 与 source-freshness-gate 后，`auto-finalize-generated-marketplace-pr.yml` 会重新检查同仓
-受允许的 `xsec-marketplace/*` Factory PR，并在受保护 `production` 环境调用
-`final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live PR 的 head/base，使用精确 head
-SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref 与 source gate。Factory
+success/not-applicable，故所需的 Factory context 不会卡住普通产品、文档或 fork PR。每个
+生成候选 PR 创建后都会自动发送一次 `@coderabbitai review` 请求。完成 source gate、CodeRabbit
+对当前 head 的正式审查，或由 `coderabbitai[bot]` 发送的当前 head `CodeRabbit` 成功状态事件后，
+`auto-finalize-generated-marketplace-pr.yml` 会重新检查同仓受允许的
+`xsec-marketplace/*` Factory PR。最终门禁要求当前 head 具备完成的 CodeRabbit 审查，或具有已认证的
+CodeRabbit 状态事件；所有审查线程必须已解决，且线程结果不得分页截断。进入最终合并前会再次执行同一
+认证判断和线程检查。满足后才会
+并在受保护 `production` 环境调用 `final-merge-generated-marketplace-pr.yml`。该 workflow 重新读取 live PR 的 head/base，使用精确
+head SHA，验证 release diff、全部 KMS sidecar、注册来源当前 ref 与 source gate。Factory
 candidate 的 `factory-final-merge-gate` 始终由 arm workflow 保持 `pending`：final workflow
 绝不写 success，也不依赖 EXIT/SIGTERM trap 恢复状态。全部检查通过后，它临时创建独立、仓库
 范围受限的 `XSEC_MARKETPLACE_FINALIZER_APP_ID` /

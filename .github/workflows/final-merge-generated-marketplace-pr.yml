@@ -340,14 +340,13 @@ jobs:
             echo "The exact PR head has no successful Factory source gate." >&2
             exit 1
           }
-      - name: Require source-gated automatic finalization
+      - name: Require trusted CodeRabbit success and resolved review threads
         env:
           GH_TOKEN: ${{ github.token }}
           PULL_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -euo pipefail
-          exit 0
           statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/statuses?per_page=100")"
           # Require the trusted completion status together with CodeRabbit's
           # authenticated review or bounded zero-findings summary of this
@@ -555,7 +554,8 @@ jobs:
             }
           }
           require_current_review_state() {
-            :
+            require_current_coderabbit_status
+            require_all_review_threads_resolved
           }
           # Token creation is intentionally outside the source-head proof, so
           # beta/main can advance while the App action runs. Re-read every
