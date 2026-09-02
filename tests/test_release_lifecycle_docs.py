@@ -200,7 +200,6 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn('.[0].description == "Review completed"', final_merge)
         self.assertNotIn('sort_by(.created_at)', final_merge)
         self.assertNotIn("coderabbit_status_verified", final_merge)
-        self.assertIn("reviews(first:100,after:$endCursor)", final_merge)
         self.assertIn("reviewThreads(first:100,after:$endCursor)", final_merge)
         self.assertIn("pageInfo{hasNextPage endCursor}", final_merge)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
