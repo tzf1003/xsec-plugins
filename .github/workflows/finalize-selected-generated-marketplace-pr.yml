@@ -12,7 +12,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: xsec-marketplace-final-merge-main
+  group: xsec-marketplace-final-selector-main
   cancel-in-progress: false
 
 jobs:
