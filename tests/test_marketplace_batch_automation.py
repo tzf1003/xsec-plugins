@@ -196,6 +196,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('test("^xsec-marketplace/(publish-|batch-|default-set-|external-beta-', selected_finalizer)
         self.assertIn("source-freshness-gate", selected_finalizer)
         self.assertIn('.name == "source-freshness-gate"', selected_finalizer)
+        self.assertIn("ready_matches='[]'", selected_finalizer)
+        self.assertIn("expected one ready current-baseline generated PR", selected_finalizer)
         self.assertIn('commits/${head_sha}/statuses?per_page=100', selected_finalizer)
         self.assertIn('reviews(first:100,after:$endCursor)', selected_finalizer)
         self.assertIn('.author.login == "coderabbitai"', selected_finalizer)

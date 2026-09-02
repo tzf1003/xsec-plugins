@@ -57,30 +57,36 @@ jobs:
               and (.head.ref | test("^xsec-marketplace/(publish-|batch-|default-set-|external-beta-|external-stable-|promote-stable-|stage-first-party-adoption-|adopt-first-party-|refresh-retained-sidecar-|layout-signatures-)"))
             )]
           ')"
-          count="$(printf '%s' "$matches" | jq -er 'length')"
+          ready_matches='[]'
+          while IFS= read -r candidate; do
+            candidate_number="$(printf '%s' "$candidate" | jq -er '.number')"
+            candidate_head="$(printf '%s' "$candidate" | jq -er '.head.sha')"
+            [[ "$candidate_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
+            [[ "$candidate_head" =~ ^[a-f0-9]{40}$ ]] || { echo "Generated PR head revision is invalid." >&2; exit 1; }
+            candidate_checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${candidate_head}/check-runs?per_page=100")"
+            if printf '%s' "$candidate_checks" | jq -e '
+              any(.check_runs[]?; .name == "source-gate" and .status == "completed" and .conclusion == "success")
+            ' >/dev/null && printf '%s' "$candidate_checks" | jq -e '
+              any(.check_runs[]?; .name == "source-freshness-gate" and .status == "completed" and .conclusion == "success")
+            ' >/dev/null; then
+              ready_matches="$(printf '%s' "$ready_matches" | jq -cer --argjson candidate "$candidate" '. + [$candidate]')"
+            fi
+          done < <(printf '%s' "$matches" | jq -rc '.[]')
+          count="$(printf '%s' "$ready_matches" | jq -er 'length')"
           if [ "$count" = "0" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          [ "$count" = "1" ] || { echo "expected one exact current-baseline generated PR" >&2; exit 1; }
-          pull_number="$(printf '%s' "$matches" | jq -er '.[0].number')"
-          head_branch="$(printf '%s' "$matches" | jq -er '.[0].head.ref')"
-          head_sha="$(printf '%s' "$matches" | jq -er '.[0].head.sha')"
+          [ "$count" = "1" ] || { echo "expected one ready current-baseline generated PR" >&2; exit 1; }
+          pull_number="$(printf '%s' "$ready_matches" | jq -er '.[0].number')"
+          head_branch="$(printf '%s' "$ready_matches" | jq -er '.[0].head.ref')"
+          head_sha="$(printf '%s' "$ready_matches" | jq -er '.[0].head.sha')"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
           [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Generated PR head revision is invalid." >&2; exit 1; }
           case "$head_branch" in
             xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
             *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
           esac
-          check_runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
-          if ! printf '%s' "$check_runs" | jq -e '
-            any(.check_runs[]?; .name == "source-gate" and .status == "completed" and .conclusion == "success")
-          ' >/dev/null || ! printf '%s' "$check_runs" | jq -e '
-            any(.check_runs[]?; .name == "source-freshness-gate" and .status == "completed" and .conclusion == "success")
-          ' >/dev/null; then
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           # The protected finalizer re-reads this state immediately before its
           # App-token merge. Keep the handoff unqueued until the exact
           # candidate has a trusted CodeRabbit completion and no open threads,
