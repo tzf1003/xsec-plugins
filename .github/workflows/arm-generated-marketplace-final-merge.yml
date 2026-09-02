@@ -142,11 +142,74 @@ jobs:
               any(.[][]; [.filename, (.previous_filename? // "")] | any(.[]; factory_path))
             ' >/dev/null && echo true || echo false)"
           fi
+          # A disabled first-party registration deliberately retains its
+          # immutable Factory history, but no longer needs a checked-out
+          # source subproject. Treat only that narrow removal as ordinary
+          # maintenance: the source gate still validates the exact change,
+          # while release, provenance and active-subproject changes remain
+          # protected Finalizer candidates.
+          disabled_subproject_retirement=false
+          if [ "$factory_content" = "true" ] || [ "$gitlink_changed" = "true" ]; then
+            if registry_blob_sha="$(printf '%s' "$base_tree" | jq -er '
+                if .truncated == false and (.tree | type == "array") then
+                  [
+                    .tree[]
+                    | select(
+                        .path == ".xsec-factory/official-registry.json"
+                        and .type == "blob"
+                        and (.sha | type == "string" and test("^[a-f0-9]{40}$"))
+                      )
+                    | .sha
+                  ]
+                  | if length == 1 then .[0] else error("missing trusted Factory registry") end
+                else error("incomplete trusted Factory tree") end
+              ')" \
+              && registry_blob="$(gh api "repos/${REPOSITORY}/git/blobs/${registry_blob_sha}")" \
+              && registry="$(printf '%s' "$registry_blob" | jq -er 'if .encoding == "base64" and (.content | type == "string") then .content else error("invalid trusted Factory registry blob") end' | tr -d '\n' | base64 --decode)"; then
+              disabled_subproject_retirement="$(jq -ne \
+                --argjson base_gitlinks "$base_gitlinks" \
+                --argjson head_gitlinks "$head_gitlinks" \
+                --argjson registry "$registry" \
+                --argjson pr_files "$pr_files" '
+                  def plugin_id: "[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?";
+                  def release_index: test("^\\.xsec-factory/snapshots/" + plugin_id + "/\\.xsec-market/releases\\.json$");
+                  def release_sidecar: test("^\\.xsec-factory/snapshots/" + plugin_id + "/\\.xsec-market/releases\\.json\\.sig\\.jws\\.json$");
+                  def factory_document: test("^\\.xsec-factory/(?:official-registry\\.json|official-(?:publications|publication-proofs|adoptions|adoption-proofs|status)/" + plugin_id + "\\.json)$");
+                  def subproject: test("^plugins/" + plugin_id + "$");
+                  def factory_path: release_index or release_sidecar or factory_document or subproject or . == ".gitmodules";
+                  ($base_gitlinks | map(.path)) as $base_paths
+                  | ($head_gitlinks | map(.path)) as $head_paths
+                  | ($base_paths - $head_paths) as $removed
+                  | ($head_paths - $base_paths) as $added
+                  | ($base_gitlinks | map({key: .path, value: .sha}) | from_entries) as $base_by_path
+                  | [
+                      $pr_files[][]
+                      | [.filename, (.previous_filename? // "")][]
+                      | select(type == "string" and factory_path)
+                    ] as $factory_files
+                  | ($registry.plugins | if type == "array" then . else error("invalid trusted Factory registry") end) as $plugins
+                  | ($removed | length > 0)
+                    and ($added | length == 0)
+                    and all($head_gitlinks[]; $base_by_path[.path] == .sha)
+                    and ($factory_files | index(".gitmodules") != null)
+                    and all($factory_files[]; . == ".gitmodules" or ($removed | index(.) != null))
+                    and all($removed[]; ($factory_files | index(.) != null))
+                    and all($removed[];
+                      capture("^plugins/(?<plugin>" + plugin_id + ")$").plugin as $plugin
+                      | any($plugins[];
+                          .pluginId == $plugin
+                          and .trustTier == "first-party"
+                          and .status == "disabled"))
+                ' >/dev/null && echo true || echo false)"
+            fi
+          fi
           case "$PR_HEAD_REPOSITORY:$PR_HEAD_REF" in
             "$REPOSITORY":xsec-marketplace/publish-*|"$REPOSITORY":xsec-marketplace/batch-*|"$REPOSITORY":xsec-marketplace/external-beta-*|"$REPOSITORY":xsec-marketplace/external-stable-*|"$REPOSITORY":xsec-marketplace/promote-stable-*|"$REPOSITORY":xsec-marketplace/stage-first-party-adoption-*|"$REPOSITORY":xsec-marketplace/adopt-first-party-*|"$REPOSITORY":xsec-marketplace/refresh-retained-sidecar-*|"$REPOSITORY":xsec-marketplace/layout-signatures-*|"$REPOSITORY":xsec-marketplace/default-set-*) event_factory=true ;;
             *) event_factory=false ;;
           esac
-          if [ "$layout_migration" = "true" ] || [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] || [ "$factory_content" = "true" ] || [ "$gitlink_changed" = "true" ]; then
+          if [ "$layout_migration" = "true" ] || [ "$event_factory" = "true" ] || [ "$factory_for_sha" = "true" ] \
+            || { [ "$factory_content" = "true" ] && [ "$disabled_subproject_retirement" != "true" ]; } \
+            || { [ "$gitlink_changed" = "true" ] && [ "$disabled_subproject_retirement" != "true" ]; }; then
             # A pending layout marker is privileged Factory content. Its exact
             # transition must remain pending for protected revalidation.
             echo "factory_generated=true" >> "$GITHUB_OUTPUT"
