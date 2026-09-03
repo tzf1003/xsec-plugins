@@ -4,6 +4,11 @@
 第一方插件源码仓库使用受保护的 `beta` 与 `main`；Factory 只保留生成快照、不可变
 artifact、release history、签名和来源证明。
 
+Agent Plugins v1 的 portable artifact、schema v2、嵌入式 Fabric 和平台 sidecar 输入
+见 [Agent Plugins v1 Factory 合约](agent-plugins-runtime-contract.md)。攻击路径的参考
+迁移与 Beta 验收见 [attack-path 参考迁移](attack-path-agent-plugin-reference.md)；其余
+插件按 [迁移工作手册](agent-plugins-migration-playbook.md) 建立能力矩阵后再迁移。
+
 ## Registry v2
 
 `.xsec-factory/official-registry.json` 的根对象严格为：

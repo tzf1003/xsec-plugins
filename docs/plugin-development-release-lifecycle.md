@@ -5,6 +5,11 @@
 其中每一步的可信来源不同：本地开发目录不属于云端发布物；云端 Marketplace
 也绝不能将未发布的本地目录当作候选更新。
 
+迁移到 Agent Plugins v1 时，先阅读 [Factory 运行时合约](agent-plugins-runtime-contract.md)
+和 [迁移工作手册](agent-plugins-migration-playbook.md)。包含 native MCP sidecar 的包还须
+满足 [attack-path 参考迁移](attack-path-agent-plugin-reference.md) 中的平台 artifact 与
+真实 Beta smoke 要求。
+
 ## 两条彼此隔离的链路
 
 | 场景 | 身份 | 同一 `plugin.json.version` 能否变更代码 | 会不会上传或改动云端 |

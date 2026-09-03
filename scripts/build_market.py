@@ -20,6 +20,17 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from native_sidecars import (
+    RECIPES,
+    NativeSidecarRecipe,
+    parse_native_sidecar_inputs,
+    provenance_for_inputs,
+    recipe_for_source,
+    require_inputs,
+    staged_plugin,
+    validate_provenance,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE_RELATIVE_PATH = Path(".agents") / "plugins" / "marketplace.json"
@@ -218,7 +229,12 @@ def require_link_free_tree(root: Path, label: str) -> None:
             raise ValueError(f"{label} must not contain symbolic links: {path}")
 
 
-def release_id(version: str, engines: object, artifacts: list[dict[str, object]]) -> str:
+def release_id(
+    version: str,
+    engines: object,
+    artifacts: list[dict[str, object]],
+    native_sidecar_provenance: dict[str, object] | None = None,
+) -> str:
     """Return a content-addressed ID that stays stable when artifact URLs move.
 
     The release record itself remains immutable.  Excluding the URL here lets
@@ -241,6 +257,8 @@ def release_id(version: str, engines: object, artifacts: list[dict[str, object]]
             key=lambda artifact: (str(artifact["os"]), str(artifact["arch"]), str(artifact["sha256"])),
         ),
     }
+    if native_sidecar_provenance is not None:
+        descriptor["nativeSidecarProvenance"] = native_sidecar_provenance
     return f"sha256-{sha256(canonical_json(descriptor))}"
 
 
@@ -297,21 +315,33 @@ def require_release_engines(value: object, label: str) -> dict[str, str]:
 
 
 def require_release_record(value: object, plugin_id: str, label: str) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != {"releaseId", "version", "engines", "artifacts"}:
-        raise ValueError(f"{label} must contain only releaseId, version, engines and artifacts")
+    allowed = {"releaseId", "version", "engines", "artifacts", "nativeSidecarProvenance"}
+    if not isinstance(value, dict) or not {"releaseId", "version", "engines", "artifacts"} <= set(value) or set(value) - allowed:
+        raise ValueError(f"{label} must contain only releaseId, version, engines, artifacts and optional nativeSidecarProvenance")
     version = safe_artifact_component(value.get("version"), f"{label}.version")
     engines = require_release_engines(value.get("engines"), label)
     artifacts = require_release_artifacts(value.get("artifacts"), label)
-    calculated = release_id(version, engines, artifacts)
+    provenance = value.get("nativeSidecarProvenance")
+    if provenance is not None and not isinstance(provenance, dict):
+        raise ValueError(f"{label}.nativeSidecarProvenance must be an object")
+    recipe = RECIPES.get(plugin_id)
+    if provenance is not None:
+        if recipe is None:
+            raise ValueError(f"{label}.nativeSidecarProvenance is not allowed for {plugin_id}")
+        provenance = validate_provenance(recipe, provenance)
+    calculated = release_id(version, engines, artifacts, provenance)
     supplied = require_release_id(value.get("releaseId"), label)
     if supplied != calculated:
         raise ValueError(f"{label}.releaseId does not match immutable release content")
-    return {
+    record = {
         "releaseId": supplied,
         "version": version,
         "engines": engines,
         "artifacts": artifacts,
     }
+    if provenance is not None:
+        record["nativeSidecarProvenance"] = provenance
+    return record
 
 
 def migrate_v1_release_document(value: dict[str, object], plugin_id: str) -> dict[str, object]:
@@ -447,7 +477,8 @@ def write_zip(plugin_dir: Path, destination: Path) -> None:
             # Do not inherit Windows/POSIX host defaults into an artifact whose
             # digest will be bound by a cross-platform KMS sidecar.
             info.create_system = 3
-            info.external_attr = 0o100644 << 16
+            mode = 0o100755 if path.stat().st_mode & 0o111 else 0o100644
+            info.external_attr = mode << 16
             archive.writestr(info, archive_bytes(path))
 
 
@@ -628,7 +659,14 @@ def clean_generated_output(output_root: Path) -> None:
         marketplace_path.with_name(marketplace_path.name + suffix).unlink(missing_ok=True)
 
 
-def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path) -> None:
+def build_plugin(
+    source_plugin_dir: Path,
+    output_plugin_dir: Path,
+    *,
+    native_sidecar_inputs: dict[tuple[str, str], Path] | None = None,
+    native_sidecar_source_revision: str | None = None,
+    source_only: bool = False,
+) -> None:
     manifest = json.loads((source_plugin_dir / "plugin.json").read_text(encoding="utf-8"))
     plugin_id = safe_artifact_component(manifest.get("name"), "plugin manifest name")
     version = safe_artifact_component(manifest.get("version"), "plugin manifest version")
@@ -641,69 +679,179 @@ def build_plugin(source_plugin_dir: Path, output_plugin_dir: Path) -> None:
         f"plugin manifest {plugin_id}",
     )
 
-    # Hash the deterministic archive before deriving the filename.  The digest
-    # is part of the filename so two code revisions with the same manifest
-    # version cannot overwrite each other.
+    recipe = recipe_for_source(plugin_id, source_plugin_dir)
+    if source_only and recipe is not None:
+        return
+    inputs = native_sidecar_inputs or {}
+    provenance = native_sidecar_provenance(recipe, inputs, native_sidecar_source_revision)
+    candidates = build_candidate_artifacts(source_plugin_dir, plugin_id, version, inputs, recipe)
+    candidate_artifacts = [candidate[0] for candidate in candidates]
+    candidate_release_id = release_id(version, engines, candidate_artifacts, provenance)
+    target = append_candidate_release(
+        release,
+        plugin_id,
+        version,
+        candidate_release_id,
+        candidate_artifacts,
+        candidates,
+        artifact_dir,
+        engines,
+        provenance,
+    )
+    channels = release["channels"]
+    if not isinstance(channels, dict):
+        raise ValueError(f"release metadata for {plugin_id} has invalid channels")
+    channels["beta"] = {"releaseId": target["releaseId"]}
+    release_path.parent.mkdir(parents=True, exist_ok=True)
+    release_path.write_bytes(stable_json(release))
+
+
+def build_candidate_artifacts(
+    source_plugin_dir: Path,
+    plugin_id: str,
+    version: str,
+    native_inputs: dict[tuple[str, str], Path],
+    recipe: NativeSidecarRecipe | None,
+) -> list[tuple[dict[str, str], bytes]]:
+    """Return release records and immutable bytes without touching output state."""
+
+    if recipe is None:
+        if any(input_id == plugin_id for input_id, _ in native_inputs):
+            raise ValueError(f"native sidecar inputs were supplied for a source without a native MCP: {plugin_id}")
+        return [archive_candidate(source_plugin_dir, plugin_id, version, "any", "any")]
+    inputs = require_inputs(recipe, native_inputs)
+    files = iter_plugin_files(source_plugin_dir)
+    candidates: list[tuple[dict[str, str], bytes]] = []
+    for target in recipe.targets:
+        with staged_plugin(source_plugin_dir, files, recipe, inputs[target.rust_target]) as staging:
+            candidates.append(archive_candidate(staging, plugin_id, version, target.os_name, target.arch))
+    return candidates
+
+
+def native_sidecar_provenance(
+    recipe: NativeSidecarRecipe | None,
+    native_inputs: dict[tuple[str, str], Path],
+    source_revision: str | None,
+) -> dict[str, object] | None:
+    if recipe is None:
+        return None
+    if source_revision is None:
+        raise ValueError(f"native MCP plugin {recipe.plugin_id} requires a protected source revision")
+    inputs = require_inputs(recipe, native_inputs)
+    return provenance_for_inputs(recipe, source_revision, inputs)
+
+
+def source_plugin_dir(entry: dict[str, object]) -> Path:
+    source = entry.get("source")
+    relative_path = source.get("path") if isinstance(source, dict) else None
+    if not isinstance(relative_path, str):
+        raise ValueError("every marketplace entry needs source.path")
+    source_candidate = ROOT / relative_path
+    if is_link(source_candidate):
+        raise ValueError(f"plugin source must not be a symbolic link: {relative_path}")
+    resolved = source_candidate.resolve()
+    try:
+        resolved.relative_to(PLUGIN_ROOT.resolve())
+    except ValueError as error:
+        raise ValueError(
+            f"plugin source must remain below .xsec-factory/snapshots/: {relative_path}"
+        ) from error
+    return resolved
+
+
+def preflight_native_sidecars(
+    entries: list[dict[str, object]],
+    native_inputs: dict[tuple[str, str], Path],
+    source_revision: str | None,
+    source_only: bool,
+) -> None:
+    native_plugin_ids = set()
+    for entry in entries:
+        plugin_dir = source_plugin_dir(entry)
+        plugin_id = safe_artifact_component(
+            json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8")).get("name"),
+            "plugin manifest name",
+        )
+        recipe = recipe_for_source(plugin_id, plugin_dir)
+        if recipe is None:
+            continue
+        native_plugin_ids.add(plugin_id)
+        if not source_only:
+            native_sidecar_provenance(recipe, native_inputs, source_revision)
+    unexpected = {plugin_id for plugin_id, _ in native_inputs} - native_plugin_ids
+    if unexpected:
+        raise ValueError(f"native sidecar inputs do not match a native MCP plugin: {sorted(unexpected)[0]}")
+
+
+def archive_candidate(
+    source_plugin_dir: Path,
+    plugin_id: str,
+    version: str,
+    os_name: str,
+    arch: str,
+) -> tuple[dict[str, str], bytes]:
     with tempfile.TemporaryDirectory(prefix="xsec-market-artifact-") as directory:
         candidate = Path(directory) / "candidate.xsec-plugin"
         write_zip(source_plugin_dir, candidate)
-        candidate_digest = sha256(candidate)
-        artifact_name = f"{plugin_id}-{version}-sha256-{candidate_digest[:16]}-any-any.xsec-plugin"
-        artifact = path_below(artifact_dir, artifact_name, "artifact path")
-        candidate_artifacts = [
-            {
-                "os": "any",
-                "arch": "any",
-                "url": f"{ARTIFACT_DIR_NAME}/{artifact_name}",
-                "sha256": candidate_digest,
-            }
-        ]
-        candidate_release_id = release_id(version, engines, candidate_artifacts)
+        payload = candidate.read_bytes()
+    digest = sha256(payload)
+    name = f"{plugin_id}-{version}-sha256-{digest[:16]}-{os_name}-{arch}.xsec-plugin"
+    return ({"os": os_name, "arch": arch, "url": f"{ARTIFACT_DIR_NAME}/{name}", "sha256": digest}, payload)
 
-        releases = release["releases"]
-        if not isinstance(releases, list):  # guarded by load_release_document
-            raise ValueError(f"release metadata for {plugin_id} has invalid releases")
-        existing: dict[str, dict[str, object]] = {}
-        for item in releases:
-            if not isinstance(item, dict):
-                raise ValueError(f"release metadata for {plugin_id} has an invalid release")
-            existing[str(item["releaseId"])] = item
-        target = existing.get(candidate_release_id)
-        if target is None:
-            if any(item.get("version") == version for item in existing.values()):
-                raise ValueError(
-                    f"release metadata for {plugin_id} already contains immutable content for version {version}; bump plugin.json before publishing different content"
-                )
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            if artifact.exists():
-                if sha256(artifact) != candidate_digest:
-                    raise ValueError(f"immutable artifact path already contains different bytes: {artifact}")
-            else:
-                shutil.copyfile(candidate, artifact)
-            target = {
-                "releaseId": candidate_release_id,
-                "version": version,
-                "engines": engines,
-                "artifacts": candidate_artifacts,
-            }
-            releases.append(target)
 
-    channels = release["channels"]
-    if not isinstance(channels, dict):  # guarded by load_release_document
-        raise ValueError(f"release metadata for {plugin_id} has invalid channels")
-    # Only the beta pointer moves during automatic main publication.  Stable
-    # promotion uses scripts/promote_release.py and reuses this exact record.
-    # In particular, a brand-new plugin begins as beta-only: publishing its
-    # first artifact must not silently make it available on the stable channel.
-    channels["beta"] = {"releaseId": target["releaseId"]}
-
-    release_path.parent.mkdir(parents=True, exist_ok=True)
-    release_path.write_bytes(stable_json(release))
+def append_candidate_release(
+    release: dict[str, object],
+    plugin_id: str,
+    version: str,
+    candidate_release_id: str,
+    candidate_artifacts: list[dict[str, str]],
+    candidates: list[tuple[dict[str, str], bytes]],
+    artifact_dir: Path,
+    engines: dict[str, str],
+    native_sidecar_provenance: dict[str, object] | None,
+) -> dict[str, object]:
+    releases = release["releases"]
+    if not isinstance(releases, list):
+        raise ValueError(f"release metadata for {plugin_id} has invalid releases")
+    existing = {str(item["releaseId"]): item for item in releases if isinstance(item, dict)}
+    target = existing.get(candidate_release_id)
+    if target is not None:
+        return target
+    if any(item.get("version") == version for item in existing.values()):
+        raise ValueError(f"release metadata for {plugin_id} already contains immutable content for version {version}; bump plugin.json before publishing different content")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    for artifact, payload in candidates:
+        output = path_below(artifact_dir, Path(artifact["url"]).name, "artifact path")
+        if output.exists() and sha256(output) != artifact["sha256"]:
+            raise ValueError(f"immutable artifact path already contains different bytes: {output}")
+        if not output.exists():
+            output.write_bytes(payload)
+    target = {"releaseId": candidate_release_id, "version": version, "engines": engines, "artifacts": candidate_artifacts}
+    if native_sidecar_provenance is not None:
+        target["nativeSidecarProvenance"] = native_sidecar_provenance
+    releases.append(target)
+    return target
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--clean", action="store_true")
+    parser.add_argument(
+        "--source-only",
+        action="store_true",
+        help="validate portable native-MCP source without emitting its release artifact",
+    )
+    parser.add_argument(
+        "--native-sidecar-input",
+        action="append",
+        default=[],
+        metavar="PLUGIN@RUST_TARGET=PATH",
+        help="allowlisted pre-built native MCP binary from the protected runner",
+    )
+    parser.add_argument(
+        "--native-sidecar-source-revision",
+        help="exact Desktop source revision used by the protected native-sidecar builder",
+    )
     parser.add_argument(
         "--output-root",
         type=Path,
@@ -712,6 +860,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.source_only and (args.native_sidecar_input or args.native_sidecar_source_revision):
+        parser.error("--source-only cannot be combined with native sidecar inputs or a source revision")
+
+    native_inputs = parse_native_sidecar_inputs(args.native_sidecar_input)
     output_root = args.output_root.resolve()
     root = ROOT.resolve()
     if output_root != root:
@@ -723,25 +875,26 @@ def main() -> None:
             raise ValueError("--output-root must be outside the repository root")
         copy_source_tree(output_root)
     require_safe_marketplace_path()
+    entries = marketplace_entries()
+    preflight_native_sidecars(
+        entries,
+        native_inputs,
+        args.native_sidecar_source_revision,
+        args.source_only,
+    )
     if args.clean:
         clean_generated_output(output_root)
 
-    entries = marketplace_entries()
     for entry in entries:
-        source = entry.get("source") if isinstance(entry, dict) else None
-        relative_path = source.get("path") if isinstance(source, dict) else None
-        if not isinstance(relative_path, str):
-            raise ValueError("every marketplace entry needs source.path")
-        source_candidate = ROOT / relative_path
-        if is_link(source_candidate):
-            raise ValueError(f"plugin source must not be a symbolic link: {relative_path}")
-        source_plugin_dir = source_candidate.resolve()
-        try:
-            source_plugin_dir.relative_to(PLUGIN_ROOT.resolve())
-        except ValueError as error:
-            raise ValueError(f"plugin source must remain below .xsec-factory/snapshots/: {relative_path}") from error
-        output_plugin_dir = output_root / source_plugin_dir.relative_to(ROOT)
-        build_plugin(source_plugin_dir, output_plugin_dir)
+        plugin_source_dir = source_plugin_dir(entry)
+        output_plugin_dir = output_root / plugin_source_dir.relative_to(ROOT)
+        build_plugin(
+            plugin_source_dir,
+            output_plugin_dir,
+            native_sidecar_inputs=native_inputs,
+            native_sidecar_source_revision=args.native_sidecar_source_revision,
+            source_only=args.source_only,
+        )
 
 
 if __name__ == "__main__":

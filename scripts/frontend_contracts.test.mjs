@@ -95,7 +95,7 @@ test("manifests express the attack-path to subagent plugin relationship", async 
   const attackExtension = attackPath.extensions["com.xsec.desktop"];
   const subagentExtension = subagent.extensions["com.xsec.desktop"];
 
-  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], "^1.2.3");
+  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], "^2.0.0");
   assert.equal(attackExtension.engines.pluginApi, "^1.3.0");
   assert.equal(subagentExtension.engines.pluginApi, "^1.3.0");
   assert.ok(attackExtension.permissions["workspace.tool.open"]);
@@ -113,9 +113,12 @@ test("marketplace bootstrap preserves every package-owned frontend", async () =>
     const marketplaceRoot = join(temporaryRoot, "marketplace");
     const desktopRoot = join(temporaryRoot, "desktop-plugins");
     await mkdir(join(marketplaceRoot, "scripts"), { recursive: true });
+    await mkdir(join(marketplaceRoot, ".xsec-factory"), { recursive: true });
     await cp(join(root, "scripts", "bootstrap_plugins.py"), join(marketplaceRoot, "scripts", "bootstrap_plugins.py"));
     await cp(join(root, "scripts", "build_market.py"), join(marketplaceRoot, "scripts", "build_market.py"));
+    await cp(join(root, "scripts", "native_sidecars.py"), join(marketplaceRoot, "scripts", "native_sidecars.py"));
     await cp(join(root, "scripts", "marketplace_contract.py"), join(marketplaceRoot, "scripts", "marketplace_contract.py"));
+    await cp(join(root, ".xsec-factory", "official-registry.json"), join(marketplaceRoot, ".xsec-factory", "official-registry.json"));
     const marketplace = JSON.parse(await readFile(join(root, ".agents", "plugins", "marketplace.json"), "utf8"));
     for (const entry of marketplace.plugins) {
       const pluginId = entry.name;

@@ -15,12 +15,20 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from marketplace_contract import OFFICIAL_PLUGIN_IDS  # noqa: E402
 
 
+PROJECT_WORKSPACE_PLUGIN_ID = "com.xsec.project-workspace"
+
+
 class BootstrapPluginsTests(unittest.TestCase):
     def prepare_marketplace(self, root: Path) -> Path:
         source_root = root / "desktop-plugins"
         scripts_root = root / "scripts"
         scripts_root.mkdir(parents=True)
-        for name in ("bootstrap_plugins.py", "build_market.py", "marketplace_contract.py"):
+        for name in (
+            "bootstrap_plugins.py",
+            "build_market.py",
+            "marketplace_contract.py",
+            "native_sidecars.py",
+        ):
             shutil.copy2(ROOT / "scripts" / name, scripts_root / name)
         factory_root = root / ".xsec-factory"
         factory_root.mkdir()
@@ -31,6 +39,8 @@ class BootstrapPluginsTests(unittest.TestCase):
             source = source_root / plugin_id
             source.mkdir(parents=True)
             shutil.copy2(snapshot / "plugin.json", source / "plugin.json")
+        retained_snapshot = ROOT / factory_root.name / "snapshots" / PROJECT_WORKSPACE_PLUGIN_ID
+        shutil.copytree(retained_snapshot, factory_root / "snapshots" / PROJECT_WORKSPACE_PLUGIN_ID)
         return source_root
 
     def test_bootstrap_uses_active_registry_defaults_and_retains_disabled_snapshot(self) -> None:

@@ -33,6 +33,7 @@ from build_market import (
     write_zip,
 )
 from marketplace_contract import OFFICIAL_PLUGIN_IDS, active_default_official_plugin_ids
+from native_sidecars import RECIPES, recipe_for_source, validate_native_archive, validate_provenance
 
 
 MAX_ZIP_ENTRIES = 10_000
@@ -205,6 +206,7 @@ APPROVALS_FRONTEND_SOURCE_SHA256_BY_VERSION = {
     "1.3.0": "f2a7d1673b7117e7bb44398ed4ae62f08bb702f960463318260546819b0742df",
     "1.3.2": "209e8f2eb043a777a77235bdb4985d7d74f951a86162c913be80c27d9a4dcf18",
     "1.3.3": "863a044877a3f2600f67cac69bff084e6d6a36f1aee6e6fc599abdaa8192021e",
+    "2.0.0": "863a044877a3f2600f67cac69bff084e6d6a36f1aee6e6fc599abdaa8192021e",
 }
 class MarketplaceValidationError(ValueError):
     """A marketplace invariant was not met."""
@@ -2642,34 +2644,14 @@ def validate_frontend_rpc_literals(
     label: str,
     requested: set[str] | None = None,
 ) -> None:
-    """Reject undeclared RPC literals and declarations without real requests."""
+    """Require each declared RPC to be requested by executable frontend code.
 
-    reachable = frontend_reachable_token_indices(tokens)
-    reachable_names = {
-        value
-        for index, (kind, value) in enumerate(tokens)
-        if kind == "identifier" and (reachable is None or index in reachable)
-    }
-    literals = {
-        value
-        for index, (kind, value) in enumerate(tokens)
-        if kind == "string"
-        and re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value)
-        and (
-            reachable is None
-            or index in reachable
-            or (
-                index >= 3
-                and tokens[index - 3] == ("identifier", "const")
-                and tokens[index - 2][0] == "identifier"
-                and tokens[index - 2][1] in reachable_names
-                and tokens[index - 1] == ("punctuation", "=")
-            )
-        )
-    }
-    undeclared = literals - set(methods)
-    if undeclared:
-        fail(f"{label} references undeclared RPC methods: {sorted(undeclared)}")
+    XSEC-prefixed strings can also name Host-published data streams.  Only
+    ``host.request`` calls cross the RPC permission boundary, so literal
+    scanning must not treat an ``onData`` subscription as a missing RPC
+    declaration.
+    """
+
     if requested is None:
         requested = frontend_host_requests(tokens, label)
     missing = set(methods) - requested
@@ -2888,6 +2870,8 @@ def validate_archive(
     plugin_id: str,
     version: str,
     *,
+    os_name: str = "any",
+    arch: str = "any",
     require_current_official_frontend_contract: bool = True,
 ) -> dict[str, object]:
     """Validate one packaged artifact.
@@ -2923,6 +2907,7 @@ def validate_archive(
                 manifest_bytes = archive.read("plugin.json")
             except KeyError:
                 fail(f"artifact {path} does not include root plugin.json")
+            mcp_bytes = archive.read("mcp.json") if "mcp.json" in members else None
     except (OSError, zipfile.BadZipFile, RuntimeError) as error:
         fail(f"cannot safely read artifact {path}: {error}")
     if len(manifest_bytes) > MAX_ZIP_FILE_BYTES:
@@ -2937,6 +2922,12 @@ def validate_archive(
         fail(f"artifact {path} plugin.json name does not match {plugin_id}")
     if manifest.get("version") != version:
         fail(f"artifact {path} plugin.json version does not match {version}")
+    desktop = manifest.get("extensions", {}).get("com.xsec.desktop")
+    if isinstance(desktop, dict) and desktop.get("schemaVersion") == 2:
+        try:
+            validate_native_archive(plugin_id, members, mcp_bytes, os_name, arch)
+        except ValueError as error:
+            fail(str(error))
     entrypoints = desktop_entrypoints(manifest, f"artifact {path} plugin.json")
     for entrypoint_name, entrypoint_path in entrypoints:
         entrypoint = members.get(entrypoint_path.as_posix())
@@ -3050,10 +3041,57 @@ def validate_artifacts(
             artifact_path,
             plugin_id,
             version,
+            os_name=os_name,
+            arch=arch,
             require_current_official_frontend_contract=require_current_official_frontend_contract,
         )
         result.append((artifact_path, version, manifest))
     return result
+
+
+def validate_native_sidecar_provenance(
+    plugin_id: str,
+    release_path: Path,
+    artifacts: list[object],
+    provenance: object,
+    label: str,
+) -> None:
+    recipe = RECIPES.get(plugin_id)
+    if provenance is None:
+        return
+    if recipe is None:
+        fail(f"{label} native sidecar provenance is not allowed for {plugin_id}")
+    try:
+        normalized = validate_provenance(recipe, provenance)
+    except ValueError as error:
+        fail(str(error))
+    targets = normalized["targets"]
+    for target in targets:
+        if not isinstance(target, dict):
+            raise AssertionError("validated native target must be an object")
+        artifact = next(
+            (
+                item for item in artifacts
+                if isinstance(item, dict)
+                and item.get("os") == target["os"]
+                and item.get("arch") == target["arch"]
+            ),
+            None,
+        )
+        if artifact is None:
+            fail(f"{label} native sidecar provenance target has no artifact")
+        artifact_path = resolve_below(
+            release_path.parent,
+            safe_relative_path(artifact.get("url"), f"{label} native artifact URL"),
+            f"{label} native artifact",
+        )
+        try:
+            with zipfile.ZipFile(artifact_path) as archive:
+                binary = archive.read(recipe.archive_path.as_posix())
+        except (KeyError, OSError, RuntimeError, zipfile.BadZipFile) as error:
+            fail(f"{label} native sidecar cannot be read: {error}")
+        if hashlib.sha256(binary).hexdigest() != target["sha256"]:
+            fail(f"{label} native sidecar digest does not match provenance")
 
 
 def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
@@ -3109,7 +3147,8 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
     versions: set[str] = set()
     for index, item in enumerate(releases):
         label = f"release metadata for {plugin_id} release {index}"
-        if not isinstance(item, dict) or set(item) != {"releaseId", "version", "engines", "artifacts"}:
+        allowed = {"releaseId", "version", "engines", "artifacts", "nativeSidecarProvenance"}
+        if not isinstance(item, dict) or not {"releaseId", "version", "engines", "artifacts"} <= set(item) or set(item) - allowed:
             fail(f"{label} has an unsupported schema")
         identifier, version, engines, artifacts = (
             item.get("releaseId"),
@@ -3128,7 +3167,9 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
         validate_artifacts(plugin_id, release_path, version, artifacts, label)
         if not isinstance(artifacts, list):
             raise AssertionError("artifacts unexpectedly absent")
-        if identifier != release_id(version, engines, artifacts):
+        provenance = item.get("nativeSidecarProvenance")
+        validate_native_sidecar_provenance(plugin_id, release_path, artifacts, provenance, label)
+        if identifier != release_id(version, engines, artifacts, provenance):
             fail(f"{label} releaseId does not match immutable release content")
         if identifier in records:
             fail(f"release metadata for {plugin_id} contains duplicate releaseIds")
@@ -3206,7 +3247,42 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
     return manifest
 
 
-def validate_source(source_root: Path, built_root: Path) -> None:
+def validate_native_source(plugin_id: str, plugin_dir: Path, manifest: dict[str, object]) -> bool:
+    try:
+        recipe = recipe_for_source(plugin_id, plugin_dir)
+    except ValueError as error:
+        fail(str(error))
+    if recipe is None:
+        return False
+    desktop = manifest.get("extensions", {}).get("com.xsec.desktop")
+    if not isinstance(desktop, dict) or desktop.get("schemaVersion") != 2:
+        fail(f"plugin manifest {plugin_id} native MCP requires schemaVersion 2")
+    agent_tools = desktop.get("contributes", {}).get("agentTools")
+    if not isinstance(agent_tools, dict) or not agent_tools:
+        fail(f"plugin manifest {plugin_id} native MCP requires agentTool bindings")
+    bindings = agent_tools.values()
+    expected_servers = {server.server_id for server in recipe.servers}
+    actual_servers = {
+        item.get("mcpServer")
+        for item in bindings
+        if isinstance(item, dict) and isinstance(item.get("mcpServer"), str) and item.get("mcpTool")
+    }
+    if actual_servers != expected_servers or any(
+        not isinstance(item, dict) or not isinstance(item.get("mcpTool"), str) or not item["mcpTool"]
+        for item in bindings
+    ):
+        fail(f"plugin manifest {plugin_id} has an invalid native MCP Tool binding")
+    skill = resolve_below(plugin_dir, PurePosixPath("skills") / recipe.skill_id / "SKILL.md", f"plugin manifest {plugin_id} Skill")
+    try:
+        skill_source = skill.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        fail(f"plugin manifest {plugin_id} Skill cannot be read: {error}")
+    if not skill_source.startswith(f"---\nname: {recipe.skill_id}\n"):
+        fail(f"plugin manifest {plugin_id} Skill has invalid frontmatter")
+    return True
+
+
+def validate_source(source_root: Path, built_root: Path, *, allow_pending_native_sources: bool = False) -> None:
     try:
         expected_default_ids = set(active_default_official_plugin_ids(source_root))
     except ValueError as error:
@@ -3220,6 +3296,7 @@ def validate_source(source_root: Path, built_root: Path) -> None:
         fail("temporary marketplace plugin set differs from source plugin set")
     for plugin_id, source_dir, _ in source_entries:
         source_manifest = validate_source_manifest(plugin_id, source_dir)
+        native_source = validate_native_source(plugin_id, source_dir, source_manifest)
         built_plugin_dir = built_by_id[plugin_id]
         source_release, source_records = validate_release_index(plugin_id, source_dir)
         generated_release, generated_records = validate_release_index(plugin_id, built_plugin_dir)
@@ -3233,6 +3310,12 @@ def validate_source(source_root: Path, built_root: Path) -> None:
         generated_item = generated_records.get(beta_id) if isinstance(beta_id, str) else None
         if generated_item is None:
             fail(f"temporary output for {plugin_id} beta pointer does not select a release")
+        if native_source and not allow_pending_native_sources and "nativeSidecarProvenance" not in generated_item:
+            fail(f"native MCP release for {plugin_id} lacks signed sidecar provenance")
+        if native_source and allow_pending_native_sources:
+            if source_release != generated_release:
+                fail(f"source-only output for {plugin_id} changed immutable native release state")
+            continue
         if (
             generated_item.get("version") != source_manifest["version"]
             or generated_item.get("engines") != source_manifest["extensions"]["com.xsec.desktop"]["engines"]
@@ -3272,9 +3355,18 @@ def main() -> None:
     source_parser = subcommands.add_parser("source", help="validate source and a generated build")
     source_parser.add_argument("--source-root", type=Path, default=ROOT)
     source_parser.add_argument("--built-root", type=Path, required=True)
+    source_parser.add_argument(
+        "--allow-pending-native-sources",
+        action="store_true",
+        help="accept v2 native-MCP source whose artifacts await protected-runner inputs",
+    )
     args = parser.parse_args()
     try:
-        validate_source(args.source_root.resolve(), args.built_root.resolve())
+        validate_source(
+            args.source_root.resolve(),
+            args.built_root.resolve(),
+            allow_pending_native_sources=args.allow_pending_native_sources,
+        )
     except MarketplaceValidationError as error:
         raise SystemExit(f"marketplace validation failed: {error}") from error
     print(f"marketplace {args.command} validation passed")
