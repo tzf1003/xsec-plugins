@@ -90,7 +90,10 @@ class NativeSidecarFactoryTests(unittest.TestCase):
             release = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))
             for artifact, target in zip(release["releases"][0]["artifacts"], recipe.targets, strict=True):
                 with zipfile.ZipFile(output / ".xsec-market" / artifact["url"]) as archive:
-                    self.assertEqual(archive.read(recipe.archive_path.as_posix()), inputs[(recipe.plugin_id, target.rust_target)].read_bytes())
+                    entrypoint = native_sidecars.archive_path_for(recipe, target).as_posix()
+                    self.assertEqual(archive.read(entrypoint), inputs[(recipe.plugin_id, target.rust_target)].read_bytes())
+                    mcp = json.loads(archive.read("mcp.json"))
+                    self.assertEqual(mcp["mcpServers"]["asset-normalize"]["command"], f"./{entrypoint}")
 
     def test_builds_and_validates_distinct_artifacts_for_each_supported_target(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-build-") as directory:
@@ -116,11 +119,43 @@ class NativeSidecarFactoryTests(unittest.TestCase):
             self.assertEqual(provenance["source"]["revision"], SOURCE_REVISION)
             validate_market.validate_release(PLUGIN_ID, output)
 
+            release_path = output / ".xsec-market" / "releases.json"
+            second = release["releases"][0]["artifacts"][1]
+            with (output / ".xsec-market" / second["url"]).open("ab") as handle:
+                handle.write(b"unexpected archive trailer")
+            second["sha256"] = build_market.sha256(output / ".xsec-market" / second["url"])
+            release["releases"][0]["releaseId"] = build_market.release_id(
+                PLUGIN_VERSION,
+                release["releases"][0]["engines"],
+                release["releases"][0]["artifacts"],
+                provenance,
+            )
+            release["channels"]["beta"] = {"releaseId": release["releases"][0]["releaseId"]}
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+            validated = validate_market.validate_release(PLUGIN_ID, output)
+            with self.assertRaisesRegex(validate_market.MarketplaceValidationError, "not deterministic"):
+                validate_market.validate_native_artifact_reproducibility(
+                    PLUGIN_ID,
+                    source,
+                    release["releases"][0]["artifacts"],
+                    validated,
+                )
+
             for artifact, target in zip(artifacts, native_sidecars.ATTACK_PATH_RECIPE.targets, strict=True):
                 artifact_path = output / ".xsec-market" / artifact["url"]
                 with zipfile.ZipFile(artifact_path) as archive:
-                    self.assertEqual(archive.read(SIDECAR_PATH), inputs[(PLUGIN_ID, target.rust_target)].read_bytes())
+                    entrypoint = native_sidecars.archive_path_for(native_sidecars.ATTACK_PATH_RECIPE, target).as_posix()
+                    self.assertEqual(archive.read(entrypoint), inputs[(PLUGIN_ID, target.rust_target)].read_bytes())
+                    mcp = json.loads(archive.read("mcp.json"))
+                    self.assertEqual(mcp["mcpServers"]["attack-path"]["command"], f"./{entrypoint}")
             provenance["targets"][0]["sha256"] = "f" * 64
+            release["releases"][0]["releaseId"] = build_market.release_id(
+                PLUGIN_VERSION,
+                release["releases"][0]["engines"],
+                artifacts,
+                provenance,
+            )
+            release["channels"]["beta"] = {"releaseId": release["releases"][0]["releaseId"]}
             (output / ".xsec-market" / "releases.json").write_text(json.dumps(release), encoding="utf-8")
             with self.assertRaisesRegex(validate_market.MarketplaceValidationError, "digest does not match provenance"):
                 validate_market.validate_release(PLUGIN_ID, output)
@@ -140,6 +175,48 @@ class NativeSidecarFactoryTests(unittest.TestCase):
                     native_sidecar_inputs=inputs,
                     native_sidecar_source_revision=SOURCE_REVISION,
                 )
+
+    def test_build_rejects_a_source_sidecar_with_a_windows_extension(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-source-binary-") as directory:
+            root = Path(directory)
+            source = write_attack_path_source(root)
+            source_binary = source / "bin" / "attack-path-mcp.exe"
+            source_binary.parent.mkdir()
+            source_binary.write_bytes(b"untrusted source binary")
+
+            with self.assertRaisesRegex(ValueError, "must be supplied by the Factory recipe"):
+                build_market.build_plugin(
+                    source,
+                    root / "output",
+                    native_sidecar_inputs=sidecar_inputs(root),
+                    native_sidecar_source_revision=SOURCE_REVISION,
+                )
+
+    def test_release_rejects_platform_artifacts_without_provenance(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-release-") as directory:
+            root = Path(directory)
+            source = write_attack_path_source(root)
+            output = root / "output" / ".xsec-factory" / "snapshots" / PLUGIN_ID
+            build_market.build_plugin(
+                source,
+                output,
+                native_sidecar_inputs=sidecar_inputs(root),
+                native_sidecar_source_revision=SOURCE_REVISION,
+            )
+            release_path = output / ".xsec-market" / "releases.json"
+            release = json.loads(release_path.read_text(encoding="utf-8"))
+            record = release["releases"][0]
+            record.pop("nativeSidecarProvenance")
+            record["releaseId"] = build_market.release_id(
+                PLUGIN_VERSION,
+                record["engines"],
+                record["artifacts"],
+            )
+            release["channels"]["beta"] = {"releaseId": record["releaseId"]}
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+
+            with self.assertRaisesRegex(validate_market.MarketplaceValidationError, "requires native sidecar provenance"):
+                validate_market.validate_release(PLUGIN_ID, output)
 
     def test_build_rejects_missing_or_invalid_native_source_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-provenance-") as directory:
@@ -168,6 +245,15 @@ class NativeSidecarFactoryTests(unittest.TestCase):
 
             with self.assertRaisesRegex(validate_market.MarketplaceValidationError, "unsupported target any/any"):
                 validate_market.validate_archive(artifact, PLUGIN_ID, PLUGIN_VERSION)
+
+            with self.assertRaisesRegex(validate_market.MarketplaceValidationError, "attack-path-mcp.exe"):
+                validate_market.validate_archive(
+                    artifact,
+                    PLUGIN_ID,
+                    PLUGIN_VERSION,
+                    os_name="windows",
+                    arch="x86_64",
+                )
 
             (source / SIDECAR_PATH).unlink()
             build_market.write_zip(source, artifact)

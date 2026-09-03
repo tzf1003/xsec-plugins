@@ -35,6 +35,14 @@ import zipfile
 from build_market import SNAPSHOT_ROOT_RELATIVE_PATH, RELEASE_ID_PATTERN, is_link, load_release_document
 from external_source_factory import FIRST_PARTY_APPROVED_SOURCES
 from kms_marketplace_publisher import MarketplaceDocument, MarketplaceKmsPublisherError, verify_historical_sidecar_signature
+from native_sidecars import (
+    RECIPES,
+    NativeSidecarRecipe,
+    NativeTarget,
+    archive_path_for,
+    mcp_command_for,
+    validate_provenance,
+)
 from validate_market import validate_archive, validate_zip_member
 
 
@@ -726,6 +734,106 @@ def safe_artifact_path(release_path: Path, raw_url: object) -> Path:
     return resolved
 
 
+def native_source_projection(
+    artifact: Path,
+    recipe: NativeSidecarRecipe,
+    target: NativeTarget,
+    sidecar_path: PurePosixPath,
+) -> dict[str, tuple[int, str]]:
+    """Return source members after removing the target-specific sidecar."""
+
+    result: dict[str, tuple[int, str]] = {}
+    try:
+        with zipfile.ZipFile(artifact) as archive:
+            for info in archive.infolist():
+                member = PurePosixPath(info.filename)
+                if info.is_dir() or member == sidecar_path:
+                    continue
+                content = archive.read(info)
+                if member == PurePosixPath("mcp.json"):
+                    content = normalized_source_mcp(content, recipe, target)
+                result[member.as_posix()] = (
+                    info.external_attr >> 16 & 0o777,
+                    hashlib.sha256(content).hexdigest(),
+                )
+    except (OSError, RuntimeError, zipfile.BadZipFile) as error:
+        raise MaterializationError(f"cannot read native release artifact: {error}") from error
+    return result
+
+
+def normalized_source_mcp(
+    raw: bytes,
+    recipe: NativeSidecarRecipe,
+    target: NativeTarget,
+) -> bytes:
+    """Erase the target filename change before comparing source projections."""
+
+    try:
+        document = json.loads(raw)
+        servers = document["mcpServers"]
+        for server in recipe.servers:
+            servers[server.server_id]["command"] = mcp_command_for(recipe)
+    except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MaterializationError(f"native artifact has an invalid MCP declaration: {error}") from error
+    return json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def native_materialization_artifact(
+    record: dict[str, object],
+    release_path: Path,
+    plugin_id: str,
+) -> tuple[dict[str, object], PurePosixPath] | None:
+    """Select a fixed native target after proving every source projection agrees."""
+
+    recipe = RECIPES.get(plugin_id)
+    provenance = record.get("nativeSidecarProvenance")
+    if recipe is None or provenance is None:
+        return None
+    try:
+        normalized = validate_provenance(recipe, provenance)
+    except ValueError as error:
+        raise MaterializationError(f"retained native sidecar provenance is invalid: {error}") from error
+    artifacts = record.get("artifacts")
+    if not isinstance(artifacts, list):
+        fail("retained native release artifacts are invalid")
+    by_target = {
+        (artifact.get("os"), artifact.get("arch")): artifact
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+    }
+    expected = {(target.os_name, target.arch) for target in recipe.targets}
+    if set(by_target) != expected or len(by_target) != len(artifacts):
+        fail("retained native release must contain the complete Factory target set")
+    version = record.get("version")
+    if not isinstance(version, str):
+        fail("retained native release version is invalid")
+    projections: set[tuple[tuple[str, tuple[int, str]], ...]] = set()
+    for target, evidence in zip(recipe.targets, normalized["targets"], strict=True):
+        artifact = by_target[(target.os_name, target.arch)]
+        path = safe_artifact_path(release_path, artifact.get("url"))
+        if sha256_file(path) != artifact.get("sha256"):
+            fail("retained native release artifact SHA-256 does not match its immutable release record")
+        try:
+            validate_archive(path, plugin_id, version, os_name=target.os_name, arch=target.arch, require_current_official_frontend_contract=False)
+            with zipfile.ZipFile(path) as archive:
+                binary = archive.read(archive_path_for(recipe, target).as_posix())
+        except (KeyError, OSError, RuntimeError, ValueError, zipfile.BadZipFile) as error:
+            raise MaterializationError(f"retained native artifact is not safely extractable: {error}") from error
+        if hashlib.sha256(binary).hexdigest() != evidence["sha256"]:
+            fail("retained native sidecar digest does not match its provenance")
+        projections.add(tuple(sorted(native_source_projection(path, recipe, target, archive_path_for(recipe, target)).items())))
+    if len(projections) != 1:
+        fail("retained native artifacts do not have an identical source projection")
+    return by_target[(recipe.targets[0].os_name, recipe.targets[0].arch)], recipe.archive_path
+
+
+def source_sidecar_exclusion(plugin_id: str, record: dict[str, object]) -> PurePosixPath | None:
+    recipe = RECIPES.get(plugin_id)
+    if recipe is not None and record.get("nativeSidecarProvenance") is not None:
+        return recipe.archive_path
+    return None
+
+
 def selected_release_artifact(
     factory_root: Path,
     plugin_id: str,
@@ -760,14 +868,18 @@ def selected_release_artifact(
     artifacts = record.get("artifacts")
     if not isinstance(artifacts, list):
         fail("retained release record has invalid artifacts")
-    portable = [
-        artifact
-        for artifact in artifacts
-        if isinstance(artifact, dict) and artifact.get("os") == "any" and artifact.get("arch") == "any"
-    ]
-    if len(portable) != 1:
-        fail("first-party source materialization requires exactly one any/any immutable artifact")
-    artifact = portable[0]
+    native = native_materialization_artifact(record, release_path, plugin_id)
+    if native is None:
+        portable = [
+            artifact
+            for artifact in artifacts
+            if isinstance(artifact, dict) and artifact.get("os") == "any" and artifact.get("arch") == "any"
+        ]
+        if len(portable) != 1:
+            fail("first-party source materialization requires exactly one any/any immutable artifact")
+        artifact = portable[0]
+    else:
+        artifact, _ = native
     digest = artifact.get("sha256")
     if not isinstance(digest, str) or not ARTIFACT_DIGEST_PATTERN.fullmatch(digest):
         fail("retained release artifact SHA-256 is invalid")
@@ -781,7 +893,15 @@ def selected_release_artifact(
         # Historical Stable packages are intentionally not held to a newly
         # introduced frontend rule, but all archive-safety and manifest checks
         # still run before extraction.
-        validate_archive(path, plugin_id, version, require_current_official_frontend_contract=False)
+        target = (artifact.get("os"), artifact.get("arch"))
+        validate_archive(
+            path,
+            plugin_id,
+            version,
+            os_name=target[0] if isinstance(target[0], str) else "any",
+            arch=target[1] if isinstance(target[1], str) else "any",
+            require_current_official_frontend_contract=False,
+        )
     except ValueError as error:
         raise MaterializationError(f"retained {channel} artifact is not safely extractable: {error}") from error
     if sha256_file(path) != digest:
@@ -823,7 +943,14 @@ def source_member_is_forbidden(path: PurePosixPath) -> bool:
     return ".xsec-market" in path.parts or path.name.endswith(FORBIDDEN_SOURCE_SUFFIXES)
 
 
-def extract_verified_artifact(artifact: Path, plugin_id: str, version: str, destination: Path) -> None:
+def extract_verified_artifact(
+    artifact: Path,
+    plugin_id: str,
+    version: str,
+    destination: Path,
+    *,
+    excluded_member: PurePosixPath | None = None,
+) -> None:
     """Extract regular members only after ZIP target/path safety validation."""
 
     if destination.exists() or destination.is_symlink():
@@ -838,6 +965,8 @@ def extract_verified_artifact(artifact: Path, plugin_id: str, version: str, dest
                 member = PurePosixPath(info.filename)
                 if source_member_is_forbidden(member):
                     fail("immutable artifact unexpectedly contains Marketplace metadata, signature or artifact content")
+                if member == excluded_member:
+                    continue
                 if info.is_dir():
                     output = destination.joinpath(*member.parts)
                     output.mkdir(parents=True, exist_ok=True)
@@ -1110,7 +1239,13 @@ def replace_plugin_tree(repository: Path, plugin_id: str, artifact: Path, record
             fail("legacy source plugin path is unsafe")
         shutil.rmtree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    extract_verified_artifact(artifact, plugin_id, version, destination)
+    extract_verified_artifact(
+        artifact,
+        plugin_id,
+        version,
+        destination,
+        excluded_member=source_sidecar_exclusion(plugin_id, record),
+    )
 
 
 def write_standard_layout(repository: Path, plugin_id: str) -> None:
@@ -1149,7 +1284,13 @@ def expected_materialized_file_hashes(plugin_id: str, artifact: Path, record: di
         fail("selected release version is invalid")
     with tempfile.TemporaryDirectory(prefix="xsec-materialized-tree-") as directory:
         root = Path(directory)
-        extract_verified_artifact(artifact, plugin_id, version, root / "plugins" / plugin_id)
+        extract_verified_artifact(
+            artifact,
+            plugin_id,
+            version,
+            root / "plugins" / plugin_id,
+            excluded_member=source_sidecar_exclusion(plugin_id, record),
+        )
         write_standard_layout(root, plugin_id)
         return regular_file_hashes(root)
 

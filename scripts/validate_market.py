@@ -27,13 +27,22 @@ from build_market import (
     ROOT,
     SNAPSHOT_ROOT_RELATIVE_PATH,
     is_link,
+    iter_plugin_files,
     require_release_engines,
     release_id,
     sha256,
     write_zip,
 )
 from marketplace_contract import OFFICIAL_PLUGIN_IDS, active_default_official_plugin_ids
-from native_sidecars import RECIPES, recipe_for_source, validate_native_archive, validate_provenance
+from native_sidecars import (
+    RECIPES,
+    archive_path_for,
+    recipe_for_source,
+    staged_plugin,
+    target_for,
+    validate_native_archive,
+    validate_provenance,
+)
 
 
 MAX_ZIP_ENTRIES = 10_000
@@ -3057,10 +3066,18 @@ def validate_native_sidecar_provenance(
     label: str,
 ) -> None:
     recipe = RECIPES.get(plugin_id)
-    if provenance is None:
+    if recipe is None and provenance is None:
         return
     if recipe is None:
         fail(f"{label} native sidecar provenance is not allowed for {plugin_id}")
+    targets = artifact_targets(artifacts)
+    if targets == {("any", "any")} and provenance is None:
+        return
+    expected = {(target.os_name, target.arch) for target in recipe.targets}
+    if targets != expected:
+        fail(f"{label} native MCP artifacts must match the complete Factory target set")
+    if provenance is None:
+        fail(f"{label} native MCP release requires native sidecar provenance")
     try:
         normalized = validate_provenance(recipe, provenance)
     except ValueError as error:
@@ -3069,6 +3086,9 @@ def validate_native_sidecar_provenance(
     for target in targets:
         if not isinstance(target, dict):
             raise AssertionError("validated native target must be an object")
+        rust_target = target.get("rustTarget")
+        if not isinstance(rust_target, str):
+            raise AssertionError("validated native target has no Rust target")
         artifact = next(
             (
                 item for item in artifacts
@@ -3087,11 +3107,58 @@ def validate_native_sidecar_provenance(
         )
         try:
             with zipfile.ZipFile(artifact_path) as archive:
-                binary = archive.read(recipe.archive_path.as_posix())
+                binary = archive.read(archive_path_for(recipe, target_for(recipe, rust_target)).as_posix())
         except (KeyError, OSError, RuntimeError, zipfile.BadZipFile) as error:
             fail(f"{label} native sidecar cannot be read: {error}")
         if hashlib.sha256(binary).hexdigest() != target["sha256"]:
             fail(f"{label} native sidecar digest does not match provenance")
+
+
+def artifact_targets(artifacts: list[object]) -> set[tuple[str, str]]:
+    """Return already-schema-validated platform selectors for one release."""
+
+    result: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            raise AssertionError("validated artifact unexpectedly is not an object")
+        os_name, arch = artifact.get("os"), artifact.get("arch")
+        if not isinstance(os_name, str) or not isinstance(arch, str):
+            raise AssertionError("validated artifact has no target")
+        result.add((os_name, arch))
+    return result
+
+
+def validate_native_artifact_reproducibility(
+    plugin_id: str,
+    source_dir: Path,
+    artifact_records: list[object],
+    artifacts: list[tuple[Path, str, dict[str, object]]],
+) -> None:
+    """Require every native target archive to match source plus its sidecar."""
+
+    recipe = RECIPES[plugin_id]
+    if len(artifact_records) != len(artifacts):
+        raise AssertionError("validated native artifact records no longer align")
+    files = iter_plugin_files(source_dir)
+    by_target = {
+        (record["os"], record["arch"]): archive[0]
+        for record, archive in zip(artifact_records, artifacts, strict=True)
+        if isinstance(record, dict)
+    }
+    with tempfile.TemporaryDirectory(prefix="xsec-market-native-repro-") as directory:
+        root = Path(directory)
+        for target in recipe.targets:
+            artifact = by_target.get((target.os_name, target.arch))
+            if artifact is None:
+                fail(f"native MCP release for {plugin_id} is missing {target.os_name}/{target.arch}")
+            binary = root / target.rust_target
+            with zipfile.ZipFile(artifact) as archive:
+                binary.write_bytes(archive.read(archive_path_for(recipe, target).as_posix()))
+            with staged_plugin(source_dir, files, recipe, target, binary) as staging:
+                rebuilt = root / f"{target.rust_target}.xsec-plugin"
+                write_zip(staging, rebuilt)
+            if rebuilt.read_bytes() != artifact.read_bytes():
+                fail(f"native MCP artifact for {plugin_id} is not deterministic from its source and sidecar")
 
 
 def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
@@ -3340,6 +3407,14 @@ def validate_source(source_root: Path, built_root: Path, *, allow_pending_native
             f"temporary beta release metadata for {plugin_id}",
             require_current_official_frontend_contract=True,
         )
+        if native_source:
+            validate_native_artifact_reproducibility(
+                plugin_id,
+                source_dir,
+                generated_item["artifacts"],
+                candidate_artifacts,
+            )
+            continue
         if len(candidate_artifacts) != 1 or candidate_artifacts[0][1] != source_manifest["version"]:
             fail(f"temporary output for {plugin_id} does not contain exactly its current beta artifact")
         with tempfile.TemporaryDirectory(prefix="xsec-market-repro-") as directory:

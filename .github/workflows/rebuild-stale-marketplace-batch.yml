@@ -89,14 +89,6 @@ jobs:
               exit 0
             fi
           done
-          {
-            echo "eligible=true"
-            echo "pull_number=$pull_number"
-            echo "head_ref=$head_ref"
-            echo "head_sha=$head_sha"
-            echo "stale_batches=$stale_batches"
-          } >> "$GITHUB_OUTPUT"
-          exit 0
           statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/statuses?per_page=100")"
           # Bind the trusted completion status to CodeRabbit's authenticated
           # exact-head review or bounded exact-head zero-findings summary.

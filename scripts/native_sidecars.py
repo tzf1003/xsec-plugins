@@ -93,6 +93,21 @@ RECIPES = {
 }
 
 
+def archive_path_for(recipe: NativeSidecarRecipe, target: NativeTarget) -> PurePosixPath:
+    """Return the executable pathname for one immutable platform artifact."""
+
+    if target.os_name == "windows":
+        return recipe.archive_path.with_suffix(".exe")
+    return recipe.archive_path
+
+
+def mcp_command_for(recipe: NativeSidecarRecipe, target: NativeTarget | None = None) -> str:
+    """Return the artifact-local stdio command for source or one platform."""
+
+    path = recipe.archive_path if target is None else archive_path_for(recipe, target)
+    return f"./{path.as_posix()}"
+
+
 def provenance_for_inputs(
     recipe: NativeSidecarRecipe,
     source_revision: str,
@@ -239,13 +254,18 @@ def declares_stdio_server(raw: bytes, label: str) -> bool:
     return any(isinstance(server, dict) and server.get("type") == "stdio" for server in mcp_servers(raw, label).values())
 
 
-def validate_mcp_declaration(recipe: NativeSidecarRecipe, raw: bytes, label: str) -> None:
+def validate_mcp_declaration(
+    recipe: NativeSidecarRecipe,
+    raw: bytes,
+    label: str,
+    target: NativeTarget | None = None,
+) -> None:
     servers = mcp_servers(raw, label)
     stdio_names = {name for name, server in servers.items() if isinstance(server, dict) and server.get("type") == "stdio"}
     expected_names = {server.server_id for server in recipe.servers}
     if stdio_names != expected_names:
         raise ValueError(f"{label} must declare only the allowlisted stdio servers")
-    command = f"./{recipe.archive_path.as_posix()}"
+    command = mcp_command_for(recipe, target)
     for expected in recipe.servers:
         server = servers.get(expected.server_id)
         if not isinstance(server, dict) or server.get("command") != command:
@@ -287,28 +307,55 @@ def staged_plugin(
     source_dir: Path,
     files: Sequence[Path],
     recipe: NativeSidecarRecipe,
+    target: NativeTarget,
     sidecar: Path,
 ) -> Iterator[Path]:
     """Copy verified source files and one allowlisted binary into a clean tree."""
 
     with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-") as directory:
         staging = Path(directory) / "plugin"
-        copy_source_files(source_dir, staging, files, recipe.archive_path)
-        target = staging / recipe.archive_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(sidecar, target)
-        target.chmod(0o755)
+        copy_source_files(source_dir, staging, files, native_archive_paths(recipe))
+        rewrite_mcp_command(staging, recipe, target)
+        entrypoint = staging / archive_path_for(recipe, target)
+        entrypoint.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(sidecar, entrypoint)
+        entrypoint.chmod(0o755)
         yield staging
 
 
-def copy_source_files(source_dir: Path, staging: Path, files: Sequence[Path], native_path: PurePosixPath) -> None:
+def native_archive_paths(recipe: NativeSidecarRecipe) -> set[PurePosixPath]:
+    return {archive_path_for(recipe, target) for target in recipe.targets}
+
+
+def copy_source_files(
+    source_dir: Path,
+    staging: Path,
+    files: Sequence[Path],
+    native_paths: set[PurePosixPath],
+) -> None:
     for source in files:
         relative = source.relative_to(source_dir)
-        if relative.as_posix() == native_path.as_posix():
-            raise ValueError(f"native sidecar must be supplied by the Factory recipe, not source: {native_path}")
+        if PurePosixPath(relative.as_posix()) in native_paths:
+            raise ValueError(f"native sidecar must be supplied by the Factory recipe, not source: {relative}")
         destination = staging / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
+
+
+def rewrite_mcp_command(staging: Path, recipe: NativeSidecarRecipe, target: NativeTarget) -> None:
+    """Use the executable filename expected by this platform artifact."""
+
+    if archive_path_for(recipe, target) == recipe.archive_path:
+        return
+    path = staging / "mcp.json"
+    try:
+        document = json.loads(read_regular_mcp(path, f"staged {recipe.plugin_id} mcp.json"))
+        servers = document["mcpServers"]
+        for server in recipe.servers:
+            servers[server.server_id]["command"] = mcp_command_for(recipe, target)
+    except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot stage platform MCP declaration for {recipe.plugin_id}: {error}") from error
+    path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def target_for(recipe: NativeSidecarRecipe, rust_target: str) -> NativeTarget:
@@ -353,11 +400,11 @@ def validate_native_archive(
     recipe = RECIPES.get(plugin_id)
     if recipe is None:
         raise ValueError(f"native MCP artifact is not on the Factory allowlist: {plugin_id}")
-    validate_mcp_declaration(recipe, mcp_bytes, f"artifact {plugin_id} mcp.json")
     target = next((item for item in recipe.targets if item.os_name == os_name and item.arch == arch), None)
     if target is None:
         raise ValueError(f"native MCP artifact has unsupported target {os_name}/{arch}: {plugin_id}")
-    entrypoint = recipe.archive_path.as_posix()
+    validate_mcp_declaration(recipe, mcp_bytes, f"artifact {plugin_id} mcp.json", target)
+    entrypoint = archive_path_for(recipe, target).as_posix()
     member = archive_members.get(entrypoint)
     if member is None:
         raise ValueError(f"native MCP artifact is missing {entrypoint}: {plugin_id}")

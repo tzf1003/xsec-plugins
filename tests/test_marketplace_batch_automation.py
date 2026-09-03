@@ -53,7 +53,14 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "length == 10",
             "xsec-marketplace-publish-main",
             "permission-contents: read",
-            "python scripts/build_market.py --clean",
+            "resolve-native-sidecar-source",
+            "build-native-sidecars",
+            "macos-15-intel",
+            "windows-2022",
+            "xsec-native-sidecars-${{ matrix.rust_target }}",
+            "pattern: xsec-native-sidecars-*",
+            "--native-sidecar-source-revision \"$NATIVE_SIDECARS_SOURCE_SHA\"",
+            "com.xsec.asset-discovery@$target=$asset_discovery_binary",
             "git status --porcelain --untracked-files=all",
             "':(exclude,glob)**/*.sig.jws.json'",
             'source_revision="$(git rev-parse HEAD)"',
@@ -130,6 +137,10 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertIn('Factory trigger label is invalid.', publisher)
         self.assertIn('echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"', publisher)
         self.assertNotIn("for name in source-gate source-freshness-gate; do", recovery)
+        review_guard = recovery.index('statuses="$(gh api --paginate --slurp')
+        success_output = recovery.index('echo "eligible=true"')
+        self.assertLess(review_guard, success_output)
+        self.assertIn("reviewThreads(first:100", recovery[review_guard:success_output])
 
     def test_only_successful_exact_generated_prs_enter_the_automatic_finalizer(self) -> None:
         workflow = AUTO_FINALIZER.read_text(encoding="utf-8")

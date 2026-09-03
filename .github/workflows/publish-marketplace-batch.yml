@@ -24,7 +24,141 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve-native-sidecar-source:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Require the dedicated read-only Desktop source App
+        env:
+          APP_ID: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID }}
+          APP_KEY: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID is not configured." >&2; exit 1; }
+          [ -n "$APP_KEY" ] || { echo "XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY is not configured." >&2; exit 1; }
+      - name: Create a scoped Desktop source token
+        id: desktop-source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY }}
+          owner: tzf1003
+          repositories: xSecDesktop
+          permission-contents: read
+      - name: Resolve the current protected Desktop main revision
+        id: source
+        env:
+          GH_TOKEN: ${{ steps.desktop-source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          protected="$(gh api repos/tzf1003/xSecDesktop/branches/main --jq .protected)"
+          [ "$protected" = "true" ] || { echo "Desktop main must remain protected for native Sidecar publication." >&2; exit 1; }
+          source_sha="$(gh api repos/tzf1003/xSecDesktop/commits/main --jq .sha)"
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Desktop main did not resolve to a canonical commit SHA." >&2; exit 1; }
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+  build-native-sidecars:
+    needs: resolve-native-sidecar-source
+    runs-on: ${{ matrix.runner }}
+    environment: production
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            shell: bash
+            rust_target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            shell: bash
+            rust_target: x86_64-apple-darwin
+          - runner: windows-2022
+            shell: pwsh
+            rust_target: x86_64-pc-windows-msvc
+    steps:
+      - name: Create a scoped Desktop source token
+        id: desktop-source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY }}
+          owner: tzf1003
+          repositories: xSecDesktop
+          permission-contents: read
+      - name: Check out the exact Desktop source revision
+        uses: actions/checkout@v4
+        with:
+          repository: tzf1003/xSecDesktop
+          github-server-url: https://github.com
+          ref: ${{ needs.resolve-native-sidecar-source.outputs.source_sha }}
+          token: ${{ steps.desktop-source-token.outputs.token }}
+          path: .xsec-desktop-source
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Verify the exact protected Desktop source revision
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.resolve-native-sidecar-source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git -C .xsec-desktop-source rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA" ] || {
+            echo "Checked-out Desktop source does not match the protected revision." >&2
+            exit 1
+          }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the reviewed native MCP sidecars
+        if: ${{ matrix.shell == 'bash' }}
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/xsec-native-sidecars-cargo
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --package xsec-attack-path-mcp --package xsec-asset-discovery-mcp --target "$RUST_TARGET" --manifest-path .xsec-desktop-source/Cargo.toml
+          output_dir="$RUNNER_TEMP/xsec-native-sidecars"
+          mkdir -p "$output_dir"
+          attack_path_binary="$CARGO_TARGET_DIR/$RUST_TARGET/release/xsec-attack-path-mcp"
+          asset_discovery_binary="$CARGO_TARGET_DIR/$RUST_TARGET/release/xsec-asset-discovery-mcp"
+          [ -f "$attack_path_binary" ] && [ ! -L "$attack_path_binary" ] && [ -s "$attack_path_binary" ]
+          [ -f "$asset_discovery_binary" ] && [ ! -L "$asset_discovery_binary" ] && [ -s "$asset_discovery_binary" ]
+          cp "$attack_path_binary" "$output_dir/attack-path-mcp"
+          cp "$asset_discovery_binary" "$output_dir/asset-discovery-mcp"
+          chmod 0755 "$output_dir/attack-path-mcp"
+          chmod 0755 "$output_dir/asset-discovery-mcp"
+      - name: Build the reviewed native MCP sidecars
+        if: ${{ matrix.shell == 'pwsh' }}
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/xsec-native-sidecars-cargo
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --locked --release --package xsec-attack-path-mcp --package xsec-asset-discovery-mcp --target $env:RUST_TARGET --manifest-path .xsec-desktop-source/Cargo.toml
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'xsec-native-sidecars'
+          New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+          $attackPathBinary = Join-Path $env:CARGO_TARGET_DIR "$env:RUST_TARGET\release\xsec-attack-path-mcp.exe"
+          $assetDiscoveryBinary = Join-Path $env:CARGO_TARGET_DIR "$env:RUST_TARGET\release\xsec-asset-discovery-mcp.exe"
+          if (-not (Test-Path -LiteralPath $attackPathBinary -PathType Leaf)) { throw 'Attack-path MCP binary is unavailable' }
+          if (-not (Test-Path -LiteralPath $assetDiscoveryBinary -PathType Leaf)) { throw 'Asset-discovery MCP binary is unavailable' }
+          Copy-Item -LiteralPath $attackPathBinary -Destination (Join-Path $outputDirectory 'attack-path-mcp')
+          Copy-Item -LiteralPath $assetDiscoveryBinary -Destination (Join-Path $outputDirectory 'asset-discovery-mcp')
+      - name: Upload the reviewed native MCP sidecars
+        uses: actions/upload-artifact@v4
+        with:
+          name: xsec-native-sidecars-${{ matrix.rust_target }}
+          path: ${{ runner.temp }}/xsec-native-sidecars
+          if-no-files-found: error
+          retention-days: 1
   build-sign-and-open-pr:
+    needs: [resolve-native-sidecar-source, build-native-sidecars]
     runs-on: ubuntu-latest
     environment: production
     outputs:
@@ -47,6 +181,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Download reviewed native MCP sidecars
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xsec-native-sidecars-*
+          path: ${{ runner.temp }}/xsec-native-sidecars
+          merge-multiple: false
       - name: Read the complete active Registry batch from protected main
         id: registry
         run: |
@@ -136,9 +276,20 @@ jobs:
         env:
           RECORDS: ${{ steps.sources.outputs.records }}
           DELIVERY_KEY: ${{ inputs.delivery_key }}
+          NATIVE_SIDECARS_SOURCE_SHA: ${{ needs.resolve-native-sidecar-source.outputs.source_sha }}
         run: |
           set -euo pipefail
-          python scripts/build_market.py --clean
+          sidecar_root="$RUNNER_TEMP/xsec-native-sidecars"
+          native_inputs=()
+          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            attack_path_binary="$sidecar_root/xsec-native-sidecars-$target/attack-path-mcp"
+            asset_discovery_binary="$sidecar_root/xsec-native-sidecars-$target/asset-discovery-mcp"
+            [ -f "$attack_path_binary" ] && [ ! -L "$attack_path_binary" ] && [ -s "$attack_path_binary" ] || { echo "Protected builder did not provide an attack-path sidecar for $target." >&2; exit 1; }
+            [ -f "$asset_discovery_binary" ] && [ ! -L "$asset_discovery_binary" ] && [ -s "$asset_discovery_binary" ] || { echo "Protected builder did not provide an asset-discovery sidecar for $target." >&2; exit 1; }
+            native_inputs+=("--native-sidecar-input" "com.xsec.attack-path@$target=$attack_path_binary")
+            native_inputs+=("--native-sidecar-input" "com.xsec.asset-discovery@$target=$asset_discovery_binary")
+          done
+          python scripts/build_market.py --clean --native-sidecar-source-revision "$NATIVE_SIDECARS_SOURCE_SHA" "${native_inputs[@]}"
           while IFS= read -r item; do
             plugin_id="$(printf '%s' "$item" | jq -er .plugin_id)"
             beta_sha="$(printf '%s' "$item" | jq -er .beta_sha)"

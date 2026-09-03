@@ -723,7 +723,7 @@ def build_candidate_artifacts(
     files = iter_plugin_files(source_plugin_dir)
     candidates: list[tuple[dict[str, str], bytes]] = []
     for target in recipe.targets:
-        with staged_plugin(source_plugin_dir, files, recipe, inputs[target.rust_target]) as staging:
+        with staged_plugin(source_plugin_dir, files, recipe, target, inputs[target.rust_target]) as staging:
             candidates.append(archive_candidate(staging, plugin_id, version, target.os_name, target.arch))
     return candidates
 
