@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
@@ -26,8 +26,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 
 from build_market import (
+    build_candidate_artifacts,
     MARKETPLACE_RELATIVE_PATH,
     RELEASE_ID_PATTERN,
     ROOT,
@@ -52,6 +54,14 @@ from kms_marketplace_publisher import (
     official_publication_provenance_document,
     sidecar_path_for,
     verify_historical_sidecar_signature,
+)
+from native_sidecars import (
+    RECIPES,
+    NativeSidecarRecipe,
+    archive_path_for,
+    recipe_for_source,
+    targets_for_provenance_version,
+    validate_provenance,
 )
 
 
@@ -1170,10 +1180,7 @@ def publication_event(registration: Registration, channel: str, source_sha: str,
     publisher = require_text(publisher, "publication publisher", maximum=128)
     if channel not in {"beta", "stable"}:
         fail("publication channel must be beta or stable")
-    artifact_list = record.get("artifacts")
-    if not isinstance(artifact_list, list) or len(artifact_list) != 1 or not isinstance(artifact_list[0], dict):
-        fail("external official release must have exactly one portable artifact")
-    artifact = artifact_list[0]
+    artifact = publication_artifact(registration, record)
     digest = artifact.get("sha256")
     url = artifact.get("url")
     if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest) or not isinstance(url, str):
@@ -1193,6 +1200,32 @@ def publication_event(registration: Registration, channel: str, source_sha: str,
         "artifact": {"sha256": digest, "url": url},
         "publisher": publisher,
     }
+
+
+def publication_artifact(registration: Registration, record: dict[str, object]) -> dict[str, object]:
+    """Choose the immutable artifact witness recorded in publication evidence."""
+
+    artifacts = record.get("artifacts")
+    if not isinstance(artifacts, list) or not all(isinstance(item, dict) for item in artifacts):
+        fail("external official release has invalid artifacts")
+    portable = [item for item in artifacts if item.get("os") == "any" and item.get("arch") == "any"]
+    if len(artifacts) == 1 and len(portable) == 1:
+        return portable[0]
+    recipe = RECIPES.get(registration.plugin_id)
+    provenance = record.get("nativeSidecarProvenance")
+    if recipe is None or provenance is None:
+        fail("external official release must have one portable artifact or verified native sidecars")
+    try:
+        canonical_target = validate_provenance(recipe, provenance)["targets"][0]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ExternalSourceFactoryError(f"native official release provenance is invalid: {error}") from error
+    matches = [
+        item for item in artifacts
+        if item.get("os") == canonical_target["os"] and item.get("arch") == canonical_target["arch"]
+    ]
+    if len(matches) != 1:
+        fail("native official release has no canonical target artifact")
+    return matches[0]
 
 
 def append_evidence(root: Path, registration: Registration, event: dict[str, object]) -> None:
@@ -1369,7 +1402,12 @@ def record_beta(root: Path, plugin_id: str, source_sha: str, publisher: str) -> 
     return {"plugin_id": registration.plugin_id, "release_id": str(record["releaseId"]), "channel": "beta"}
 
 
-def candidate_release_id(source_dir: Path, registration: Registration) -> str:
+def candidate_release_id(
+    root: Path,
+    source_dir: Path,
+    registration: Registration,
+    beta_record: dict[str, object],
+) -> str:
     manifest = source_manifest(source_dir, registration)
     try:
         engines = require_release_engines(manifest["extensions"]["com.xsec.desktop"]["engines"], "external plugin manifest")
@@ -1378,6 +1416,12 @@ def candidate_release_id(source_dir: Path, registration: Registration) -> str:
     version = manifest.get("version")
     if not isinstance(version, str):
         fail("external plugin manifest version is invalid")
+    try:
+        recipe = recipe_for_source(registration.plugin_id, source_dir)
+    except ValueError as error:
+        raise ExternalSourceFactoryError(f"external native plugin contract is invalid: {error}") from error
+    if recipe is not None and beta_record.get("nativeSidecarProvenance") is not None:
+        return native_candidate_release_id(root, source_dir, registration, beta_record, recipe, version, engines)
     with tempfile.TemporaryDirectory(prefix="xsec-official-external-package-") as directory:
         artifact = Path(directory) / "candidate.xsec-plugin"
         write_zip(source_dir, artifact)
@@ -1386,6 +1430,104 @@ def candidate_release_id(source_dir: Path, registration: Registration) -> str:
             engines,
             [{"os": "any", "arch": "any", "url": "ignored", "sha256": sha256(artifact)}],
         )
+
+
+def native_candidate_release_id(
+    root: Path,
+    source_dir: Path,
+    registration: Registration,
+    beta_record: dict[str, object],
+    recipe: NativeSidecarRecipe,
+    version: str,
+    engines: dict[str, str],
+) -> str:
+    """Rebuild a native release from the retained Beta sidecars, not live source."""
+
+    provenance = beta_record.get("nativeSidecarProvenance")
+    if not isinstance(provenance, dict):
+        fail("native Beta provenance is invalid")
+    try:
+        normalized = validate_provenance(recipe, provenance)
+        targets = targets_for_provenance_version(recipe, provenance.get("targetMatrixVersion"))
+    except ValueError as error:
+        raise ExternalSourceFactoryError(f"native Beta provenance is invalid: {error}") from error
+    retained_recipe = replace(recipe, targets=targets)
+    with tempfile.TemporaryDirectory(prefix="xsec-native-stable-rebuild-") as directory:
+        inputs = retained_native_sidecars(root, registration.plugin_id, beta_record, retained_recipe, normalized, Path(directory))
+        try:
+            candidates = build_candidate_artifacts(source_dir, registration.plugin_id, version, inputs, retained_recipe)
+        except ValueError as error:
+            raise ExternalSourceFactoryError(f"native main rebuild is invalid: {error}") from error
+        artifacts = [candidate[0] for candidate in candidates]
+    return release_id(version, engines, artifacts, normalized)
+
+
+def retained_native_sidecars(
+    root: Path,
+    plugin_id: str,
+    record: dict[str, object],
+    recipe: NativeSidecarRecipe,
+    provenance: dict[str, object],
+    destination: Path,
+) -> dict[tuple[str, str], Path]:
+    """Extract and hash-check the exact native binaries named by Beta evidence."""
+
+    artifacts = native_artifacts_by_target(record, recipe)
+    target_digests = {str(item["rustTarget"]): str(item["sha256"]) for item in provenance["targets"]}
+    release_root = release_path(root, plugin_id).parent
+    inputs: dict[tuple[str, str], Path] = {}
+    for target in recipe.targets:
+        artifact = artifacts[(target.os_name, target.arch)]
+        expected_digest = target_digests.get(target.rust_target)
+        if expected_digest is None:
+            fail("native Beta provenance is missing a target digest")
+        artifact_path = release_artifact_path(release_root, artifact)
+        if sha256(artifact_path) != artifact.get("sha256"):
+            fail("native Beta artifact digest does not match its immutable release record")
+        try:
+            with zipfile.ZipFile(artifact_path) as archive:
+                binary = archive.read(archive_path_for(recipe, target).as_posix())
+        except (KeyError, OSError, zipfile.BadZipFile) as error:
+            raise ExternalSourceFactoryError(f"native Beta artifact is unreadable: {error}") from error
+        binary_path = destination / target.rust_target
+        binary_path.write_bytes(binary)
+        if sha256(binary_path) != expected_digest:
+            fail("native Beta sidecar digest does not match its provenance")
+        inputs[(plugin_id, target.rust_target)] = binary_path
+    return inputs
+
+
+def native_artifacts_by_target(record: dict[str, object], recipe: NativeSidecarRecipe) -> dict[tuple[str, str], dict[str, object]]:
+    artifacts = record.get("artifacts")
+    if not isinstance(artifacts, list):
+        fail("native Beta release artifacts are invalid")
+    expected = {(target.os_name, target.arch) for target in recipe.targets}
+    actual: dict[tuple[str, str], dict[str, object]] = {}
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            fail("native Beta release artifact is invalid")
+        target = (artifact.get("os"), artifact.get("arch"))
+        if target not in expected or target in actual:
+            fail("native Beta release artifacts do not match the approved target matrix")
+        actual[target] = artifact
+    if set(actual) != expected:
+        fail("native Beta release artifacts do not match the approved target matrix")
+    return actual
+
+
+def release_artifact_path(release_root: Path, artifact: dict[str, object]) -> Path:
+    raw_url = artifact.get("url")
+    relative = safe_source_path(raw_url, "native Beta artifact path")
+    if relative == PurePosixPath("."):
+        fail("native Beta artifact path is invalid")
+    candidate = release_root
+    for part in relative.parts:
+        candidate = candidate / part
+        if is_link(candidate):
+            fail("native Beta artifact path must not traverse symbolic links")
+    if is_link(candidate) or not candidate.is_file():
+        fail("native Beta artifact is unavailable")
+    return require_below(release_root, candidate, "native Beta artifact")
 
 
 def verify_stable(
@@ -1399,9 +1541,9 @@ def verify_stable(
     registration = registration_for(root, plugin_id)
     if not isinstance(release_id_value, str) or not RELEASE_ID_PATTERN.fullmatch(release_id_value):
         fail("stable promotion release ID must be canonical")
-    source_dir = resolve_source_directory(source_root, registration.source_path, f"external stable source for {registration.plugin_id}")
-    candidate = candidate_release_id(source_dir, registration)
     document, current_beta = current_beta_record(root, registration.plugin_id)
+    source_dir = resolve_source_directory(source_root, registration.source_path, f"external stable source for {registration.plugin_id}")
+    candidate = candidate_release_id(root, source_dir, registration, current_beta)
     if current_beta.get("releaseId") != release_id_value:
         fail("stable promotion release ID does not match the current Beta pointer")
     if expected_beta_sha is not None:
@@ -1441,8 +1583,8 @@ def check_main_rebuild(root: Path, plugin_id: str, source_root: Path) -> dict[st
         registration.source_path,
         f"external main source for {registration.plugin_id}",
     )
-    candidate = candidate_release_id(source_dir, registration)
     _, current_beta = current_beta_record(root, registration.plugin_id)
+    candidate = candidate_release_id(root, source_dir, registration, current_beta)
     beta_release_id = current_beta.get("releaseId")
     if not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id):
         fail("external beta release pointer is unavailable")
