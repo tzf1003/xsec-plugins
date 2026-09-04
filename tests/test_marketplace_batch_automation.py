@@ -97,6 +97,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
 
         workflow = yaml.safe_load(BATCH_RECONCILE.read_text(encoding="utf-8"))
         publisher = yaml.safe_load(BATCH_PUBLISH.read_text(encoding="utf-8"))
+        recovery = yaml.safe_load(STALE_BATCH_RECOVERY.read_text(encoding="utf-8"))
 
         self.assertEqual(workflow["permissions"], {"actions": "read", "contents": "read"})
         self.assertEqual(
@@ -106,6 +107,10 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertEqual(
             publisher["jobs"]["build-native-sidecars"]["permissions"],
             {"contents": "read"},
+        )
+        self.assertEqual(
+            recovery["jobs"]["rebuild-current-batch"]["permissions"],
+            {"contents": "write", "id-token": "write", "pull-requests": "write"},
         )
 
     def test_stale_signed_batch_is_rebuilt_and_superseded_automatically(self) -> None:
