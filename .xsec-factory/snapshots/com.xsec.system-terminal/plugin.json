@@ -1,13 +1,13 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "com.xsec.system-terminal",
-  "version": "2.0.0",
+  "version": "1.2.6",
   "description": "XSEC workspace system terminal",
   "author": { "name": "XSEC" },
   "license": "MIT",
   "extensions": {
     "com.xsec.desktop": {
-      "schemaVersion": 2,
+      "schemaVersion": 1,
       "displayName": "系统终端",
       "publisher": "XSEC",
       "icon": "terminal",

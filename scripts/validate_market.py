@@ -37,6 +37,7 @@ from marketplace_contract import OFFICIAL_PLUGIN_IDS, active_default_official_pl
 from native_sidecars import (
     RECIPES,
     archive_path_for,
+    declares_native_sidecar_contract,
     recipe_for_source,
     staged_plugin,
     target_for,
@@ -2932,7 +2933,7 @@ def validate_archive(
     if manifest.get("version") != version:
         fail(f"artifact {path} plugin.json version does not match {version}")
     desktop = manifest.get("extensions", {}).get("com.xsec.desktop")
-    if isinstance(desktop, dict) and desktop.get("schemaVersion") == 2:
+    if declares_native_sidecar_contract(manifest):
         try:
             validate_native_archive(plugin_id, members, mcp_bytes, os_name, arch)
         except ValueError as error:

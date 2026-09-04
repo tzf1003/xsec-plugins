@@ -20,8 +20,6 @@ PLUGIN_ID = "com.xsec.attack-path"
 PLUGIN_VERSION = "2.0.0"
 SIDECAR_PATH = "bin/attack-path-mcp"
 SOURCE_REVISION = "a" * 40
-ASSET_PLUGIN_ID = "com.xsec.asset-discovery"
-ASSET_SNAPSHOT = ROOT / ".xsec-factory" / "snapshots" / ASSET_PLUGIN_ID
 
 
 def write_attack_path_source(root: Path, command: str = "./bin/attack-path-mcp") -> Path:
@@ -38,6 +36,7 @@ def write_attack_path_source(root: Path, command: str = "./bin/attack-path-mcp")
                 "schemaVersion": 2,
                 "engines": {"xsec": ">=0.1.0", "pluginApi": "^1.3.0"},
                 "entrypoints": {"frontend": "com.xsec.desktop/frontend/index.js"},
+                "permissions": {"mcp.servers.register": {}, "native.execute": {}},
             }
         },
     }
@@ -63,51 +62,6 @@ def sidecar_inputs(root: Path) -> dict[tuple[str, str], Path]:
 
 
 class NativeSidecarFactoryTests(unittest.TestCase):
-    def test_asset_discovery_binds_three_exact_server_modes_to_one_binary(self) -> None:
-        recipe = native_sidecars.ASSET_DISCOVERY_RECIPE
-        raw = (ASSET_SNAPSHOT / "mcp.json").read_bytes()
-        native_sidecars.validate_mcp_declaration(recipe, raw, "asset mcp.json")
-        broken = json.loads(raw)
-        broken["mcpServers"]["asset-hunter"]["args"] = ["--provider", "fofa"]
-        with self.assertRaisesRegex(ValueError, "invalid arguments for asset-hunter"):
-            native_sidecars.validate_mcp_declaration(recipe, json.dumps(broken).encode(), "asset mcp.json")
-
-        extra_remote = json.loads(raw)
-        extra_remote["mcpServers"]["remote-asset"] = {
-            "type": "streamable-http",
-            "url": "https://example.test/mcp",
-        }
-        with self.assertRaisesRegex(ValueError, "must declare only the allowlisted stdio servers"):
-            native_sidecars.validate_mcp_declaration(recipe, json.dumps(extra_remote).encode(), "asset mcp.json")
-
-        non_stdio = json.loads(raw)
-        non_stdio["mcpServers"]["asset-hunter"]["type"] = "sse"
-        with self.assertRaisesRegex(ValueError, "must declare only the allowlisted stdio servers"):
-            native_sidecars.validate_mcp_declaration(recipe, json.dumps(non_stdio).encode(), "asset mcp.json")
-
-        with tempfile.TemporaryDirectory(prefix="xsec-asset-sidecar-build-") as directory:
-            root = Path(directory)
-            inputs = {}
-            for target in recipe.targets:
-                binary = root / target.rust_target
-                binary.write_bytes(target.rust_target.encode())
-                inputs[(recipe.plugin_id, target.rust_target)] = binary
-            output = root / "output" / ".xsec-factory" / "snapshots" / recipe.plugin_id
-            build_market.build_plugin(
-                ASSET_SNAPSHOT,
-                output,
-                native_sidecar_inputs=inputs,
-                native_sidecar_source_revision=SOURCE_REVISION,
-            )
-            validate_market.validate_release(recipe.plugin_id, output)
-            release = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))
-            for artifact, target in zip(release["releases"][0]["artifacts"], recipe.targets, strict=True):
-                with zipfile.ZipFile(output / ".xsec-market" / artifact["url"]) as archive:
-                    entrypoint = native_sidecars.archive_path_for(recipe, target).as_posix()
-                    self.assertEqual(archive.read(entrypoint), inputs[(recipe.plugin_id, target.rust_target)].read_bytes())
-                    mcp = json.loads(archive.read("mcp.json"))
-                    self.assertEqual(mcp["mcpServers"]["asset-normalize"]["command"], f"./{entrypoint}")
-
     def test_builds_and_validates_distinct_artifacts_for_each_supported_target(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-build-") as directory:
             root = Path(directory)

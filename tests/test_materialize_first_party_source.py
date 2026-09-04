@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,21 @@ def snapshot_dir(root: Path, plugin_id: str) -> Path:
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def native_source(root: Path) -> Path:
+    source = root / "native-source"
+    shutil.copytree(NATIVE_SNAPSHOT, source)
+    manifest_path = source / "plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    desktop = manifest["extensions"]["com.xsec.desktop"]
+    desktop["schemaVersion"] = 2
+    desktop["permissions"] = {"mcp.servers.register": {}, "native.execute": {}}
+    write_json(manifest_path, manifest)
+    write_json(source / "mcp.json", {"mcpServers": {"attack-path": {
+        "type": "stdio", "command": "./bin/attack-path-mcp", "cwd": "${PLUGIN_DATA}",
+    }}})
+    return source
 
 
 def git(root: Path, *arguments: str) -> str:
@@ -205,7 +221,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 binary.write_bytes(target.rust_target.encode("utf-8"))
                 inputs[(NATIVE_PLUGIN_ID, target.rust_target)] = binary
             build_market.build_plugin(
-                NATIVE_SNAPSHOT,
+                native_source(root),
                 plugin,
                 native_sidecar_inputs=inputs,
                 native_sidecar_source_revision=NATIVE_SOURCE_REVISION,
@@ -230,7 +246,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 binary.write_bytes(target.rust_target.encode("utf-8"))
                 inputs[(NATIVE_PLUGIN_ID, target.rust_target)] = binary
             build_market.build_plugin(
-                NATIVE_SNAPSHOT,
+                native_source(root),
                 plugin,
                 native_sidecar_inputs=inputs,
                 native_sidecar_source_revision=NATIVE_SOURCE_REVISION,

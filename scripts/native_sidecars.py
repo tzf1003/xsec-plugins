@@ -23,6 +23,7 @@ from typing import Iterator, Mapping, Sequence
 
 MAX_SIDECAR_BYTES = 64 * 1024 * 1024
 SOURCE_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+NATIVE_SIDECAR_PERMISSIONS = frozenset({"mcp.servers.register", "native.execute"})
 
 
 @dataclass(frozen=True)
@@ -207,19 +208,47 @@ def parse_native_sidecar_inputs(values: Sequence[str]) -> dict[tuple[str, str], 
 
 
 def recipe_for_source(plugin_id: str, source_dir: Path) -> NativeSidecarRecipe | None:
-    """Return the static recipe only when source declares its stdio server."""
+    """Return the recipe only for an explicit native Agent Plugin contract."""
 
-    mcp_path = source_dir / "mcp.json"
-    if not os.path.lexists(mcp_path):
-        return None
-    raw = read_regular_mcp(mcp_path, f"{plugin_id} mcp.json")
-    if not declares_stdio_server(raw, f"{plugin_id} mcp.json"):
+    if not source_declares_native_sidecar_contract(source_dir, plugin_id):
         return None
     recipe = RECIPES.get(plugin_id)
     if recipe is None:
         raise ValueError(f"native MCP plugin is not on the Factory allowlist: {plugin_id}")
+    mcp_path = source_dir / "mcp.json"
+    if not os.path.lexists(mcp_path):
+        raise ValueError(f"native MCP plugin must provide mcp.json: {plugin_id}")
+    raw = read_regular_mcp(mcp_path, f"{plugin_id} mcp.json")
     validate_mcp_declaration(recipe, raw, f"{plugin_id} mcp.json")
     return recipe
+
+
+def source_declares_native_sidecar_contract(source_dir: Path, plugin_id: str) -> bool:
+    """Read the manifest marker that opts a source into Factory sidecars."""
+
+    path = source_dir / "plugin.json"
+    raw = read_regular_mcp(path, f"{plugin_id} plugin.json")
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{plugin_id} plugin.json is invalid JSON: {error}") from error
+    return declares_native_sidecar_contract(manifest)
+
+
+def declares_native_sidecar_contract(manifest: object) -> bool:
+    """Require both the v2 host schema and its explicit native authorities."""
+
+    if not isinstance(manifest, dict):
+        return False
+    extensions = manifest.get("extensions")
+    desktop = extensions.get("com.xsec.desktop") if isinstance(extensions, dict) else None
+    permissions = desktop.get("permissions") if isinstance(desktop, dict) else None
+    return (
+        isinstance(desktop, dict)
+        and desktop.get("schemaVersion") == 2
+        and isinstance(permissions, dict)
+        and NATIVE_SIDECAR_PERMISSIONS.issubset(permissions)
+    )
 
 
 def read_regular_mcp(path: Path, label: str) -> bytes:
@@ -398,7 +427,7 @@ def validate_native_archive(
     if mcp_bytes is None:
         raise ValueError(f"native MCP artifact cannot read mcp.json: {plugin_id}")
     if not declares_stdio_server(mcp_bytes, f"artifact {plugin_id} mcp.json"):
-        return False
+        raise ValueError(f"native MCP artifact must declare a stdio server: {plugin_id}")
     recipe = RECIPES.get(plugin_id)
     if recipe is None:
         raise ValueError(f"native MCP artifact is not on the Factory allowlist: {plugin_id}")
