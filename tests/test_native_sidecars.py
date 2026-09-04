@@ -84,6 +84,10 @@ class NativeSidecarFactoryTests(unittest.TestCase):
             provenance = release["releases"][0]["nativeSidecarProvenance"]
             self.assertEqual(provenance["source"]["repository"], "tzf1003/xSecDesktop")
             self.assertEqual(provenance["source"]["revision"], SOURCE_REVISION)
+            self.assertEqual(
+                provenance["targetMatrixVersion"],
+                native_sidecars.NATIVE_SIDECAR_TARGET_MATRIX_VERSION,
+            )
             validate_market.validate_release(PLUGIN_ID, output)
 
             release_path = output / ".xsec-market" / "releases.json"
@@ -126,6 +130,41 @@ class NativeSidecarFactoryTests(unittest.TestCase):
             (output / ".xsec-market" / "releases.json").write_text(json.dumps(release), encoding="utf-8")
             with self.assertRaisesRegex(validate_market.MarketplaceValidationError, "digest does not match provenance"):
                 validate_market.validate_release(PLUGIN_ID, output)
+
+    def test_historic_three_target_provenance_remains_valid(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-legacy-") as directory:
+            root = Path(directory)
+            source = write_attack_path_source(root)
+            output = root / "output" / ".xsec-factory" / "snapshots" / PLUGIN_ID
+
+            build_market.build_plugin(
+                source,
+                output,
+                native_sidecar_inputs=sidecar_inputs(root),
+                native_sidecar_source_revision=SOURCE_REVISION,
+            )
+
+            release_path = output / ".xsec-market" / "releases.json"
+            release = json.loads(release_path.read_text(encoding="utf-8"))
+            record = release["releases"][0]
+            provenance = record["nativeSidecarProvenance"]
+            provenance.pop("targetMatrixVersion")
+            provenance["targets"] = [
+                target for target in provenance["targets"] if target["os"] != "linux"
+            ]
+            record["artifacts"] = [
+                artifact for artifact in record["artifacts"] if artifact["os"] != "linux"
+            ]
+            record["releaseId"] = build_market.release_id(
+                record["version"],
+                record["engines"],
+                record["artifacts"],
+                provenance,
+            )
+            release["channels"]["beta"] = {"releaseId": record["releaseId"]}
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+
+            validate_market.validate_release(PLUGIN_ID, output)
 
     def test_build_rejects_a_missing_required_native_target(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-missing-") as directory:

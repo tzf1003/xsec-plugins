@@ -306,6 +306,38 @@ jobs:
             echo "Superseded stale same-plugin generated candidate #${number}; a replacement dispatch follows." >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "dispatch=true" >> "$GITHUB_OUTPUT"
+      - name: Require the dedicated read-only Desktop source App
+        if: ${{ steps.supersede.outputs.dispatch == 'true' }}
+        env:
+          APP_ID: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID }}
+          APP_KEY: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID is not configured." >&2; exit 1; }
+          [ -n "$APP_KEY" ] || { echo "XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY is not configured." >&2; exit 1; }
+      - name: Create a scoped Desktop source token
+        id: desktop-source-token
+        if: ${{ steps.supersede.outputs.dispatch == 'true' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY }}
+          owner: tzf1003
+          repositories: xSecDesktop
+          permission-contents: read
+      - name: Resolve the current Desktop main sidecar source revision
+        id: desktop-source
+        if: ${{ steps.supersede.outputs.dispatch == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.desktop-source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          native_sidecars_source_sha="$(gh api repos/tzf1003/xSecDesktop/commits/main --jq .sha)"
+          [[ "$native_sidecars_source_sha" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Desktop main did not resolve to a canonical native sidecar source revision." >&2
+            exit 1
+          }
+          echo "native_sidecars_source_sha=$native_sidecars_source_sha" >> "$GITHUB_OUTPUT"
       - name: Publish current Beta or recheck its main reproducibility gate
         id: dispatch-publisher
         if: ${{ steps.supersede.outputs.dispatch == 'true' }}
@@ -317,6 +349,7 @@ jobs:
           SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
           SOURCE_REPOSITORY: ${{ steps.request.outputs.source_repository }}
           SOURCE_BETA_REF: ${{ steps.request.outputs.beta_ref }}
+          NATIVE_SIDECARS_SOURCE_SHA: ${{ steps.desktop-source.outputs.native_sidecars_source_sha }}
         run: |
           set -euo pipefail
           echo "publisher_dispatch_epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
@@ -329,12 +362,14 @@ jobs:
             [ -n "$beta_sha" ] || { echo "Cannot resolve registered source beta for ${PLUGIN_ID}." >&2; exit 1; }
             gh workflow run publish.yml --ref main \
               -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$beta_sha" \
+              -f native_sidecars_source_sha="$NATIVE_SIDECARS_SOURCE_SHA" \
               -f reconcile_delivery_key="$DELIVERY_KEY" \
               -f reconcile_dispatch_nonce="${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
             exit 0
           fi
           gh workflow run publish.yml --ref main \
             -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$SOURCE_SHA" \
+            -f native_sidecars_source_sha="$NATIVE_SIDECARS_SOURCE_SHA" \
             -f reconcile_delivery_key="$DELIVERY_KEY" \
             -f reconcile_dispatch_nonce="${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
       - name: Authenticate, sign, and source-gate the exact generated Beta candidate

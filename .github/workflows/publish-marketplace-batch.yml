@@ -76,6 +76,9 @@ jobs:
           - runner: macos-15-intel
             shell: bash
             rust_target: x86_64-apple-darwin
+          - runner: ubuntu-24.04
+            shell: bash
+            rust_target: x86_64-unknown-linux-gnu
           - runner: windows-2022
             shell: pwsh
             rust_target: x86_64-pc-windows-msvc
@@ -279,7 +282,7 @@ jobs:
           set -euo pipefail
           sidecar_root="$RUNNER_TEMP/xsec-native-sidecars"
           native_inputs=()
-          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
             attack_path_binary="$sidecar_root/xsec-native-sidecars-$target/attack-path-mcp"
             asset_discovery_binary="$sidecar_root/xsec-native-sidecars-$target/asset-discovery-mcp"
             [ -f "$attack_path_binary" ] && [ ! -L "$attack_path_binary" ] && [ -s "$attack_path_binary" ] || { echo "Protected builder did not provide an attack-path sidecar for $target." >&2; exit 1; }
