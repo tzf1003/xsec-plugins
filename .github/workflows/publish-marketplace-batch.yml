@@ -64,7 +64,7 @@ jobs:
     environment: production
     timeout-minutes: 45
     permissions:
-      actions: write
+      actions: read
       contents: read
     strategy:
       fail-fast: false
