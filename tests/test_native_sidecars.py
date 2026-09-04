@@ -185,6 +185,44 @@ class NativeSidecarFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(validate_market.MarketplaceValidationError, "requires native sidecar provenance"):
                 validate_market.validate_release(PLUGIN_ID, output)
 
+    def test_release_rejects_native_provenance_without_native_manifest_contract(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-contract-") as directory:
+            root = Path(directory)
+            source = write_attack_path_source(root)
+            output = root / "output" / ".xsec-factory" / "snapshots" / PLUGIN_ID
+            build_market.build_plugin(
+                source,
+                output,
+                native_sidecar_inputs=sidecar_inputs(root),
+                native_sidecar_source_revision=SOURCE_REVISION,
+            )
+            release_path = output / ".xsec-market" / "releases.json"
+            release = json.loads(release_path.read_text(encoding="utf-8"))
+            record = release["releases"][0]
+            artifact = output / ".xsec-market" / record["artifacts"][0]["url"]
+            rewritten = artifact.with_suffix(".rewritten")
+            with zipfile.ZipFile(artifact) as original, zipfile.ZipFile(rewritten, "w") as updated:
+                for info in original.infolist():
+                    content = original.read(info.filename)
+                    if info.filename == "plugin.json":
+                        manifest = json.loads(content)
+                        manifest["extensions"]["com.xsec.desktop"].pop("permissions")
+                        content = json.dumps(manifest).encode("utf-8")
+                    updated.writestr(info, content)
+            rewritten.replace(artifact)
+            record["artifacts"][0]["sha256"] = build_market.sha256(artifact)
+            record["releaseId"] = build_market.release_id(
+                PLUGIN_VERSION,
+                record["engines"],
+                record["artifacts"],
+                record["nativeSidecarProvenance"],
+            )
+            release["channels"]["beta"] = {"releaseId": record["releaseId"]}
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+
+            with self.assertRaisesRegex(validate_market.MarketplaceValidationError, "must declare the native sidecar contract"):
+                validate_market.validate_release(PLUGIN_ID, output)
+
     def test_build_rejects_missing_or_invalid_native_source_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-provenance-") as directory:
             root = Path(directory)

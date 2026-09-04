@@ -2882,6 +2882,7 @@ def validate_archive(
     *,
     os_name: str = "any",
     arch: str = "any",
+    require_native_sidecar_contract: bool = False,
     require_current_official_frontend_contract: bool = True,
 ) -> dict[str, object]:
     """Validate one packaged artifact.
@@ -2933,11 +2934,16 @@ def validate_archive(
     if manifest.get("version") != version:
         fail(f"artifact {path} plugin.json version does not match {version}")
     desktop = manifest.get("extensions", {}).get("com.xsec.desktop")
-    if declares_native_sidecar_contract(manifest):
+    declares_native_contract = declares_native_sidecar_contract(manifest)
+    if require_native_sidecar_contract and not declares_native_contract:
+        fail(f"native MCP release artifact must declare the native sidecar contract: {plugin_id}")
+    if declares_native_contract:
         try:
-            validate_native_archive(plugin_id, members, mcp_bytes, os_name, arch)
+            valid_native_archive = validate_native_archive(plugin_id, members, mcp_bytes, os_name, arch)
         except ValueError as error:
             fail(str(error))
+        if not valid_native_archive:
+            fail(f"native MCP artifact must include mcp.json: {plugin_id}")
     entrypoints = desktop_entrypoints(manifest, f"artifact {path} plugin.json")
     for entrypoint_name, entrypoint_path in entrypoints:
         entrypoint = members.get(entrypoint_path.as_posix())
@@ -3019,6 +3025,7 @@ def validate_artifacts(
     artifacts: object,
     label: str,
     *,
+    require_native_sidecar_contract: bool = False,
     require_current_official_frontend_contract: bool = False,
 ) -> list[tuple[Path, str, dict[str, object]]]:
     if not isinstance(artifacts, list) or not artifacts:
@@ -3053,6 +3060,7 @@ def validate_artifacts(
             version,
             os_name=os_name,
             arch=arch,
+            require_native_sidecar_contract=require_native_sidecar_contract,
             require_current_official_frontend_contract=require_current_official_frontend_contract,
         )
         result.append((artifact_path, version, manifest))
@@ -3232,10 +3240,17 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
             engines = require_release_engines(engines, label)
         except ValueError as error:
             fail(str(error))
-        validate_artifacts(plugin_id, release_path, version, artifacts, label)
+        provenance = item.get("nativeSidecarProvenance")
+        validate_artifacts(
+            plugin_id,
+            release_path,
+            version,
+            artifacts,
+            label,
+            require_native_sidecar_contract=provenance is not None,
+        )
         if not isinstance(artifacts, list):
             raise AssertionError("artifacts unexpectedly absent")
-        provenance = item.get("nativeSidecarProvenance")
         validate_native_sidecar_provenance(plugin_id, release_path, artifacts, provenance, label)
         if identifier != release_id(version, engines, artifacts, provenance):
             fail(f"{label} releaseId does not match immutable release content")
@@ -3273,7 +3288,16 @@ def validate_release(plugin_id: str, plugin_dir: Path) -> list[tuple[Path, str, 
     for item in items:
         if not isinstance(item, dict):
             raise AssertionError("validated release item must be an object")
-        result.extend(validate_artifacts(plugin_id, release_path, str(item["version"]), item["artifacts"], f"release metadata for {plugin_id}"))
+        result.extend(
+            validate_artifacts(
+                plugin_id,
+                release_path,
+                str(item["version"]),
+                item["artifacts"],
+                f"release metadata for {plugin_id}",
+                require_native_sidecar_contract=item.get("nativeSidecarProvenance") is not None,
+            )
+        )
     return result
 
 
@@ -3406,6 +3430,7 @@ def validate_source(source_root: Path, built_root: Path, *, allow_pending_native
             str(generated_item["version"]),
             generated_item["artifacts"],
             f"temporary beta release metadata for {plugin_id}",
+            require_native_sidecar_contract=generated_item.get("nativeSidecarProvenance") is not None,
             require_current_official_frontend_contract=True,
         )
         if native_source:
