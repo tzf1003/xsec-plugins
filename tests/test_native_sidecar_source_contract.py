@@ -50,12 +50,19 @@ def sidecar_inputs(root: Path, recipe: native_sidecars.NativeSidecarRecipe) -> d
 
 
 class NativeSidecarSourceContractTests(unittest.TestCase):
-    def test_legacy_registered_sources_build_portable_any_artifacts(self) -> None:
-        for plugin_id in native_sidecars.RECIPES:
+    def test_registered_sources_follow_their_declared_sidecar_contract(self) -> None:
+        for plugin_id, expected_recipe in native_sidecars.RECIPES.items():
             source = ROOT / ".xsec-factory" / "snapshots" / plugin_id
-            with self.subTest(plugin_id=plugin_id), tempfile.TemporaryDirectory(prefix="xsec-legacy-source-") as directory:
+            recipe = native_sidecars.recipe_for_source(plugin_id, source)
+            declared_native = native_sidecars.source_declares_native_sidecar_contract(source, plugin_id)
+            with self.subTest(plugin_id=plugin_id), tempfile.TemporaryDirectory(prefix="xsec-source-contract-") as directory:
                 output = Path(directory) / plugin_id
-                self.assertIsNone(native_sidecars.recipe_for_source(plugin_id, source))
+                self.assertEqual(recipe is not None, declared_native)
+                if recipe is not None:
+                    self.assertEqual(recipe, expected_recipe)
+                    with self.assertRaisesRegex(ValueError, f"missing native sidecar input: {plugin_id}@"):
+                        build_market.build_plugin(source, output, native_sidecar_source_revision=SOURCE_REVISION)
+                    continue
                 build_market.build_plugin(source, output)
                 validate_market.validate_release(plugin_id, output)
                 release = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))
