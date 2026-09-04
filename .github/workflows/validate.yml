@@ -49,10 +49,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Build a disposable marketplace without official sidecars
-        run: python scripts/build_market.py --clean --output-root "$RUNNER_TEMP/xsec-marketplace-build"
+      - name: Build a disposable source-only marketplace without native sidecars
+        run: python scripts/build_market.py --clean --source-only --output-root "$RUNNER_TEMP/xsec-marketplace-build"
       - name: Validate source manifests, deterministic artifacts and package safety
-        run: python scripts/validate_market.py source --source-root . --built-root "$RUNNER_TEMP/xsec-marketplace-build"
+        run: >-
+          python scripts/validate_market.py source --source-root .
+          --built-root "$RUNNER_TEMP/xsec-marketplace-build"
+          --allow-pending-native-sources
+      - name: Run frontend contract tests
+        run: node scripts/frontend_contracts.test.mjs
       - name: Validate official external Factory registry, snapshots and provenance
         env:
           BASELINE_AVAILABLE: ${{ steps.baseline.outputs.available }}

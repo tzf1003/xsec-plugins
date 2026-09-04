@@ -27,12 +27,23 @@ from build_market import (
     ROOT,
     SNAPSHOT_ROOT_RELATIVE_PATH,
     is_link,
+    iter_plugin_files,
     require_release_engines,
     release_id,
     sha256,
     write_zip,
 )
 from marketplace_contract import OFFICIAL_PLUGIN_IDS, active_default_official_plugin_ids
+from native_sidecars import (
+    RECIPES,
+    archive_path_for,
+    declares_native_sidecar_contract,
+    recipe_for_source,
+    staged_plugin,
+    target_for,
+    validate_native_archive,
+    validate_provenance,
+)
 
 
 MAX_ZIP_ENTRIES = 10_000
@@ -205,6 +216,7 @@ APPROVALS_FRONTEND_SOURCE_SHA256_BY_VERSION = {
     "1.3.0": "f2a7d1673b7117e7bb44398ed4ae62f08bb702f960463318260546819b0742df",
     "1.3.2": "209e8f2eb043a777a77235bdb4985d7d74f951a86162c913be80c27d9a4dcf18",
     "1.3.3": "863a044877a3f2600f67cac69bff084e6d6a36f1aee6e6fc599abdaa8192021e",
+    "2.0.0": "863a044877a3f2600f67cac69bff084e6d6a36f1aee6e6fc599abdaa8192021e",
 }
 class MarketplaceValidationError(ValueError):
     """A marketplace invariant was not met."""
@@ -2642,34 +2654,14 @@ def validate_frontend_rpc_literals(
     label: str,
     requested: set[str] | None = None,
 ) -> None:
-    """Reject undeclared RPC literals and declarations without real requests."""
+    """Require each declared RPC to be requested by executable frontend code.
 
-    reachable = frontend_reachable_token_indices(tokens)
-    reachable_names = {
-        value
-        for index, (kind, value) in enumerate(tokens)
-        if kind == "identifier" and (reachable is None or index in reachable)
-    }
-    literals = {
-        value
-        for index, (kind, value) in enumerate(tokens)
-        if kind == "string"
-        and re.fullmatch(r"xsec\.[A-Za-z0-9_.-]+", value)
-        and (
-            reachable is None
-            or index in reachable
-            or (
-                index >= 3
-                and tokens[index - 3] == ("identifier", "const")
-                and tokens[index - 2][0] == "identifier"
-                and tokens[index - 2][1] in reachable_names
-                and tokens[index - 1] == ("punctuation", "=")
-            )
-        )
-    }
-    undeclared = literals - set(methods)
-    if undeclared:
-        fail(f"{label} references undeclared RPC methods: {sorted(undeclared)}")
+    XSEC-prefixed strings can also name Host-published data streams.  Only
+    ``host.request`` calls cross the RPC permission boundary, so literal
+    scanning must not treat an ``onData`` subscription as a missing RPC
+    declaration.
+    """
+
     if requested is None:
         requested = frontend_host_requests(tokens, label)
     missing = set(methods) - requested
@@ -2888,6 +2880,9 @@ def validate_archive(
     plugin_id: str,
     version: str,
     *,
+    os_name: str = "any",
+    arch: str = "any",
+    require_native_sidecar_contract: bool = False,
     require_current_official_frontend_contract: bool = True,
 ) -> dict[str, object]:
     """Validate one packaged artifact.
@@ -2923,6 +2918,7 @@ def validate_archive(
                 manifest_bytes = archive.read("plugin.json")
             except KeyError:
                 fail(f"artifact {path} does not include root plugin.json")
+            mcp_bytes = archive.read(members["mcp.json"]) if "mcp.json" in members else None
     except (OSError, zipfile.BadZipFile, RuntimeError) as error:
         fail(f"cannot safely read artifact {path}: {error}")
     if len(manifest_bytes) > MAX_ZIP_FILE_BYTES:
@@ -2937,6 +2933,17 @@ def validate_archive(
         fail(f"artifact {path} plugin.json name does not match {plugin_id}")
     if manifest.get("version") != version:
         fail(f"artifact {path} plugin.json version does not match {version}")
+    desktop = manifest.get("extensions", {}).get("com.xsec.desktop")
+    declares_native_contract = declares_native_sidecar_contract(manifest)
+    if require_native_sidecar_contract and not declares_native_contract:
+        fail(f"native MCP release artifact must declare the native sidecar contract: {plugin_id}")
+    if declares_native_contract:
+        try:
+            valid_native_archive = validate_native_archive(plugin_id, members, mcp_bytes, os_name, arch)
+        except ValueError as error:
+            fail(str(error))
+        if not valid_native_archive:
+            fail(f"native MCP artifact must include mcp.json: {plugin_id}")
     entrypoints = desktop_entrypoints(manifest, f"artifact {path} plugin.json")
     for entrypoint_name, entrypoint_path in entrypoints:
         entrypoint = members.get(entrypoint_path.as_posix())
@@ -3018,6 +3025,7 @@ def validate_artifacts(
     artifacts: object,
     label: str,
     *,
+    require_native_sidecar_contract: bool = False,
     require_current_official_frontend_contract: bool = False,
 ) -> list[tuple[Path, str, dict[str, object]]]:
     if not isinstance(artifacts, list) or not artifacts:
@@ -3050,10 +3058,116 @@ def validate_artifacts(
             artifact_path,
             plugin_id,
             version,
+            os_name=os_name,
+            arch=arch,
+            require_native_sidecar_contract=require_native_sidecar_contract,
             require_current_official_frontend_contract=require_current_official_frontend_contract,
         )
         result.append((artifact_path, version, manifest))
     return result
+
+
+def validate_native_sidecar_provenance(
+    plugin_id: str,
+    release_path: Path,
+    artifacts: list[object],
+    provenance: object,
+    label: str,
+) -> None:
+    recipe = RECIPES.get(plugin_id)
+    if recipe is None and provenance is None:
+        return
+    if recipe is None:
+        fail(f"{label} native sidecar provenance is not allowed for {plugin_id}")
+    targets = artifact_targets(artifacts)
+    if targets == {("any", "any")} and provenance is None:
+        return
+    expected = {(target.os_name, target.arch) for target in recipe.targets}
+    if targets != expected:
+        fail(f"{label} native MCP artifacts must match the complete Factory target set")
+    if provenance is None:
+        fail(f"{label} native MCP release requires native sidecar provenance")
+    try:
+        normalized = validate_provenance(recipe, provenance)
+    except ValueError as error:
+        fail(str(error))
+    targets = normalized["targets"]
+    for target in targets:
+        if not isinstance(target, dict):
+            raise AssertionError("validated native target must be an object")
+        rust_target = target.get("rustTarget")
+        if not isinstance(rust_target, str):
+            raise AssertionError("validated native target has no Rust target")
+        artifact = next(
+            (
+                item for item in artifacts
+                if isinstance(item, dict)
+                and item.get("os") == target["os"]
+                and item.get("arch") == target["arch"]
+            ),
+            None,
+        )
+        if artifact is None:
+            fail(f"{label} native sidecar provenance target has no artifact")
+        artifact_path = resolve_below(
+            release_path.parent,
+            safe_relative_path(artifact.get("url"), f"{label} native artifact URL"),
+            f"{label} native artifact",
+        )
+        try:
+            with zipfile.ZipFile(artifact_path) as archive:
+                binary = archive.read(archive_path_for(recipe, target_for(recipe, rust_target)).as_posix())
+        except (KeyError, OSError, RuntimeError, zipfile.BadZipFile) as error:
+            fail(f"{label} native sidecar cannot be read: {error}")
+        if hashlib.sha256(binary).hexdigest() != target["sha256"]:
+            fail(f"{label} native sidecar digest does not match provenance")
+
+
+def artifact_targets(artifacts: list[object]) -> set[tuple[str, str]]:
+    """Return already-schema-validated platform selectors for one release."""
+
+    result: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            raise AssertionError("validated artifact unexpectedly is not an object")
+        os_name, arch = artifact.get("os"), artifact.get("arch")
+        if not isinstance(os_name, str) or not isinstance(arch, str):
+            raise AssertionError("validated artifact has no target")
+        result.add((os_name, arch))
+    return result
+
+
+def validate_native_artifact_reproducibility(
+    plugin_id: str,
+    source_dir: Path,
+    artifact_records: list[object],
+    artifacts: list[tuple[Path, str, dict[str, object]]],
+) -> None:
+    """Require every native target archive to match source plus its sidecar."""
+
+    recipe = RECIPES[plugin_id]
+    if len(artifact_records) != len(artifacts):
+        raise AssertionError("validated native artifact records no longer align")
+    files = iter_plugin_files(source_dir)
+    by_target = {
+        (record["os"], record["arch"]): archive[0]
+        for record, archive in zip(artifact_records, artifacts, strict=True)
+        if isinstance(record, dict)
+    }
+    with tempfile.TemporaryDirectory(prefix="xsec-market-native-repro-") as directory:
+        root = Path(directory)
+        for target in recipe.targets:
+            artifact = by_target.get((target.os_name, target.arch))
+            if artifact is None:
+                fail(f"native MCP release for {plugin_id} is missing {target.os_name}/{target.arch}")
+            binary = root / target.rust_target
+            with zipfile.ZipFile(artifact) as archive:
+                binary.write_bytes(archive.read(archive_path_for(recipe, target).as_posix()))
+            with staged_plugin(source_dir, files, recipe, target, binary) as staging:
+                rebuilt = root / f"{target.rust_target}.xsec-plugin"
+                write_zip(staging, rebuilt)
+            if rebuilt.read_bytes() != artifact.read_bytes():
+                fail(f"native MCP artifact for {plugin_id} is not deterministic from its source and sidecar")
 
 
 def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
@@ -3109,7 +3223,8 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
     versions: set[str] = set()
     for index, item in enumerate(releases):
         label = f"release metadata for {plugin_id} release {index}"
-        if not isinstance(item, dict) or set(item) != {"releaseId", "version", "engines", "artifacts"}:
+        allowed = {"releaseId", "version", "engines", "artifacts", "nativeSidecarProvenance"}
+        if not isinstance(item, dict) or not {"releaseId", "version", "engines", "artifacts"} <= set(item) or set(item) - allowed:
             fail(f"{label} has an unsupported schema")
         identifier, version, engines, artifacts = (
             item.get("releaseId"),
@@ -3125,10 +3240,19 @@ def validate_release_index(plugin_id: str, plugin_dir: Path) -> tuple[dict[str, 
             engines = require_release_engines(engines, label)
         except ValueError as error:
             fail(str(error))
-        validate_artifacts(plugin_id, release_path, version, artifacts, label)
+        provenance = item.get("nativeSidecarProvenance")
+        validate_artifacts(
+            plugin_id,
+            release_path,
+            version,
+            artifacts,
+            label,
+            require_native_sidecar_contract=provenance is not None,
+        )
         if not isinstance(artifacts, list):
             raise AssertionError("artifacts unexpectedly absent")
-        if identifier != release_id(version, engines, artifacts):
+        validate_native_sidecar_provenance(plugin_id, release_path, artifacts, provenance, label)
+        if identifier != release_id(version, engines, artifacts, provenance):
             fail(f"{label} releaseId does not match immutable release content")
         if identifier in records:
             fail(f"release metadata for {plugin_id} contains duplicate releaseIds")
@@ -3164,7 +3288,16 @@ def validate_release(plugin_id: str, plugin_dir: Path) -> list[tuple[Path, str, 
     for item in items:
         if not isinstance(item, dict):
             raise AssertionError("validated release item must be an object")
-        result.extend(validate_artifacts(plugin_id, release_path, str(item["version"]), item["artifacts"], f"release metadata for {plugin_id}"))
+        result.extend(
+            validate_artifacts(
+                plugin_id,
+                release_path,
+                str(item["version"]),
+                item["artifacts"],
+                f"release metadata for {plugin_id}",
+                require_native_sidecar_contract=item.get("nativeSidecarProvenance") is not None,
+            )
+        )
     return result
 
 
@@ -3206,7 +3339,42 @@ def validate_source_manifest(plugin_id: str, plugin_dir: Path) -> dict[str, obje
     return manifest
 
 
-def validate_source(source_root: Path, built_root: Path) -> None:
+def validate_native_source(plugin_id: str, plugin_dir: Path, manifest: dict[str, object]) -> bool:
+    try:
+        recipe = recipe_for_source(plugin_id, plugin_dir)
+    except ValueError as error:
+        fail(str(error))
+    if recipe is None:
+        return False
+    desktop = manifest.get("extensions", {}).get("com.xsec.desktop")
+    if not isinstance(desktop, dict) or desktop.get("schemaVersion") != 2:
+        fail(f"plugin manifest {plugin_id} native MCP requires schemaVersion 2")
+    agent_tools = desktop.get("contributes", {}).get("agentTools")
+    if not isinstance(agent_tools, dict) or not agent_tools:
+        fail(f"plugin manifest {plugin_id} native MCP requires agentTool bindings")
+    bindings = agent_tools.values()
+    expected_servers = {server.server_id for server in recipe.servers}
+    actual_servers = {
+        item.get("mcpServer")
+        for item in bindings
+        if isinstance(item, dict) and isinstance(item.get("mcpServer"), str) and item.get("mcpTool")
+    }
+    if actual_servers != expected_servers or any(
+        not isinstance(item, dict) or not isinstance(item.get("mcpTool"), str) or not item["mcpTool"]
+        for item in bindings
+    ):
+        fail(f"plugin manifest {plugin_id} has an invalid native MCP Tool binding")
+    skill = resolve_below(plugin_dir, PurePosixPath("skills") / recipe.skill_id / "SKILL.md", f"plugin manifest {plugin_id} Skill")
+    try:
+        skill_source = skill.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        fail(f"plugin manifest {plugin_id} Skill cannot be read: {error}")
+    if not skill_source.startswith(f"---\nname: {recipe.skill_id}\n"):
+        fail(f"plugin manifest {plugin_id} Skill has invalid frontmatter")
+    return True
+
+
+def validate_source(source_root: Path, built_root: Path, *, allow_pending_native_sources: bool = False) -> None:
     try:
         expected_default_ids = set(active_default_official_plugin_ids(source_root))
     except ValueError as error:
@@ -3220,6 +3388,7 @@ def validate_source(source_root: Path, built_root: Path) -> None:
         fail("temporary marketplace plugin set differs from source plugin set")
     for plugin_id, source_dir, _ in source_entries:
         source_manifest = validate_source_manifest(plugin_id, source_dir)
+        native_source = validate_native_source(plugin_id, source_dir, source_manifest)
         built_plugin_dir = built_by_id[plugin_id]
         source_release, source_records = validate_release_index(plugin_id, source_dir)
         generated_release, generated_records = validate_release_index(plugin_id, built_plugin_dir)
@@ -3233,6 +3402,12 @@ def validate_source(source_root: Path, built_root: Path) -> None:
         generated_item = generated_records.get(beta_id) if isinstance(beta_id, str) else None
         if generated_item is None:
             fail(f"temporary output for {plugin_id} beta pointer does not select a release")
+        if native_source and not allow_pending_native_sources and "nativeSidecarProvenance" not in generated_item:
+            fail(f"native MCP release for {plugin_id} lacks signed sidecar provenance")
+        if native_source and allow_pending_native_sources:
+            if source_release != generated_release:
+                fail(f"source-only output for {plugin_id} changed immutable native release state")
+            continue
         if (
             generated_item.get("version") != source_manifest["version"]
             or generated_item.get("engines") != source_manifest["extensions"]["com.xsec.desktop"]["engines"]
@@ -3255,8 +3430,17 @@ def validate_source(source_root: Path, built_root: Path) -> None:
             str(generated_item["version"]),
             generated_item["artifacts"],
             f"temporary beta release metadata for {plugin_id}",
+            require_native_sidecar_contract=generated_item.get("nativeSidecarProvenance") is not None,
             require_current_official_frontend_contract=True,
         )
+        if native_source:
+            validate_native_artifact_reproducibility(
+                plugin_id,
+                source_dir,
+                generated_item["artifacts"],
+                candidate_artifacts,
+            )
+            continue
         if len(candidate_artifacts) != 1 or candidate_artifacts[0][1] != source_manifest["version"]:
             fail(f"temporary output for {plugin_id} does not contain exactly its current beta artifact")
         with tempfile.TemporaryDirectory(prefix="xsec-market-repro-") as directory:
@@ -3272,9 +3456,18 @@ def main() -> None:
     source_parser = subcommands.add_parser("source", help="validate source and a generated build")
     source_parser.add_argument("--source-root", type=Path, default=ROOT)
     source_parser.add_argument("--built-root", type=Path, required=True)
+    source_parser.add_argument(
+        "--allow-pending-native-sources",
+        action="store_true",
+        help="accept v2 native-MCP source whose artifacts await protected-runner inputs",
+    )
     args = parser.parse_args()
     try:
-        validate_source(args.source_root.resolve(), args.built_root.resolve())
+        validate_source(
+            args.source_root.resolve(),
+            args.built_root.resolve(),
+            allow_pending_native_sources=args.allow_pending_native_sources,
+        )
     except MarketplaceValidationError as error:
         raise SystemExit(f"marketplace validation failed: {error}") from error
     print(f"marketplace {args.command} validation passed")

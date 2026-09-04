@@ -389,6 +389,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             sys.executable,
             "scripts/build_market.py",
             "--clean",
+            "--source-only",
             "--output-root",
             str(destination),
         ]
@@ -400,7 +401,7 @@ class MarketplaceValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xsec-market-source-test-") as directory:
             output = Path(directory) / "marketplace"
             self.build_marketplace(output)
-            validate_source(ROOT, output)
+            validate_source(ROOT, output, allow_pending_native_sources=True)
 
     def test_source_gate_preserves_active_discovery_and_default_set_in_disposable_output(self) -> None:
         """The temporary output retains active entries and their default policy."""
@@ -1492,7 +1493,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             with artifact.open("ab") as handle:
                 handle.write(b"tampered")
             with self.assertRaisesRegex(MarketplaceValidationError, "SHA-256"):
-                validate_source(ROOT, output)
+                validate_source(ROOT, output, allow_pending_native_sources=True)
 
     def test_approvals_frontend_v2_contract_survives_the_generated_archive(self) -> None:
         plugin_id = "com.xsec.workspace.approvals"
@@ -1968,6 +1969,15 @@ export function renderPlaceholder() {}
                     str(raised.exception),
                 )
 
+    def test_dot_prefixed_mcp_json_member_does_not_raise_keyerror(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-dot-mcp-") as directory:
+            artifact = Path(directory) / "dot-mcp.xsec-plugin"
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr("plugin.json", '{"name":"com.xsec.test","version":"1.0.0"}')
+                archive.writestr("./mcp.json", json.dumps({"mcpServers": {}}))
+            with self.assertRaises(MarketplaceValidationError):
+                validate_archive(artifact, "com.xsec.test", "1.0.0")
+
     def test_unsafe_zip_member_is_rejected_before_manifest_read(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-zip-test-") as directory:
             artifact = Path(directory) / "unsafe.xsec-plugin"
@@ -2172,14 +2182,13 @@ export function renderPlaceholder() {}
         self.assertIn("enforce-publish-ref:", workflow)
         self.assertIn('EVENT_NAME: ${{ github.event_name }}', workflow)
         self.assertIn('REF: ${{ github.ref }}', workflow)
-        self.assertIn('REF_PROTECTED: ${{ github.ref_protected }}', workflow)
+        self.assertNotIn("github.ref_protected", workflow)
         self.assertIn("workflow_dispatch)", workflow)
         self.assertIn('[ "$REF" = "refs/heads/main" ] || {', workflow)
         self.assertIn("Manual marketplace publishing is permitted only from refs/heads/main.", workflow)
-        self.assertIn('[ "$REF_PROTECTED" != "true" ]', workflow)
         classify_job = workflow.split("  classify-generated-main-change:\n", 1)[1].split("  sign-and-publish:\n", 1)[0]
         # GitHub skips a job whose dependency was skipped, regardless of the
-        # downstream condition.  A protected-main manual dispatch must give
+        # downstream condition.  A main manual dispatch must give
         # the classifier a successful, explicit non-generated result so the
         # external Beta/Stable request can reach the signing gate.  Pushes
         # remain the only event that classifies a main merge range.
@@ -2193,9 +2202,14 @@ export function renderPlaceholder() {}
             classify_job.index('[[ "$BEFORE" =~ ^[a-f0-9]{40}$'),
         )
         signing_job = workflow.split("  sign-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
-        self.assertIn("needs: [enforce-publish-ref, classify-generated-main-change]", signing_job)
+        self.assertIn(
+            "needs: [enforce-publish-ref, classify-generated-main-change, build-native-sidecars]",
+            signing_job,
+        )
+        self.assertIn("always()", signing_job)
         self.assertIn("needs.enforce-publish-ref.result == 'success'", signing_job)
         self.assertIn("github.event_name == 'workflow_dispatch' || github.event_name == 'push'", signing_job)
+        self.assertIn("needs.build-native-sidecars.result == 'success'", signing_job)
         self.assertNotIn("needs.require_publish_token.result == 'success'", signing_job)
         self.assertIn("needs.classify-generated-main-change.outputs.generated != 'true'", signing_job)
         self.assertNotIn("github.event.head_commit.message", signing_job)
@@ -2204,6 +2218,16 @@ export function renderPlaceholder() {}
             steps.index("Require the protected marketplace publication token before checkout or KMS"),
             steps.index("actions/checkout@v4"),
         )
+        sidecar_job = workflow.split("  build-native-sidecars:\n", 1)[1].split("  sign-and-publish:\n", 1)[0]
+        self.assertIn("XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID", sidecar_job)
+        self.assertIn("repository: tzf1003/xSecDesktop", sidecar_job)
+        self.assertIn("ref: ${{ inputs.native_sidecars_source_sha }}", sidecar_job)
+        self.assertIn("repos/tzf1003/xSecDesktop/commits/main", sidecar_job)
+        self.assertIn("--package xsec-attack-path-mcp", sidecar_job)
+        self.assertIn("--package xsec-asset-discovery-mcp", sidecar_job)
+        self.assertIn("xsec-native-sidecars-${{ matrix.rust_target }}", sidecar_job)
+        self.assertIn("com.xsec.asset-discovery@$target=$asset_discovery_binary", steps)
+        self.assertIn("--native-sidecar-source-revision", steps)
 
     def test_disposable_build_rejects_nested_plugin_link_before_copytree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-copy-link-") as directory:

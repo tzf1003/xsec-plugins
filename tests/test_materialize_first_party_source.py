@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,9 +19,13 @@ sys.path.insert(0, str(SCRIPTS))
 
 import build_market  # noqa: E402
 import materialize_first_party_source as materializer  # noqa: E402
+import native_sidecars  # noqa: E402
 
 
 PLUGIN_ID = "com.xsec.workspace.sub-agent"
+NATIVE_PLUGIN_ID = "com.xsec.attack-path"
+NATIVE_SOURCE_REVISION = "b" * 40
+NATIVE_SNAPSHOT = ROOT / ".xsec-factory" / "snapshots" / NATIVE_PLUGIN_ID
 
 
 def snapshot_dir(root: Path, plugin_id: str) -> Path:
@@ -30,6 +35,21 @@ def snapshot_dir(root: Path, plugin_id: str) -> Path:
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def native_source(root: Path) -> Path:
+    source = root / "native-source"
+    shutil.copytree(NATIVE_SNAPSHOT, source)
+    manifest_path = source / "plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    desktop = manifest["extensions"]["com.xsec.desktop"]
+    desktop["schemaVersion"] = 2
+    desktop["permissions"] = {"mcp.servers.register": {}, "native.execute": {}}
+    write_json(manifest_path, manifest)
+    write_json(source / "mcp.json", {"mcpServers": {"attack-path": {
+        "type": "stdio", "command": "./bin/attack-path-mcp", "cwd": "${PLUGIN_DATA}",
+    }}})
+    return source
 
 
 def git(root: Path, *arguments: str) -> str:
@@ -189,6 +209,72 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             self.assertEqual(result["pendingAdoptionRegistry"]["status"], "pending-adoption")
             self.assertEqual(result["pendingAdoptionRegistry"]["source"]["repository"], "tzf1003/xsec-plugin-sub-agent")
             self.assertRegex(result["sourceCommits"]["stable"], r"^[a-f0-9]{40}$")
+
+    def test_native_release_materializes_a_verified_binary_free_source_projection(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-native-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            plugin = snapshot_dir(factory, NATIVE_PLUGIN_ID)
+            inputs = {}
+            for target in native_sidecars.ATTACK_PATH_RECIPE.targets:
+                binary = root / target.rust_target
+                binary.write_bytes(target.rust_target.encode("utf-8"))
+                inputs[(NATIVE_PLUGIN_ID, target.rust_target)] = binary
+            build_market.build_plugin(
+                native_source(root),
+                plugin,
+                native_sidecar_inputs=inputs,
+                native_sidecar_source_revision=NATIVE_SOURCE_REVISION,
+            )
+            record, artifact = materializer.selected_release_artifact(factory, NATIVE_PLUGIN_ID, "beta")
+            repository = root / "source"
+            repository.mkdir()
+            materializer.replace_plugin_tree(repository, NATIVE_PLUGIN_ID, artifact, record)
+
+            source_plugin = repository / "plugins" / NATIVE_PLUGIN_ID
+            self.assertTrue((source_plugin / "plugin.json").is_file())
+            self.assertFalse((source_plugin / native_sidecars.ATTACK_PATH_RECIPE.archive_path).exists())
+
+    def test_native_materialization_rejects_platform_archives_with_different_source_content(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-materializer-native-drift-") as directory:
+            root = Path(directory)
+            factory = root / "factory"
+            plugin = snapshot_dir(factory, NATIVE_PLUGIN_ID)
+            inputs = {}
+            for target in native_sidecars.ATTACK_PATH_RECIPE.targets:
+                binary = root / target.rust_target
+                binary.write_bytes(target.rust_target.encode("utf-8"))
+                inputs[(NATIVE_PLUGIN_ID, target.rust_target)] = binary
+            build_market.build_plugin(
+                native_source(root),
+                plugin,
+                native_sidecar_inputs=inputs,
+                native_sidecar_source_revision=NATIVE_SOURCE_REVISION,
+            )
+            release_path = plugin / ".xsec-market" / "releases.json"
+            release = json.loads(release_path.read_text(encoding="utf-8"))
+            record = release["releases"][0]
+            artifact = plugin / ".xsec-market" / record["artifacts"][1]["url"]
+            rewritten = root / "rewritten.xsec-plugin"
+            with zipfile.ZipFile(artifact) as source, zipfile.ZipFile(rewritten, "w") as output:
+                for info in source.infolist():
+                    content = source.read(info.filename)
+                    if info.filename.endswith("frontend/index.js"):
+                        content += b"\n"
+                    output.writestr(info, content)
+            rewritten.replace(artifact)
+            record["artifacts"][1]["sha256"] = build_market.sha256(artifact)
+            record["releaseId"] = build_market.release_id(
+                record["version"],
+                record["engines"],
+                record["artifacts"],
+                record["nativeSidecarProvenance"],
+            )
+            release["channels"]["beta"] = {"releaseId": record["releaseId"]}
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+
+            with self.assertRaisesRegex(materializer.MaterializationError, "identical source projection"):
+                materializer.selected_release_artifact(factory, NATIVE_PLUGIN_ID, "beta")
 
     def test_materialization_ignores_global_git_templates_and_seals_candidate_hooks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-template-") as directory:

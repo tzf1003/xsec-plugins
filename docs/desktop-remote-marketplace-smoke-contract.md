@@ -1,12 +1,12 @@
 # Desktop remote marketplace smoke-test contract (v2)
 
 This is the repository-side hand-off for the Desktop release workflow. After a
-successful protected publication, this repository invokes the Desktop workflow
+successful controlled publication, this repository invokes the Desktop workflow
 with a GitHub `repository_dispatch` event. The event name and payload below are
 the exact receiver contract.
 
-After a signed marketplace commit is merged through the protected Factory final
-gate, the protected post-merge Factory dispatcher triggers the Desktop workflow
+After a signed marketplace commit is merged through the Factory final gate, the
+post-merge Factory dispatcher triggers the Desktop workflow
 with a GitHub `repository_dispatch` event named `xsec_official_marketplace_published`.
 The payload is:
 
@@ -14,14 +14,14 @@ The payload is:
 {
   "source_repository": "tzf1003/xsec-plugins",
   "source_ref": "refs/heads/main",
-  "source_sha": "<40-character protected-main source SHA>",
+  "source_sha": "<40-character Factory-main source SHA>",
   "marketplace_revision": "<40-character immutable generated-commit SHA>",
   "channel": "beta"
 }
 ```
 
 `source_repository` and `source_ref` identify the compiled official publisher.
-`source_sha` is the protected `main` revision that the publishing job checks
+`source_sha` is the `main` revision that the publishing job checks
 out after it has acquired the shared publication slot, then builds and
 KMS-signs the documents from. It can therefore be newer than the GitHub event
 that originally queued the job. `marketplace_revision` is the immutable
@@ -32,13 +32,13 @@ reject any different repository/ref, malformed revision, or ancestry failure.
 It constructs the raw GitHub content URL itself; a dispatch payload never
 supplies a URL, a public key, or a plugin list.
 
-`channel` is exactly `beta` or `stable`. Before merge, the protected Factory
+`channel` is exactly `beta` or `stable`. Before merge, the Factory
 final gate re-reads the exact PR head/base and registered source heads with the
 separate read-only Source App, then requires the current source gate. The dispatcher
 derives the channel from the validated release-index transition, authenticates all KMS
 sidecars, and revalidates every registered external source head again after
 merge with another exact-repository read-only Source App token. The Finalizer
-App is not used for either cross-repository read. A normal protected-main publication
+App is not used for either cross-repository read. A normal Factory-main publication
 appends immutable release records as needed and dispatches `beta`; the separate
 manual stable-promotion workflow changes only a v2 release index's
 `channels.stable` pointer and dispatches `stable`. Desktop must select the
@@ -51,7 +51,7 @@ it must never expect a newly rebuilt package.
 The official external-source Factory uses the same dispatch contract. Its
 developer-facing `publish.yml` request contains an external repository SHA as
 auditable Factory provenance, but the **dispatch** `source_sha` above remains
-the protected `xsec-plugins/main` revision that KMS signed. Desktop must not
+the `xsec-plugins/main` revision that KMS signed. Desktop must not
 interpret the dispatch as permission to fetch an external repository, accept an
 external URL, or relax its compiled official origin/ref checks. The merged
 Factory revision contains the validated snapshot, release index, and KMS
@@ -67,7 +67,7 @@ documented in the [plugin development and release lifecycle](plugin-development-
 A newly added plugin is Beta-only: its first automatic publication leaves
 `channels.stable` as `null` and never dispatches `stable`. Desktop
 must treat that absent Stable pointer as no Stable release, rather than falling
-back to Beta; only the protected manual promotion may make it installable from
+back to Beta; only the controlled manual promotion may make it installable from
 the Stable channel.
 
 The Desktop implementation runs this request on Windows, macOS and Linux using

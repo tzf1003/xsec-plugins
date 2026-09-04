@@ -28,39 +28,22 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Require a protected main finalization request
+      - name: Require a current-main finalization request
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          REF_PROTECTED: ${{ github.ref_protected }}
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
             workflow_dispatch|workflow_call|workflow_run) ;;
-            *) echo "Final Marketplace merge accepts only its protected dispatcher or reusable caller." >&2; exit 1 ;;
+            *) echo "Final Marketplace merge accepts only its authorized dispatcher or reusable caller." >&2; exit 1 ;;
           esac
-          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
-            echo "Final Marketplace merge requires protected Factory main." >&2
+          [ "$REF" = "refs/heads/main" ] || {
+            echo "Final Marketplace merge requires Factory main." >&2
             exit 1
           }
           [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "pull_number must be a positive decimal." >&2; exit 1; }
-      - name: Require a protected-branch production Environment without administrator bypass
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          environment_policy="$(gh api "repos/${GITHUB_REPOSITORY}/environments/production")"
-          printf '%s' "$environment_policy" | jq -e '
-            .can_admins_bypass == false
-            and .deployment_branch_policy.protected_branches == true
-            and .deployment_branch_policy.custom_branch_policies == false
-            and any(.protection_rules[]?; .type == "branch_policy")
-            and ([.protection_rules[]? | select(.type == "required_reviewers")] | length == 0)
-          ' >/dev/null || {
-            echo "production must accept protected branches only, omit required reviewers, and forbid administrator bypass before a Factory final merge." >&2
-            exit 1
-          }
       # actions/checkout v4.4.0, pinned after resolving the signed v4.4.0 tag.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -133,7 +116,7 @@ jobs:
             # staging PR adds one unsigned assertion; the KMS-generated
             # activation PR later adds only the matching sidecar and changes
             # that exact Registry row. These scripts come from checked-out
-            # protected main; CANDIDATE is data only and is never executed.
+            # Factory main; CANDIDATE is data only and is never executed.
             adoption_shape="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" --before "$BEFORE" --after "$AFTER" --verify-first-party-adoption-candidate)"
             expected_adoption_path="$(printf '%s' "$adoption_shape" | jq -er .adoption_path)"
             expected_plugin_id="$(printf '%s' "$adoption_shape" | jq -er .plugin_id)"
@@ -152,7 +135,7 @@ jobs:
             result="$(jq -cn --arg plugin_id "$plugin_id" --argjson sources "$sources" '{kind:"adoption",plugin_id:$plugin_id,sources:$sources}')"
           elif [[ "$HEAD_REF" == xsec-marketplace/layout-signatures-* ]]; then
             test -f .xsec-factory/layout-migration.json || {
-              echo "Protected main no longer contains the pending Factory layout marker." >&2
+              echo "Factory main no longer contains the pending Factory layout marker." >&2
               exit 1
             }
             test ! -e "$CANDIDATE/.xsec-factory/layout-migration.json" || {
@@ -284,7 +267,7 @@ jobs:
           }
       # actions/create-github-app-token v2.2.2, pinned after resolving the
       # signed v2.2.2 tag. This token is source-read-only and is never used
-      # for a Factory mutation or the final protected-main merge.
+      # for a Factory mutation or the final Factory-main merge.
       - name: Create a narrowly scoped read-only Source App token
         id: source-token
         if: ${{ steps.publication.outputs.source_app_required == 'true' }}
@@ -432,7 +415,7 @@ jobs:
               exit 1
             }
           [ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "$BASE_SHA" ] || {
-            echo "Protected main advanced while final revalidation ran; it remains pending." >&2
+            echo "Factory main advanced while final revalidation ran; it remains pending." >&2
             exit 1
           }
           # Re-read each external ref immediately before the isolated

@@ -25,6 +25,10 @@ on:
         description: Exact lowercase 40-character SHA in the registered external repository.
         required: false
         type: string
+      native_sidecars_source_sha:
+        description: Exact lowercase 40-character xSecDesktop main SHA used to build the reviewed native MCP sidecars.
+        required: false
+        type: string
       release_id:
         description: Existing external Beta releaseId. Required only for an external Stable promotion.
         required: false
@@ -70,16 +74,16 @@ jobs:
       maintenance: ${{ steps.request.outputs.maintenance }}
       channel: ${{ steps.request.outputs.channel }}
     steps:
-      - name: Require protected main and a complete publication request
+      - name: Require main and a complete publication request
         id: request
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          REF_PROTECTED: ${{ github.ref_protected }}
           MAINTENANCE: ${{ inputs.maintenance }}
           CHANNEL: ${{ inputs.channel }}
           PLUGIN_ID: ${{ inputs.plugin_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          NATIVE_SIDECARS_SOURCE_SHA: ${{ inputs.native_sidecars_source_sha }}
           RELEASE_ID: ${{ inputs.release_id }}
           EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
           SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
@@ -116,10 +120,6 @@ jobs:
               exit 1
               ;;
           esac
-          if [ "$REF_PROTECTED" != "true" ]; then
-            echo "Marketplace publication requires a protected main branch or ruleset." >&2
-            exit 1
-          fi
           case "$channel" in
             beta|stable) ;;
             *) echo "channel must be beta or stable." >&2; exit 1 ;;
@@ -128,6 +128,20 @@ jobs:
             release|align_desktop_defaults) ;;
             *) echo "maintenance must be release or align_desktop_defaults." >&2; exit 1 ;;
           esac
+          requires_native_sidecars=false
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$maintenance" = "release" ] \
+            && { [ -z "$PLUGIN_ID" ] || [ "$channel" = "beta" ]; }; then
+            requires_native_sidecars=true
+          fi
+          if "$requires_native_sidecars"; then
+            [[ "$NATIVE_SIDECARS_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "Beta packaging requires native_sidecars_source_sha from xSecDesktop main." >&2
+              exit 1
+            }
+          elif [ -n "$NATIVE_SIDECARS_SOURCE_SHA" ]; then
+            echo "native_sidecars_source_sha is valid only when the Factory rebuilds Beta artifacts." >&2
+            exit 1
+          fi
           if [ -n "$RECONCILE_DELIVERY_KEY" ] && ! [[ "$RECONCILE_DELIVERY_KEY" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$ ]]; then
             echo "reconcile_delivery_key is not a bounded delivery identifier." >&2
             exit 1
@@ -149,7 +163,7 @@ jobs:
                 exit 1
               }
           elif [ -n "$PLUGIN_ID" ]; then
-            [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit protected-main dispatch." >&2; exit 1; }
+            [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit main dispatch." >&2; exit 1; }
             [ -n "$SOURCE_SHA" ] || { echo "External source publication requires source_sha." >&2; exit 1; }
             if [ "$channel" = "beta" ] && { [ -n "$RELEASE_ID" ] || [ -n "$EXPECTED_BETA_SHA" ]; }; then
               echo "release_id and expected_beta_sha are only valid for an external Stable promotion." >&2
@@ -178,10 +192,10 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
   classify-generated-main-change:
     needs: enforce-publish-ref
-    # A protected main push maintains the Desktop default set. Explicit
-    # protected-main dispatches retain the normal release/recovery contract.
+    # A main push maintains the Desktop default set. Explicit main dispatches
+    # retain the normal release/recovery contract.
     # Already signed Factory merges are classified before either path signs.
-    if: ${{ needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' && github.ref_protected }}
+    if: ${{ needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       generated: ${{ steps.classify.outputs.generated }}
@@ -204,7 +218,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            # Manual publication already requires an explicit protected-main
+            # Manual publication already requires an explicit main
             # request in enforce-publish-ref.  It is not a main-push merge
             # and therefore cannot be a Factory-generated change to suppress.
             echo "generated=false" >> "$GITHUB_OUTPUT"
@@ -215,7 +229,7 @@ jobs:
             exit 1
           }
           [[ "$BEFORE" =~ ^[a-f0-9]{40}$ && "$AFTER" =~ ^[a-f0-9]{40}$ ]] || {
-            echo "Protected main push has invalid Git revision metadata." >&2
+            echo "Factory main push has invalid Git revision metadata." >&2
             exit 1
           }
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
@@ -228,10 +242,121 @@ jobs:
           else
             echo "generated=false" >> "$GITHUB_OUTPUT"
           fi
-  sign-and-publish:
+  build-native-sidecars:
     needs: [enforce-publish-ref, classify-generated-main-change]
     if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' && github.ref_protected && needs.classify-generated-main-change.outputs.generated != 'true' }}
+      ${{ needs.enforce-publish-ref.result == 'success' && needs.classify-generated-main-change.outputs.generated != 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.maintenance != 'align_desktop_defaults' && (inputs.plugin_id == '' || inputs.channel == 'beta') }}
+    runs-on: ${{ matrix.runner }}
+    environment: production
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            shell: bash
+            rust_target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            shell: bash
+            rust_target: x86_64-apple-darwin
+          - runner: windows-2022
+            shell: pwsh
+            rust_target: x86_64-pc-windows-msvc
+    steps:
+      - name: Require the dedicated read-only Desktop source App
+        env:
+          XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID }}
+          XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID" ]
+          [ -n "$XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY" ]
+      - name: Create a scoped Desktop source token
+        id: desktop-source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_DESKTOP_SIDECAR_SOURCE_APP_PRIVATE_KEY }}
+          owner: tzf1003
+          repositories: xSecDesktop
+          permission-contents: read
+      - name: Check out the exact Desktop source revision
+        uses: actions/checkout@v4
+        with:
+          repository: tzf1003/xSecDesktop
+          github-server-url: https://github.com
+          ref: ${{ inputs.native_sidecars_source_sha }}
+          token: ${{ steps.desktop-source-token.outputs.token }}
+          path: .xsec-desktop-source
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Verify the source revision is current Desktop main
+        env:
+          GH_TOKEN: ${{ steps.desktop-source-token.outputs.token }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.native_sidecars_source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git -C .xsec-desktop-source rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA" ]
+          desktop_main="$(gh api repos/tzf1003/xSecDesktop/commits/main --jq .sha)"
+          [ "$desktop_main" = "$EXPECTED_SOURCE_SHA" ] || {
+            echo "native_sidecars_source_sha must be the current xSecDesktop main revision." >&2
+            exit 1
+          }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the reviewed native MCP sidecars
+        if: ${{ matrix.shell == 'bash' }}
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/xsec-native-sidecars-cargo
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --package xsec-attack-path-mcp --package xsec-asset-discovery-mcp --target "$RUST_TARGET" --manifest-path .xsec-desktop-source/Cargo.toml
+          output_dir="$RUNNER_TEMP/xsec-native-sidecars"
+          mkdir -p "$output_dir"
+          attack_path_binary="$CARGO_TARGET_DIR/$RUST_TARGET/release/xsec-attack-path-mcp"
+          asset_discovery_binary="$CARGO_TARGET_DIR/$RUST_TARGET/release/xsec-asset-discovery-mcp"
+          [ -f "$attack_path_binary" ] && [ ! -L "$attack_path_binary" ] && [ -s "$attack_path_binary" ]
+          [ -f "$asset_discovery_binary" ] && [ ! -L "$asset_discovery_binary" ] && [ -s "$asset_discovery_binary" ]
+          cp "$attack_path_binary" "$output_dir/attack-path-mcp"
+          cp "$asset_discovery_binary" "$output_dir/asset-discovery-mcp"
+          chmod 0755 "$output_dir/attack-path-mcp"
+          chmod 0755 "$output_dir/asset-discovery-mcp"
+      - name: Build the reviewed native MCP sidecars
+        if: ${{ matrix.shell == 'pwsh' }}
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/xsec-native-sidecars-cargo
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --locked --release --package xsec-attack-path-mcp --package xsec-asset-discovery-mcp --target $env:RUST_TARGET --manifest-path .xsec-desktop-source/Cargo.toml
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'xsec-native-sidecars'
+          New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+          $attackPathBinary = Join-Path $env:CARGO_TARGET_DIR "$env:RUST_TARGET\release\xsec-attack-path-mcp.exe"
+          $assetDiscoveryBinary = Join-Path $env:CARGO_TARGET_DIR "$env:RUST_TARGET\release\xsec-asset-discovery-mcp.exe"
+          if (-not (Test-Path -LiteralPath $attackPathBinary -PathType Leaf)) { throw 'Attack-path MCP binary is unavailable' }
+          if (-not (Test-Path -LiteralPath $assetDiscoveryBinary -PathType Leaf)) { throw 'Asset-discovery MCP binary is unavailable' }
+          Copy-Item -LiteralPath $attackPathBinary -Destination (Join-Path $outputDirectory 'attack-path-mcp')
+          Copy-Item -LiteralPath $assetDiscoveryBinary -Destination (Join-Path $outputDirectory 'asset-discovery-mcp')
+      - name: Upload the reviewed native MCP sidecars
+        uses: actions/upload-artifact@v4
+        with:
+          name: xsec-native-sidecars-${{ matrix.rust_target }}
+          path: ${{ runner.temp }}/xsec-native-sidecars
+          if-no-files-found: error
+          retention-days: 1
+  sign-and-publish:
+    needs: [enforce-publish-ref, classify-generated-main-change, build-native-sidecars]
+    if: >-
+      ${{ always() && needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' && needs.classify-generated-main-change.outputs.generated != 'true' && (needs.build-native-sidecars.result == 'success' || needs.build-native-sidecars.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -246,7 +371,7 @@ jobs:
       # Workflow-level concurrency is acquired before this job begins. Resolve
       # main only after acquiring that slot: a queued run's event SHA may have
       # become stale while an earlier publication merged its signed index.
-      - name: Check out current protected main after acquiring the publication slot
+      - name: Check out current Factory main after acquiring the publication slot
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -259,9 +384,9 @@ jobs:
         id: current-main
         run: |
           source_revision="$(git rev-parse HEAD)"
-          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not protected main." >&2; exit 1; }
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not Factory main." >&2; exit 1; }
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
-      - name: Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge
+      - name: Refuse to sign while this plugin has a generated Factory PR awaiting final merge
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
           CHANNEL: ${{ needs.enforce-publish-ref.outputs.channel }}
@@ -357,7 +482,7 @@ jobs:
             fi
           done < <(printf '%s' "$candidates" | jq -rc '.[]')
           if [ "${#pending[@]}" -gt 0 ]; then
-            printf 'The requested Marketplace transition is still awaiting source validation and protected final merge:\n%s\n' "${pending[*]}" >&2
+            printf 'The requested Marketplace transition is still awaiting source validation and final merge:\n%s\n' "${pending[*]}" >&2
             exit 1
           fi
       - uses: actions/setup-python@v5
@@ -366,7 +491,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Resolve the publication mode from protected Factory main
+      - name: Resolve the publication mode from Factory main
         id: request
         env:
           INPUT_CHANNEL: ${{ needs.enforce-publish-ref.outputs.channel }}
@@ -403,6 +528,13 @@ jobs:
       - name: Apply the reviewed Desktop default-set transition
         if: ${{ steps.request.outputs.maintenance == 'true' }}
         run: python scripts/maintain_marketplace_defaults.py --root .
+      - name: Download reviewed native MCP sidecars
+        if: ${{ steps.request.outputs.maintenance != 'true' && (steps.request.outputs.external != 'true' || steps.request.outputs.channel == 'beta') }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xsec-native-sidecars-*
+          path: ${{ runner.temp }}/xsec-native-sidecars
+          merge-multiple: false
       - name: Validate an external registry request before source access
         id: external-request
         if: ${{ steps.request.outputs.external == 'true' }}
@@ -596,9 +728,23 @@ jobs:
         run: |
           python scripts/external_source_factory.py record-stable \
             --plugin-id "$PLUGIN_ID" --source-sha "$SOURCE_SHA" --release-id "$RELEASE_ID" --publisher "$PUBLISHER"
-      - name: Build an immutable beta release without a private signing key
-        if: ${{ steps.request.outputs.external != 'true' || steps.request.outputs.channel == 'beta' }}
-        run: python scripts/build_market.py --clean
+      - name: Build an immutable beta release with reviewed native sidecars
+        if: ${{ steps.request.outputs.maintenance != 'true' && (steps.request.outputs.external != 'true' || steps.request.outputs.channel == 'beta') }}
+        run: |
+          set -euo pipefail
+          sidecar_root="$RUNNER_TEMP/xsec-native-sidecars"
+          native_inputs=()
+          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            attack_path_binary="$sidecar_root/xsec-native-sidecars-$target/attack-path-mcp"
+            asset_discovery_binary="$sidecar_root/xsec-native-sidecars-$target/asset-discovery-mcp"
+            [ -f "$attack_path_binary" ] && [ ! -L "$attack_path_binary" ] && [ -s "$attack_path_binary" ] || { echo "Protected builder did not provide an attack-path sidecar for $target." >&2; exit 1; }
+            [ -f "$asset_discovery_binary" ] && [ ! -L "$asset_discovery_binary" ] && [ -s "$asset_discovery_binary" ] || { echo "Protected builder did not provide an asset-discovery sidecar for $target." >&2; exit 1; }
+            native_inputs+=("--native-sidecar-input" "com.xsec.attack-path@$target=$attack_path_binary")
+            native_inputs+=("--native-sidecar-input" "com.xsec.asset-discovery@$target=$asset_discovery_binary")
+          done
+          build_args=(--clean --native-sidecar-source-revision "${{ inputs.native_sidecars_source_sha }}")
+          build_args+=("${native_inputs[@]}")
+          python scripts/build_market.py "${build_args[@]}"
       - name: Gate external Beta smoke on deterministic registered main rebuild
         id: main-gate
         if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'beta' }}
@@ -779,11 +925,11 @@ jobs:
       - name: Request KMS sidecars through the production Cloud broker
         if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
         env:
-          # The Cloud broker allowlists this protected publish.yml workflow
+          # The Cloud broker allowlists this controlled publish.yml workflow
           # for immutable Marketplace documents only. Mutable official status
           # is deliberately excluded: reconcile-source authenticates the
           # exact generated candidate and is the sole status KMS caller.
-          # Every sidecar still binds the protected Factory main SHA, never
+          # Every sidecar still binds the Factory main SHA, never
           # an external source SHA.
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status
@@ -831,7 +977,7 @@ jobs:
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
           if [ "$MAINTENANCE" = "true" ]; then
-            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It removes the project workspace package from Marketplace discovery, retains its immutable Factory history, and refreshes the complete active KMS sidecar batch. The protected finalizer revalidates the exact default-set delta and never treats it as a plugin release."
+            body="Generated by the controlled workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It removes the project workspace package from Marketplace discovery, retains its immutable Factory history, and refreshes the complete active KMS sidecar batch. The finalizer revalidates the exact default-set delta and never treats it as a plugin release."
           elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ]; then
             body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It proved external main deterministically rebuilds the selected Beta release and changes only channels.stable.releaseId plus Factory provenance. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory run the source gate. This workflow never merges the PR."
           elif [ "$EXTERNAL" = "true" ]; then

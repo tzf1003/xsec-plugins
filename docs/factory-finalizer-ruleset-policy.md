@@ -6,7 +6,7 @@ remains pending through final revalidation and merge; the finalizer never
 writes a success status or relies on a cleanup trap. It is therefore maintained
 separately from the classic `main` branch-protection document.
 
-The manual protected workflow `enforce-factory-main-protection.yml` owns one
+The optional manual administration workflow `enforce-factory-main-protection.yml` owns one
 repository Ruleset only: `xsec-marketplace-final-exact-head`.  That Ruleset is
 active only for `refs/heads/main`, requires the strict
 `factory-final-merge-gate` status from GitHub Actions integration `15368`, and
@@ -21,13 +21,14 @@ candidate and re-reads every registered external source branch SHA immediately
 before providing the distinct Finalizer token to the one exact-head merge API
 request. The Finalizer token never reads an external source repository. Missing
 App credentials, an advanced source branch, or a failed merge leaves the
-candidate pending and requires a fresh protected revalidation.
+candidate pending and requires a fresh revalidation.
 
-`production` is restricted to protected branches and forbids administrator
-bypass. Both the policy workflow and final merge query its server-side
-Environment policy, require that branch policy, and require the reviewer list
-to remain empty. A missing or different Environment policy fails closed before
-a Ruleset or merge is attempted.
+The optional policy workflow configures `production` for protected branches and
+forbids administrator bypass before it writes the repository Ruleset. The
+release and final-merge paths do not query this branch policy: they require the
+approved `production` Environment, exact Factory `main` revision, source
+proofs, immutable artifacts, and KMS sidecars instead. A missing or different
+policy stops only this optional administration workflow.
 
 The enforcing workflow first creates or verifies this Ruleset.  Only after the
 returned Ruleset passes local validation does it remove the finalizer check

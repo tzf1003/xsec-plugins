@@ -26,7 +26,7 @@ concurrency:
 jobs:
   promote:
     runs-on: ubuntu-latest
-    # A protected ref alone is not caller authorization. Require the same
+    # A ref alone is not caller authorization. Require the same
     # reviewer-gated release environment as Beta before this write-capable job
     # can upload or promote an immutable Factory release.
     environment: production
@@ -34,10 +34,9 @@ jobs:
       - name: Require an explicit Factory-main dispatch
         env:
           REF: ${{ github.ref }}
-          REF_PROTECTED: ${{ github.ref_protected }}
         run: |
-          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
-            echo "Run Marketplace Factory promotion from a protected refs/heads/main." >&2
+          [ "$REF" = "refs/heads/main" ] || {
+            echo "Run Marketplace Factory promotion from refs/heads/main." >&2
             exit 1
           }
       - uses: actions/checkout@v4

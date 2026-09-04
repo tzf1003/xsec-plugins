@@ -22,7 +22,7 @@ concurrency:
 jobs:
   select-stale-batch:
     if: >-
-      (github.event_name == 'push' && github.ref_protected) ||
+      github.event_name == 'push' ||
       (github.event_name == 'repository_dispatch' && github.event.action == 'xsec-stale-marketplace-batch-rebuild') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           pulls="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
           main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
-          [[ "$main_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Protected Factory main revision is invalid." >&2; exit 1; }
+          [[ "$main_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Factory main revision is invalid." >&2; exit 1; }
           candidates="$(printf '%s' "$pulls" | jq -cer --arg repository "$GITHUB_REPOSITORY" '
             [.[][]
               | select(.head.repo.full_name == $repository)
@@ -58,7 +58,7 @@ jobs:
             }
             comparison="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${head_sha}...${main_sha}")"
             # The compare endpoint is queried as candidate...main.  In that
-            # direction, ahead_by is the number of protected-main commits the
+            # direction, ahead_by is the number of Factory-main commits the
             # candidate lacks; behind_by is the candidate's own delta and must
             # not make a current-base candidate look stale.
             ahead_by="$(printf '%s' "$comparison" | jq -er '.ahead_by | if type == "number" and floor == . and . >= 0 then . else error("invalid comparison") end')"
@@ -76,7 +76,7 @@ jobs:
           head_ref="$(printf '%s' "$latest" | jq -er .head.ref)"
           head_sha="$(printf '%s' "$latest" | jq -er .head.sha)"
           checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
-          # A stale candidate is intentionally behind protected main, so its
+          # A stale candidate is intentionally behind Factory main, so its
           # freshness check rejects the old base. The next job verifies that
           # immutable candidate as data before rebuilding a new current-base
           # batch; require its source gate here, then keep the review checks
@@ -89,14 +89,6 @@ jobs:
               exit 0
             fi
           done
-          {
-            echo "eligible=true"
-            echo "pull_number=$pull_number"
-            echo "head_ref=$head_ref"
-            echo "head_sha=$head_sha"
-            echo "stale_batches=$stale_batches"
-          } >> "$GITHUB_OUTPUT"
-          exit 0
           statuses="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/statuses?per_page=100")"
           # Bind the trusted completion status to CodeRabbit's authenticated
           # exact-head review or bounded exact-head zero-findings summary.

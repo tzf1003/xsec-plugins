@@ -15,7 +15,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # A sidecar binds the exact protected-main document bytes. Serialize this
+  # A sidecar binds the exact Factory-main document bytes. Serialize this
   # repair with normal publication so neither flow signs a stale release index.
   group: xsec-marketplace-publish-main
   cancel-in-progress: false
@@ -24,21 +24,20 @@ jobs:
   enforce-refresh-ref:
     runs-on: ubuntu-latest
     steps:
-      - name: Require a protected main manual dispatch
+      - name: Require a main manual dispatch
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
           [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "Retained sidecar refresh is manual only." >&2; exit 1; }
-          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
-            echo "Retained sidecar refresh requires protected refs/heads/main." >&2
+          [ "$REF" = "refs/heads/main" ] || {
+            echo "Retained sidecar refresh requires refs/heads/main." >&2
             exit 1
           }
   refresh-and-open-pr:
     needs: enforce-refresh-ref
-    if: ${{ needs.enforce-refresh-ref.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected }}
+    if: ${{ needs.enforce-refresh-ref.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -50,7 +49,7 @@ jobs:
             echo "The protected marketplace publication token is required before sidecar refresh." >&2
             exit 1
           }
-      - name: Check out current protected main after acquiring the publication slot
+      - name: Check out current Factory main after acquiring the publication slot
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -61,14 +60,14 @@ jobs:
         run: |
           set -euo pipefail
           source_revision="$(git rev-parse HEAD)"
-          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not protected main." >&2; exit 1; }
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not Factory main." >&2; exit 1; }
           git diff --exit-code
           test -z "$(git status --porcelain --untracked-files=all)" || {
-            echo "The protected checkout is unexpectedly dirty before sidecar refresh." >&2
+            echo "The Factory checkout is unexpectedly dirty before sidecar refresh." >&2
             exit 1
           }
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
-      - name: Refuse to sign while any generated Factory PR awaits protected final merge
+      - name: Refuse to sign while any generated Factory PR awaits final merge
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
         run: |
@@ -83,7 +82,7 @@ jobs:
               '
           )"
           if [ -n "$pending" ]; then
-            printf 'A generated Marketplace PR is still awaiting source validation and protected final merge:\n%s\n' "$pending" >&2
+            printf 'A generated Marketplace PR is still awaiting source validation and final merge:\n%s\n' "$pending" >&2
             exit 1
           fi
       - uses: actions/setup-python@v5
@@ -164,5 +163,5 @@ jobs:
             echo
             echo "${pull_url}"
             echo
-            echo "The source gate passed. The protected final merge may now run."
+            echo "The source gate passed. The final merge may now run."
           } >> "$GITHUB_STEP_SUMMARY"

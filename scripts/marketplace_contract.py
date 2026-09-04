@@ -15,7 +15,6 @@ OFFICIAL_MARKETPLACE_PUBLIC_KEY_B64 = "KLOHLCxQiEgPiGLwX2RJh/DlkGT/4dLr0z8y9WQrI
 OFFICIAL_PLUGIN_IDS = (
     "com.xsec.asset-discovery",
     "com.xsec.attack-path",
-    "com.xsec.project-workspace",
     "com.xsec.system-terminal",
     "com.xsec.workspace.approvals",
     "com.xsec.workspace.browser",
