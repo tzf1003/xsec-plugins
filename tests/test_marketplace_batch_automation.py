@@ -67,6 +67,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "--native-sidecar-source-revision-for",
             "xsec-retained-native-beta",
             "does not reproduce its retained Beta; requiring current protected sidecars.",
+            ".inputs | fromjson | .[]",
             "$native_plugin@$target=$binary",
             "git status --porcelain --untracked-files=all",
             "':(exclude,glob)**/*.sig.jws.json'",

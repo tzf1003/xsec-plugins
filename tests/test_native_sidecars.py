@@ -127,7 +127,7 @@ class NativeSidecarFactoryTests(unittest.TestCase):
             self.assertEqual(retained["reusable"], "true")
             inputs = {
                 (PLUGIN_ID, item["rust_target"]): Path(item["path"])
-                for item in retained["inputs"]
+                for item in json.loads(retained["inputs"])
             }
             build_market.build_plugin(
                 source,

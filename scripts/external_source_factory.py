@@ -1467,7 +1467,7 @@ def reconcile_retained_native_beta(
     source_root: Path,
     registration: Registration,
     destination: Path,
-) -> dict[str, object]:
+) -> dict[str, str]:
     """Materialize retained sidecars only when current source reproduces Beta."""
 
     source_dir = resolve_source_directory(source_root, registration.source_path, "native Beta reconciliation source")
@@ -1505,10 +1505,14 @@ def reconcile_retained_native_beta(
         "reusable": "true",
         "beta_release_id": beta_release_id,
         "source_revision": normalized["source"]["revision"],
-        "inputs": [
-            {"rust_target": target.rust_target, "path": str(inputs[(registration.plugin_id, target.rust_target)])}
-            for target in retained_recipe.targets
-        ],
+        "inputs": json.dumps(
+            [
+                {"rust_target": target.rust_target, "path": str(inputs[(registration.plugin_id, target.rust_target)])}
+                for target in retained_recipe.targets
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
     }
 
 

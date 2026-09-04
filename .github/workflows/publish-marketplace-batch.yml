@@ -296,7 +296,7 @@ jobs:
                 binary="$(printf '%s' "$retained" | jq -er .path)"
                 [ -f "$binary" ] && [ ! -L "$binary" ] && [ -s "$binary" ] || { echo "Retained Beta sidecar is unavailable for $native_plugin@$rust_target." >&2; exit 1; }
                 native_inputs+=("--native-sidecar-input" "$native_plugin@$rust_target=$binary")
-              done < <(printf '%s' "$reconciliation" | jq -rc '.inputs[]')
+              done < <(printf '%s' "$reconciliation" | jq -rc '.inputs | fromjson | .[]')
               continue
             fi
             echo "${native_plugin} does not reproduce its retained Beta; requiring current protected sidecars."
