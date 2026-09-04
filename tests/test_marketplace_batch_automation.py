@@ -101,11 +101,16 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         self.assertEqual(workflow["permissions"], {"actions": "read", "contents": "read"})
         self.assertEqual(
             workflow["jobs"]["build-current-batch"]["permissions"],
-            {"contents": "write", "id-token": "write", "pull-requests": "write"},
+            {
+                "actions": "write",
+                "contents": "write",
+                "id-token": "write",
+                "pull-requests": "write",
+            },
         )
         self.assertEqual(
             publisher["jobs"]["build-native-sidecars"]["permissions"],
-            {"actions": "read", "contents": "read"},
+            {"actions": "write", "contents": "read"},
         )
 
     def test_stale_signed_batch_is_rebuilt_and_superseded_automatically(self) -> None:
