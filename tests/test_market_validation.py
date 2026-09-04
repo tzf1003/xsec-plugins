@@ -2182,14 +2182,13 @@ export function renderPlaceholder() {}
         self.assertIn("enforce-publish-ref:", workflow)
         self.assertIn('EVENT_NAME: ${{ github.event_name }}', workflow)
         self.assertIn('REF: ${{ github.ref }}', workflow)
-        self.assertIn('REF_PROTECTED: ${{ github.ref_protected }}', workflow)
+        self.assertNotIn("github.ref_protected", workflow)
         self.assertIn("workflow_dispatch)", workflow)
         self.assertIn('[ "$REF" = "refs/heads/main" ] || {', workflow)
         self.assertIn("Manual marketplace publishing is permitted only from refs/heads/main.", workflow)
-        self.assertIn('[ "$REF_PROTECTED" != "true" ]', workflow)
         classify_job = workflow.split("  classify-generated-main-change:\n", 1)[1].split("  sign-and-publish:\n", 1)[0]
         # GitHub skips a job whose dependency was skipped, regardless of the
-        # downstream condition.  A protected-main manual dispatch must give
+        # downstream condition.  A main manual dispatch must give
         # the classifier a successful, explicit non-generated result so the
         # external Beta/Stable request can reach the signing gate.  Pushes
         # remain the only event that classifies a main merge range.

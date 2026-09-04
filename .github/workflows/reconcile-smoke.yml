@@ -79,14 +79,14 @@ jobs:
           python scripts/external_source_factory.py --github-output "$GITHUB_OUTPUT" prepare-reconcile-smoke \
             --delivery-key "$DELIVERY_KEY" --marketplace-revision "$MARKETPLACE_REVISION" --channel "$CHANNEL" \
             --smoke-workflow-run-id "$SMOKE_RUN_ID" --smoke-workflow-run-attempt "$SMOKE_RUN_ATTEMPT"
-      - name: Accept only a smoke revision retained by protected Factory main
+      - name: Accept only a smoke revision retained by Factory main
         env:
           MARKETPLACE_REVISION: ${{ steps.request.outputs.marketplace_revision }}
         run: |
           set -euo pipefail
           git cat-file -e "${MARKETPLACE_REVISION}^{commit}"
           git merge-base --is-ancestor "$MARKETPLACE_REVISION" refs/remotes/origin/main || {
-            echo "Smoke callback does not name a protected, retained Factory revision." >&2
+            echo "Smoke callback does not name a retained Factory revision." >&2
             exit 1
           }
       - name: Promote only smoke-verified Beta pointers whose source main is current

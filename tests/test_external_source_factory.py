@@ -2339,15 +2339,15 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         smoke_workflow = (ROOT / ".github" / "workflows" / "reconcile-smoke.yml").read_text(encoding="utf-8")
         # xsec-cloud has Actions-dispatch-only authority. It calls exactly this
         # workflow with the full string contract, and only this entrypoint
-        # verifies the Dispatcher App actor and protected Factory main before
+        # verifies the Dispatcher App actor and Factory main before
         # it can route a smoke callback into the reusable workflow.
         self.assertIn("workflow_dispatch:", source_workflow)
         self.assertNotIn("repository_dispatch:", source_workflow)
         self.assertIn("XSEC_FACTORY_DISPATCHER_ACTOR", source_workflow)
         self.assertIn("ACTOR: ${{ github.actor }}", source_workflow)
         self.assertIn('[ "$ACTOR" = "$EXPECTED_ACTOR" ]', source_workflow)
-        self.assertIn('[ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ]', source_workflow)
-        self.assertIn("github.ref_protected", source_workflow)
+        self.assertIn('[ "$REF" = "refs/heads/main" ]', source_workflow)
+        self.assertNotIn("github.ref_protected", source_workflow)
         self.assertIn("uses: ./.github/workflows/reconcile-smoke.yml", source_workflow)
         for input_name in (
             "trigger_kind",
@@ -2381,7 +2381,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             "candidate Registry entry is ambiguous",
             "candidate lacks exact Beta provenance",
             "--verify-active-marketplace-signatures",
-            "KMS generation revision is not retained by protected Factory main",
+            "KMS generation revision is not retained by Factory main",
             "does not descend from its KMS generation revision",
             "does not authenticate one generated plugin",
             "candidate_beta_sha",

@@ -674,17 +674,18 @@ class MarketplaceFactoryTests(unittest.TestCase):
         self.assertIn("PUSH_BEFORE_SHA", validate_workflow)
         self.assertIn("git worktree add --detach", validate_workflow)
         self.assertIn("--baseline-root", validate_workflow)
-        self.assertIn("`production` with **required reviewers limited to release maintainers**", readme)
+        self.assertIn("GitHub Environment named `production`\n   with **required reviewers limited to release maintainers**", readme)
         self.assertIn("prevent self-review", readme)
-        self.assertIn("Do not treat protected-branch status as dispatcher\n   authorization", readme)
+        self.assertIn("Branch-protection rules remain an optional repository-administration", readme)
         for name, channel in (("publish-beta.yml", "beta"), ("promote-stable.yml", "stable")):
             source = (workflows / name).read_text(encoding="utf-8")
             with self.subTest(workflow=name):
                 job_name = "publish" if name == "publish-beta.yml" else "promote"
                 job = source.split(f"  {job_name}:\n", 1)[1].split("    steps:\n", 1)[0]
                 self.assertIn("environment: production", job)
-                self.assertIn("github.ref_protected", source)
-                self.assertIn('REF_PROTECTED" = "true"', source)
+                self.assertNotIn("github.ref_protected", source)
+                self.assertNotIn("REF_PROTECTED", source)
+                self.assertIn('[ "$REF" = "refs/heads/main" ]', source)
                 self.assertIn("FACTORY_GITHUB_APP_ID", source)
                 self.assertIn("FACTORY_GITHUB_APP_PRIVATE_KEY", source)
                 self.assertIn("actions/create-github-app-token@v2", source)

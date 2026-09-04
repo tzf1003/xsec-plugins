@@ -26,9 +26,8 @@ concurrency:
 jobs:
   verify-reviewed-publication:
     # A source-gated Factory PR deliberately remains pending after the
-    # publisher exits. Protected main is the final merge boundary; no
+    # publisher exits. Main is the final merge boundary; no
     # unmerged publication workflow is allowed to contact Desktop.
-    if: ${{ github.ref_protected }}
     runs-on: ubuntu-latest
     outputs:
       eligible: ${{ steps.classify.outputs.eligible }}
@@ -61,11 +60,10 @@ jobs:
           INPUT_MARKETPLACE_REVISION: ${{ inputs.marketplace_revision }}
           INPUT_PLUGIN_ID: ${{ inputs.plugin_id }}
           REF: ${{ github.ref }}
-          REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
-          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || {
-            echo "Desktop smoke dispatch requires protected refs/heads/main." >&2
+          [ "$REF" = "refs/heads/main" ] || {
+            echo "Desktop smoke dispatch requires refs/heads/main." >&2
             exit 1
           }
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
@@ -77,7 +75,7 @@ jobs:
             git fetch --no-tags origin "$AFTER" "refs/heads/main:refs/remotes/origin/main"
             git cat-file -e "$AFTER^{commit}"
             git merge-base --is-ancestor "$AFTER" origin/main || {
-              echo "Manual Desktop smoke recovery revision is not retained by protected Factory main." >&2
+              echo "Manual Desktop smoke recovery revision is not retained by Factory main." >&2
               exit 1
             }
             BEFORE="$(git rev-parse "$AFTER^")"
@@ -85,7 +83,7 @@ jobs:
             BEFORE="$PUSH_BEFORE"
             AFTER="$(git rev-parse HEAD)"
           else
-            echo "Desktop smoke dispatch accepts only protected-main pushes or manual recovery." >&2
+            echo "Desktop smoke dispatch accepts only main pushes or manual recovery." >&2
             exit 1
           fi
           [[ "$BEFORE" =~ ^[a-f0-9]{40}$ && "$AFTER" =~ ^[a-f0-9]{40}$ ]] || {
@@ -93,7 +91,7 @@ jobs:
             exit 1
           }
           [ "$AFTER" = "$(git rev-parse HEAD)" ] || {
-            echo "Checkout does not match the pushed protected-main revision." >&2
+            echo "Checkout does not match the pushed main revision." >&2
             exit 1
           }
           if [ -f .xsec-factory/layout-migration.json ]; then
@@ -170,7 +168,7 @@ jobs:
             exit 1
           }
           git merge-base --is-ancestor "$source_sha" "$AFTER" || {
-            echo "Merged Marketplace signature source revision is not retained by protected main." >&2
+            echo "Merged Marketplace signature source revision is not retained by Factory main." >&2
             exit 1
           }
           # A Registry-bound external Stable completion can skip only when its
@@ -347,7 +345,7 @@ jobs:
           REGISTERED_RECOVERY: ${{ steps.classify.outputs.registered_recovery }}
         run: |
           set -euo pipefail
-          # A protected-main commit can be associated with more than one page
+          # A Factory-main commit can be associated with more than one page
           # of PRs.  `gh api --paginate` emits one JSON array per page, so
           # slurp the complete response before selecting the generated Factory
           # PR. Inspecting only the first page could reject

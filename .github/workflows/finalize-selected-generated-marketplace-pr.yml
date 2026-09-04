@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
-          [[ "$main_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Protected Factory main revision is invalid." >&2; exit 1; }
+          [[ "$main_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Factory main revision is invalid." >&2; exit 1; }
           prs="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100")"
           matches="$(printf '%s' "$prs" | jq -cer --arg repository "$GITHUB_REPOSITORY" --arg main_sha "$main_sha" '
             [.[][] | select(

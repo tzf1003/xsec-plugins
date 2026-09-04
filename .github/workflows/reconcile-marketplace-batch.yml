@@ -42,17 +42,16 @@ jobs:
       delivery_key: ${{ steps.request.outputs.delivery_key }}
       trigger_label: source-event:${{ steps.request.outputs.plugin_id }}
     steps:
-      - name: Require the dedicated Cloud dispatcher App and protected Factory main
+      - name: Require the dedicated Cloud dispatcher App and Factory main
         env:
           ACTOR: ${{ github.actor }}
           EXPECTED_ACTOR: ${{ vars.XSEC_FACTORY_DISPATCHER_ACTOR }}
           REF: ${{ github.ref }}
-          REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
           [ -n "$EXPECTED_ACTOR" ] || { echo "Configure XSEC_FACTORY_DISPATCHER_ACTOR." >&2; exit 1; }
           [ "$ACTOR" = "$EXPECTED_ACTOR" ] || { echo "Only the Cloud dispatcher App may reconcile Marketplace sources." >&2; exit 1; }
-          [ "$REF" = "refs/heads/main" ] && [ "$REF_PROTECTED" = "true" ] || { echo "Source batching requires protected Factory main." >&2; exit 1; }
+          [ "$REF" = "refs/heads/main" ] || { echo "Source batching requires Factory main." >&2; exit 1; }
       - uses: actions/checkout@v4
         with:
           ref: refs/heads/main

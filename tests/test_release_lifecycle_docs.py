@@ -110,7 +110,6 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         merge_guard = MERGE_GUARD_WORKFLOW.read_text(encoding="utf-8")
         publisher = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
         for rule in (
-            "github.ref_protected",
             "verify_merged_stable_promotion.py",
             "--verify-active-marketplace-signatures",
             "successful immutable Factory source gate",
@@ -120,6 +119,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, dispatcher)
+        self.assertNotIn("github.ref_protected", dispatcher)
         self.assertNotIn("head_commit.message", dispatcher)
         self.assertNotIn("coderabbit", dispatcher.lower())
         self.assertNotIn("reviewThreads", dispatcher)
@@ -130,7 +130,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             2,
         )
         self.assertIn("Registered ${repository} ${ref} advanced", merge_guard)
-        self.assertIn("Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge", publisher)
+        self.assertIn("Refuse to sign while this plugin has a generated Factory PR awaiting final merge", publisher)
         self.assertNotIn("github.event.head_commit.message", publisher)
 
     def test_final_merge_gate_is_trusted_revalidating_and_does_not_deadlock_normal_prs(self) -> None:
@@ -181,12 +181,8 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("The arm workflow owns factory-final-merge-gate", final_merge)
         self.assertIn("the Factory gate remains pending", final_merge)
         self.assertIn("Merge the exact revalidated head with the isolated Finalizer App", final_merge)
-        self.assertIn("can_admins_bypass == false", final_merge)
-        self.assertIn("deployment_branch_policy.protected_branches == true", final_merge)
-        self.assertIn("deployment_branch_policy.custom_branch_policies == false", final_merge)
-        self.assertIn('any(.protection_rules[]?; .type == "branch_policy")', final_merge)
-        self.assertIn('select(.type == "required_reviewers")', final_merge)
-        self.assertIn("length == 0", final_merge)
+        self.assertNotIn("deployment_branch_policy.protected_branches", final_merge)
+        self.assertNotIn('any(.protection_rules[]?; .type == "branch_policy")', final_merge)
         self.assertIn("Require source-gated automatic finalization", final_merge)
         self.assertIn("require_current_review_state() {\n            :", final_merge)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
@@ -245,7 +241,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         # an authenticated public head early, but private access is deferred
         # to the production-gated final workflow above.
         self.assertNotIn("XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY", untrusted_pr_gate)
-        self.assertIn("defer private-source proof to the protected final gate", untrusted_pr_gate)
+        self.assertIn("defer private-source proof to the final gate", untrusted_pr_gate)
         self.assertIn(')" || actual_sha=""', untrusted_pr_gate)
 
     def test_pending_generated_pr_scan_is_paginated_before_every_kms_call(self) -> None:
@@ -269,7 +265,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
                     self.assertIn('--paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${number}/files?per_page=100"', workflow)
                     self.assertIn('Cannot completely inspect generated Factory PR', workflow)
                     self.assertIn('.xsec-factory/official-status/', workflow)
-                    guard_start = workflow.index("Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge")
+                    guard_start = workflow.index("Refuse to sign while this plugin has a generated Factory PR awaiting final merge")
                     guard_end = workflow.index("\n      - uses:", guard_start)
                     guard = workflow[guard_start:guard_end]
                     self.assertIn('/.xsec-market/releases.json', guard)
@@ -285,7 +281,6 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         for required_rule in (
             "workflow_dispatch:",
             "refs/heads/main",
-            "REF_PROTECTED",
             "environment: production",
             "XSEC_MARKETPLACE_PUBLISH_TOKEN",
             "id-token: write",
@@ -296,10 +291,11 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "--verify-retained-release-signature --retained-release-plugin-id",
             "external_source_factory.py validate",
             "git ls-files --others --exclude-standard",
-            "The source gate passed. The protected final merge may now run.",
+            "The source gate passed. The final merge may now run.",
         ):
             with self.subTest(required_rule=required_rule):
                 self.assertIn(required_rule, workflow)
+        self.assertNotIn("github.ref_protected", workflow)
         self.assertNotIn('pulls/${pull_number}/merge', workflow)
         self.assertNotIn("XSEC_DESKTOP_REPOSITORY_DISPATCH_TOKEN", workflow)
         self.assertNotIn("@coderabbitai review", workflow)

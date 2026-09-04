@@ -74,12 +74,11 @@ jobs:
       maintenance: ${{ steps.request.outputs.maintenance }}
       channel: ${{ steps.request.outputs.channel }}
     steps:
-      - name: Require protected main and a complete publication request
+      - name: Require main and a complete publication request
         id: request
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          REF_PROTECTED: ${{ github.ref_protected }}
           MAINTENANCE: ${{ inputs.maintenance }}
           CHANNEL: ${{ inputs.channel }}
           PLUGIN_ID: ${{ inputs.plugin_id }}
@@ -121,10 +120,6 @@ jobs:
               exit 1
               ;;
           esac
-          if [ "$REF_PROTECTED" != "true" ]; then
-            echo "Marketplace publication requires a protected main branch or ruleset." >&2
-            exit 1
-          fi
           case "$channel" in
             beta|stable) ;;
             *) echo "channel must be beta or stable." >&2; exit 1 ;;
@@ -168,7 +163,7 @@ jobs:
                 exit 1
               }
           elif [ -n "$PLUGIN_ID" ]; then
-            [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit protected-main dispatch." >&2; exit 1; }
+            [ "$EVENT_NAME" = "workflow_dispatch" ] || { echo "External source publication requires an explicit main dispatch." >&2; exit 1; }
             [ -n "$SOURCE_SHA" ] || { echo "External source publication requires source_sha." >&2; exit 1; }
             if [ "$channel" = "beta" ] && { [ -n "$RELEASE_ID" ] || [ -n "$EXPECTED_BETA_SHA" ]; }; then
               echo "release_id and expected_beta_sha are only valid for an external Stable promotion." >&2
@@ -197,10 +192,10 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
   classify-generated-main-change:
     needs: enforce-publish-ref
-    # A protected main push maintains the Desktop default set. Explicit
-    # protected-main dispatches retain the normal release/recovery contract.
+    # A main push maintains the Desktop default set. Explicit main dispatches
+    # retain the normal release/recovery contract.
     # Already signed Factory merges are classified before either path signs.
-    if: ${{ needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' && github.ref_protected }}
+    if: ${{ needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       generated: ${{ steps.classify.outputs.generated }}
@@ -223,7 +218,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            # Manual publication already requires an explicit protected-main
+            # Manual publication already requires an explicit main
             # request in enforce-publish-ref.  It is not a main-push merge
             # and therefore cannot be a Factory-generated change to suppress.
             echo "generated=false" >> "$GITHUB_OUTPUT"
@@ -234,7 +229,7 @@ jobs:
             exit 1
           }
           [[ "$BEFORE" =~ ^[a-f0-9]{40}$ && "$AFTER" =~ ^[a-f0-9]{40}$ ]] || {
-            echo "Protected main push has invalid Git revision metadata." >&2
+            echo "Factory main push has invalid Git revision metadata." >&2
             exit 1
           }
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
@@ -250,7 +245,7 @@ jobs:
   build-native-sidecars:
     needs: [enforce-publish-ref, classify-generated-main-change]
     if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && needs.classify-generated-main-change.outputs.generated != 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.maintenance != 'align_desktop_defaults' && (inputs.plugin_id == '' || inputs.channel == 'beta') }}
+      ${{ needs.enforce-publish-ref.result == 'success' && needs.classify-generated-main-change.outputs.generated != 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.maintenance != 'align_desktop_defaults' && (inputs.plugin_id == '' || inputs.channel == 'beta') }}
     runs-on: ${{ matrix.runner }}
     environment: production
     timeout-minutes: 45
@@ -361,7 +356,7 @@ jobs:
   sign-and-publish:
     needs: [enforce-publish-ref, classify-generated-main-change, build-native-sidecars]
     if: >-
-      ${{ always() && needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' && github.ref_protected && needs.classify-generated-main-change.outputs.generated != 'true' && (needs.build-native-sidecars.result == 'success' || needs.build-native-sidecars.result == 'skipped') }}
+      ${{ always() && needs.enforce-publish-ref.result == 'success' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' && needs.classify-generated-main-change.outputs.generated != 'true' && (needs.build-native-sidecars.result == 'success' || needs.build-native-sidecars.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -376,7 +371,7 @@ jobs:
       # Workflow-level concurrency is acquired before this job begins. Resolve
       # main only after acquiring that slot: a queued run's event SHA may have
       # become stale while an earlier publication merged its signed index.
-      - name: Check out current protected main after acquiring the publication slot
+      - name: Check out current Factory main after acquiring the publication slot
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -389,9 +384,9 @@ jobs:
         id: current-main
         run: |
           source_revision="$(git rev-parse HEAD)"
-          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not protected main." >&2; exit 1; }
+          [ "$source_revision" = "$(git rev-parse origin/main)" ] || { echo "Current checkout is not Factory main." >&2; exit 1; }
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
-      - name: Refuse to sign while this plugin has a generated Factory PR awaiting protected final merge
+      - name: Refuse to sign while this plugin has a generated Factory PR awaiting final merge
         env:
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
           CHANNEL: ${{ needs.enforce-publish-ref.outputs.channel }}
@@ -487,7 +482,7 @@ jobs:
             fi
           done < <(printf '%s' "$candidates" | jq -rc '.[]')
           if [ "${#pending[@]}" -gt 0 ]; then
-            printf 'The requested Marketplace transition is still awaiting source validation and protected final merge:\n%s\n' "${pending[*]}" >&2
+            printf 'The requested Marketplace transition is still awaiting source validation and final merge:\n%s\n' "${pending[*]}" >&2
             exit 1
           fi
       - uses: actions/setup-python@v5
@@ -496,7 +491,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Resolve the publication mode from protected Factory main
+      - name: Resolve the publication mode from Factory main
         id: request
         env:
           INPUT_CHANNEL: ${{ needs.enforce-publish-ref.outputs.channel }}
@@ -930,11 +925,11 @@ jobs:
       - name: Request KMS sidecars through the production Cloud broker
         if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
         env:
-          # The Cloud broker allowlists this protected publish.yml workflow
+          # The Cloud broker allowlists this controlled publish.yml workflow
           # for immutable Marketplace documents only. Mutable official status
           # is deliberately excluded: reconcile-source authenticates the
           # exact generated candidate and is the sole status KMS caller.
-          # Every sidecar still binds the protected Factory main SHA, never
+          # Every sidecar still binds the Factory main SHA, never
           # an external source SHA.
           XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
         run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status
@@ -982,7 +977,7 @@ jobs:
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
           if [ "$MAINTENANCE" = "true" ]; then
-            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It removes the project workspace package from Marketplace discovery, retains its immutable Factory history, and refreshes the complete active KMS sidecar batch. The protected finalizer revalidates the exact default-set delta and never treats it as a plugin release."
+            body="Generated by the controlled workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It removes the project workspace package from Marketplace discovery, retains its immutable Factory history, and refreshes the complete active KMS sidecar batch. The finalizer revalidates the exact default-set delta and never treats it as a plugin release."
           elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ]; then
             body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It proved external main deterministically rebuilds the selected Beta release and changes only channels.stable.releaseId plus Factory provenance. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory run the source gate. This workflow never merges the PR."
           elif [ "$EXTERNAL" = "true" ]; then

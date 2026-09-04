@@ -25,15 +25,14 @@ GitHub Release 的不可变 asset，release index 绑定其 SHA-256 和 URL。
 schema、GitHub App secret 名称和恢复方式见
 [模板 README](../factory-template/README.md)。
 
-Factory 的 `main` 必须由 GitHub branch protection/ruleset 保护；模板工作流会
-检查 `github.ref_protected`。还必须创建名为 `production` 的 GitHub Environment，
-并将 required reviewers 限定为发布维护者（可用时启用禁止发起人自行审批）。保护分支
-只能证明 Factory revision 的权威性，不能证明点击 `workflow_dispatch` 的人有发版
-权限；两个会写入 metadata / Release asset 的 job 都会先在该 Environment 等待审批。
-若团队允许其生成 metadata，则只给 GitHub Actions bot 一个最小化的 bypass，或将
-最终 metadata 提交改为受审 PR；不能以去掉分支保护或 Environment 审批作为发布故障
-的修复方式。每个 Beta release 都带有不可变来源证据，Stable 还记录对应 `main`
-证据，Factory validator 会验证这些证据仍对应 release record。已发布条目改为
+Factory 发布仅接受 `main`，且必须创建名为 `production` 的 GitHub Environment，
+并将 required reviewers 限定为发布维护者（可用时启用禁止发起人自行审批）。两个会
+写入 metadata / Release asset 的 job 都会先在该 Environment 等待审批；精确
+`main` revision、来源 SHA、不可变 artifact 和 release record 共同定义发布边界。
+GitHub branch protection/ruleset 可以作为仓库管理层的额外硬化，但工作流不读取
+`github.ref_protected`，也不将其作为发版前置条件。每个 Beta release 都带有不可变
+来源证据，Stable 还记录对应 `main` 证据，Factory validator 会验证这些证据仍对应
+release record。已发布条目改为
 `disabled` 时，仅从市场索引移除，必须保留完整快照、release history 和证据；从未
 发布的 allowlist 条目可直接移除。
 

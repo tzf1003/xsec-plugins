@@ -147,7 +147,7 @@ jobs:
           # source subproject. Treat only that narrow removal as ordinary
           # maintenance: the source gate still validates the exact change,
           # while release, provenance and active-subproject changes remain
-          # protected Finalizer candidates.
+          # Finalizer candidates.
           disabled_subproject_retirement=false
           if [ "$factory_content" = "true" ] || [ "$gitlink_changed" = "true" ]; then
             if registry_blob_sha="$(printf '%s' "$base_tree" | jq -er '
@@ -211,7 +211,7 @@ jobs:
             || { [ "$factory_content" = "true" ] && [ "$disabled_subproject_retirement" != "true" ]; } \
             || { [ "$gitlink_changed" = "true" ] && [ "$disabled_subproject_retirement" != "true" ]; }; then
             # A pending layout marker is privileged Factory content. Its exact
-            # transition must remain pending for protected revalidation.
+            # transition must remain pending for final revalidation.
             echo "factory_generated=true" >> "$GITHUB_OUTPUT"
           else
             # An external fork or any non-Factory same-base branch cannot
@@ -229,7 +229,7 @@ jobs:
           set -euo pipefail
           if [ "$FACTORY_GENERATED" = "true" ]; then
             state=pending
-            description='Awaiting protected final source/Codex revalidation and exact-head merge.'
+            description='Awaiting final source/Codex revalidation and exact-head merge.'
           else
             state=success
             description='Not a Factory-generated Marketplace publication PR.'

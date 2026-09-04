@@ -55,7 +55,7 @@ release, artifact, channel update, or cloud upload.
 `xsec-plugins` is also the **official signed Marketplace Factory** for an
 approved external plugin repository. It is not the external plugin's active
 development repository. The external repository owns its code and uses its
-protected `beta` branch for a candidate and protected `main` branch for the
+`beta` branch for a candidate and `main` branch for the
 same candidate promoted to Stable. This Factory retains only a validated,
 publishable snapshot in `.xsec-factory/snapshots/<plugin-id>/`, its immutable artifacts and
 release history, and source provenance in
@@ -145,29 +145,29 @@ source repository. This protects the short-lived reader token from Git
 transport redirection; it does not make external source code trusted or
 executable.
 
-Configure the read-only source App only in the protected production
+Configure the read-only source App only in the approved production
 environment as `XSEC_MARKETPLACE_SOURCE_APP_ID` and
 `XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY`. It needs source repository metadata
 and contents read access only. It is distinct from the Factory publisher token
 and from the non-exportable KMS key. The Cloud broker allowlists the existing
-protected `publish.yml` on `xsec-plugins/main`; therefore the KMS
-`source_revision` remains the checked-out protected Factory `main` SHA, while
+controlled `publish.yml` on `xsec-plugins/main`; therefore the KMS
+`source_revision` remains the checked-out Factory `main` SHA, while
 the external SHA lives only in immutable Factory provenance. The later Desktop
 smoke dispatch likewise identifies the Factory revision, not an untrusted
 external source revision.
 
-For the ten active first-party plugins, a protected source merge sends a Cloud
+For the ten active first-party plugins, a source merge sends a Cloud
 webhook to `reconcile-marketplace-batch.yml`. It serializes bursts into one
 current source snapshot, stages all ten registered `beta` and `main` heads,
 rebuilds the immutable metadata once, KMS-signs the complete candidate and
 opens one `xsec-marketplace/batch-*` PR. A successful `Validate marketplace`
 run automatically invokes the exact-head Finalizer: it re-reads the live PR,
 Registry, source refs and KMS proofs, then merges only that verified head.
-The protected-main dispatcher sends the Desktop Beta smoke; its success enters
-the existing protected Stable path automatically. No maintainer needs to
+The main dispatcher sends the Desktop Beta smoke; its success enters
+the existing Stable path automatically. No maintainer needs to
 create, approve or manually merge a per-plugin Factory PR in this normal path.
 
-If protected Factory `main` advances while a signed batch is under review, the
+If Factory `main` advances while a signed batch is under review, the
 trusted recovery workflow rechecks that exact candidate's source gates,
 CodeRabbit status, resolved review threads, transition shape, and KMS proofs.
 It then rebuilds from the current source heads and closes the original PR only
@@ -180,7 +180,7 @@ artifact, appends a new record only when the current deterministic package is
 new, and moves **only** the `beta` pointer. The broker calculates each document
 digest itself.
 
-`Promote immutable marketplace release to stable` remains a protected manual
+`Promote immutable marketplace release to stable` remains a controlled manual
 recovery/rollback workflow for retained legacy releases. Give it a plugin ID
 and an existing `releaseId`; it changes only `channels.stable.releaseId`, never
 rebuilds an archive or changes an artifact SHA-256. Normal first-party
@@ -192,10 +192,10 @@ smoke path, so its source-main proof cannot be bypassed.
 `Refresh retained immutable Marketplace sidecar` is the only recovery path for
 a release sidecar whose KMS envelope no longer matches the *unchanged* retained
 `releases.json` bytes. It is a manual `workflow_dispatch` that accepts one
-current Marketplace plugin ID and is permitted only on protected `main`, in
-the protected-branch-only `production` environment, with the Factory publisher token
-and GitHub Actions OIDC. It shares the normal publication queue, re-reads
-current protected `main`, validates the immutable release records, artifacts
+current Marketplace plugin ID and is permitted only on `main`, in the
+`production` environment, with the Factory publisher token and GitHub Actions
+OIDC. It shares the normal publication queue, re-reads current Factory `main`,
+validates the immutable release records, artifacts
 and deterministic source build before signing, and asks the Cloud broker to
 sign only `.xsec-factory/snapshots/<plugin-id>/.xsec-market/releases.json`.
 
@@ -208,13 +208,13 @@ opens a sidecar-only PR, waits for `validate.yml`, and intentionally **never mer
 the PR itself.
 
 Before enabling it, the Cloud signing broker's OIDC policy must allow the
-exact protected `refresh-retained-sidecars.yml` workflow ref in
+exact `refresh-retained-sidecars.yml` workflow ref in
 `tzf1003/xsec-plugins`; absent that production policy change, the broker must
 reject the request. This fail-closed prerequisite is separate from repository
 source code and no KMS secret is stored here.
 
 `dispatch-reviewed-marketplace-smoke.yml` is the only Desktop hand-off. It
-runs after a protected `main` merge, derives `beta` or `stable` from the exact
+runs after a `main` merge, derives `beta` or `stable` from the exact
 release-index delta (not a PR title or merge subject), cryptographically
 verifies every post-merge KMS sidecar, and checks the merged generated PR's
 successful source gate.
@@ -224,8 +224,8 @@ token scoped to that candidate's exact source repositories; a branch that
 advanced before merge is rejected and must be regenerated. The companion
 `verify-generated-marketplace-publication.yml` check proves a publicly readable
 candidate source head before merge; it deliberately defers a private source
-instead of exposing the protected Source App to untrusted PR code. The final
-protected gate proves every source head with its separately scoped Source App
+instead of exposing the production Source App to untrusted PR code. The final
+gate proves every source head with its separately scoped Source App
 token, so a generated Factory PR is not merged by
 a normal PR button: the trusted-base
 `arm-generated-marketplace-final-merge.yml` workflow posts the required
@@ -243,7 +243,7 @@ for `xsec.plugin-marketplace.official-status` and that exact status subject
 namespace before enabling this Factory change; until then the broker rejects
 the request fail-closed.
 
-A protected maintainer runs `final-merge-generated-marketplace-pr.yml` with the
+A maintainer runs `final-merge-generated-marketplace-pr.yml` with the
 source-gated PR number.
 It re-reads the live PR head and base, revalidates the exact release diff,
 every KMS sidecar and every registered external ref. The arm workflow, not the
@@ -255,17 +255,18 @@ read-only Source App and never expose the Finalizer token outside this
 repository. If the head, base, source ref, Finalizer setup, or
 merge operation changes/fails, the candidate remains pending; it never releases
 a stale candidate or pretends a failed merge succeeded. This is the merge-time rejection boundary on personal
-repositories too; it does not rely on merge queue availability. The protected
-post-merge dispatcher is a fail-closed second boundary and never auto-rolls
+repositories too; it does not rely on merge queue availability. The post-merge
+dispatcher is a fail-closed second boundary and never auto-rolls
 back a pointer. The one deliberate no-pointer exception is a registered
 external Stable completion where Stable already selects the current Beta: its
 strictly shaped signed provenance/status update is revalidated against the
 current external `main` ref and may merge, but it never dispatches a second
 Desktop smoke.
 
-Run `enforce-factory-main-protection.yml` once from protected `main` after
-installing this code and whenever protection is audited. Its protected-branch-only
-`production` job needs the repository-scoped administration secret
+`enforce-factory-main-protection.yml` is an optional repository-administration
+workflow for teams that choose to configure branch protection. It does not
+participate in publication or final merge authorization. Its `production` job
+needs the repository-scoped administration secret
 `XSEC_MARKETPLACE_ADMIN_TOKEN` and `XSEC_MARKETPLACE_FINALIZER_APP_ID`; it sets strict, GitHub-Actions-app-pinned
 `source-gate` in classic protection, enforces that check for administrators,
 preserves unrelated checks and branch restrictions, and removes pull-request
@@ -279,14 +280,10 @@ no Publisher credential. It creates a short-lived, repository-scoped
 `XSEC_MARKETPLACE_FINALIZER_APP_PRIVATE_KEY` token only after revalidation and
 only for the exact-head merge API request. The Finalizer App is distinct from
 the Publisher, has only `contents: write`, and is
-the sole protected-main Ruleset bypass identity for this operation. Missing
-production policy, Finalizer configuration, or a rejected merge leaves the
-generated PR pending; repair and re-run the gate—never loosen protection or
-merge it manually.
-Before either the protection or final-merge workflow can proceed, `production`
-must accept protected branches only, have no required reviewers, and disallow
-administrator bypass; both workflows query this server-side and fail closed if
-that policy differs.
+the sole Ruleset bypass identity for this operation. Missing Finalizer
+configuration or a rejected merge leaves the generated PR pending; repair and
+re-run the gate. The production Environment remains required for the release
+and final-merge workflows, but branch-protection status is not a prerequisite.
 The protection workflow normalizes GET-only user/team/app response objects to
 the REST PUT request shape before updating, so existing branch restrictions are
 preserved rather than causing a failed protection update.
@@ -308,19 +305,19 @@ They identify that transition from its Factory status, provenance, release, and
 snapshot paths; an incomplete GitHub file listing fails closed. This permits
 unrelated plugins to be reviewed in parallel while preserving one active
 transition per plugin. Every final merge still revalidates its exact head,
-protected-main base, source refs, immutable artifacts, and KMS proofs; a
+Factory-main base, source refs, immutable artifacts, and KMS proofs; a
 candidate made stale by a prior merge must be refreshed and reviewed again.
 
 If a registered source `main` event arrives after its same-plugin Beta PR was
-generated, the protected Cloud Dispatcher re-reads the exact Registry source,
+generated, the Cloud Dispatcher re-reads the exact Registry source,
 current Beta head/release/provenance, candidate branch identity and KMS-bound
 status tuple. Only when the candidate's `mainGateSha` is older does it add an
 auditable delivery comment, close that candidate, and request a replacement.
-The replacement is still a new source-gated PR requiring a protected final
+The replacement is still a new source-gated PR requiring a final
 merge; a matching current candidate is retained as an
 idempotent no-op and unrelated plugin candidates are never closed.
 
-When a run waited in that queue, it checks out the protected `main` tip after
+When a run waited in that queue, it checks out the `main` tip after
 obtaining the slot; it does not rebuild the historical GitHub event SHA that
 originally queued it. The resulting `source_sha` therefore identifies the
 actual source that built and KMS-signed the documents, and may include more
@@ -373,6 +370,6 @@ confirmation-driven Beta/Stable releases from exact Git commits. It never
 inherits the official signing key, trusted-source status, or default-install
 privileges, and it is not an alternative way to approve an official source
 repository. Its write-capable release jobs require a reviewer-gated
-`production` GitHub Environment in addition to protected `main`; a protected
-ref alone does not authorize a workflow dispatcher. See [the Factory template
+`production` GitHub Environment and run only from `main`; a branch-protection
+flag alone does not authorize a workflow dispatcher. See [the Factory template
 contract](docs/marketplace-factory-template.md).

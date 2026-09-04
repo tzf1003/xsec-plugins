@@ -40,7 +40,7 @@ Agent Plugins v1 的 portable artifact、schema v2、嵌入式 Fabric 和平台 
 因此 Registry PR 不能通过把任意包标记为 `first-party` 来取得 `com.xsec.*`、默认安装或
 现有终端/浏览器/项目写入权限。
 
-Every protected `main` push invokes `publish.yml` in `align_desktop_defaults` mode. It creates one
+Every `main` push invokes `publish.yml` in `align_desktop_defaults` mode. It creates one
 KMS-signed `xsec-marketplace/default-set-*` candidate that changes
 `com.xsec.project-workspace` to `status: "disabled"`, updates Marketplace discovery, and refreshes
 the full active-document sidecar batch. Its adoption proof, snapshot, release history and historical
@@ -87,8 +87,8 @@ stage-first-party-adoption.yml
 adopt-first-party.yml
 ```
 
-第二阶段会从 assertion 内保留的 `legacy.factoryRevision` materialize 受保护 Factory baseline，
-要求该 revision 仍是当前 protected main 的祖先，并重新生成完全相同的 assertion bytes；所以 staging
+第二阶段会从 assertion 内保留的 `legacy.factoryRevision` materialize Factory baseline，
+要求该 revision 仍是当前 Factory main 的祖先，并重新生成完全相同的 assertion bytes；所以 staging
 PR 因随后 main 更新而 rebase/squash merge 时仍绑定其原始 baseline，不能改为 merge parent。
 第二阶段随后请求 KMS sidecar；不能在本地或普通 PR 中伪造该证明。两个 PR 都必须经 source
 gate 和 Finalizer。未来 Beta 发布可追加 history，
@@ -181,7 +181,7 @@ Cloud 只能用专用 GitHub App 调用 GitHub Actions 的 `workflow_dispatch` A
 `reconcile-source.yml` 的窄状态完成路径。批处理 workflow 要求 repository variable
 `XSEC_FACTORY_DISPATCHER_ACTOR` 精确等于该 App bot login。
 Factory 不监听公开 `repository_dispatch`，因此 Cloud 以外的事件不能绕过该 App 边界。
-这里校验的是 GitHub 注入的 `github.actor`、`github.ref` 与 `github.ref_protected`，不是任何
+这里校验的是 GitHub 注入的 `github.actor` 与 `github.ref`，不是任何
 workflow input；即使有人手工从 `main` 点击 dispatch，也会因 actor 不是 Dispatcher App 而在
 checkout 前被拒绝。
 
@@ -191,7 +191,7 @@ source event payload：
 {"delivery_key":"...","plugin_id":"...","source_repository":"owner/repository","source_ref":"refs/heads/beta|refs/heads/main","source_sha":"40-hex"}
 ```
 
-Factory 再读 protected Registry、固定 HTTPS 查询事件分支头并拒绝过期 SHA。取得全局 publication
+Factory 再读当前 Registry、固定 HTTPS 查询事件分支头并拒绝过期 SHA。取得全局 publication
 slot 后，批处理再次读取全部 10 个活跃来源的 `beta` 与 `main` exact head，静态 materialize 全部
 Beta source、一次性重建 release/status/provenance，并对完整候选请求 KMS sidecar。晚到或排队的
 单个事件不会覆盖较新的 Beta：它只会促使当前全局 source snapshot 被重新计算。
@@ -237,7 +237,7 @@ Factory gate 的身份。缺少任一配置、取消、runner 异常或 merge �
 retained sidecar repair 同样走此门禁：diff 必须严格只修改一个现有
 `.xsec-factory/snapshots/<plugin-id>/.xsec-market/releases.json.sig.jws.json`，并在 exact head 上重新进行
 KMS/JWS 验签与 source gate；它不改变 release history 或 channel pointer。
-默认集合维护由 protected `main` 上的 `publish.yml` 执行 `align_desktop_defaults` 操作。
+默认集合维护由 `main` 上的 `publish.yml` 执行 `align_desktop_defaults` 操作。
 该操作把项目工作区从 Marketplace discovery 中移出，将对应第一方 Registry 记录置为
 `disabled`，保留 snapshot、release history 与既有 artifact，并为新的 Marketplace index 和全部
 活动文档生成同一批 KMS sidecar。生成的 `xsec-marketplace/default-set-*` PR 只能包含这两个数据
@@ -251,10 +251,10 @@ release/source SHA 未变、注册 `main` 出现一个新的精确头时才允�
 `waiting_for_beta` 或 `waiting_for_smoke`。只有后者才会请求新的 Desktop smoke；前者会使已经排队的旧
 smoke callback 失效。它必须重签 Marketplace/release/provenance sidecar，并同时携带该次比较的精确
 `mainGateSha`；release history、Beta/Stable 指针和 Beta evidence 均不得改变。finalizer 在
-protected merge 前用只读 Source App 同时复验记录的 `beta` 与 `main` 分支头，任一推进便拒绝该
+final merge 前用只读 Source App 同时复验记录的 `beta` 与 `main` 分支头，任一推进便拒绝该
 候选，因而旧的可重建决定绝不会触发 Desktop smoke。
 
-`enforce-factory-main-protection.yml` 是唯一的保护配置自动化，须在 protected `main` 的
+`enforce-factory-main-protection.yml` 是可选的保护配置自动化，可在 `main` 的
 production 环境中手工运行，且需要仓库管理权限的
 `XSEC_MARKETPLACE_ADMIN_TOKEN`。它将 `source-gate` 和
 `factory-final-merge-gate` 分别置于两个边界：它先创建并严格验证只覆盖 `main` 的
@@ -265,7 +265,7 @@ checks/branch restrictions 并移除 PR approval 与 conversation resolution 要
 不用 Publisher token；它仅在全部 revalidation 后短暂创建独立、仓库范围受限的 Finalizer App
 token，并且只用它合入精确 PR。该 App 只有 `contents: write`，是唯一
 允许绕过持续 pending Factory gate 的 Ruleset 身份。缺失 production 环境策略或 Finalizer 配置时的安全回退是
-PR 保持 pending 并修复/re-run gate，绝不临时降低保护或手工绕过。合并后的 protected-main dispatcher 再次验证相同 head、KMS
+PR 保持 pending 并修复/re-run gate，不会手工绕过精确 head 复核。合并后的 main dispatcher 再次验证相同 head、KMS
 sidecar 与 source gate。对于带已注册外部来源的
 Stable completion，dispatcher 还会在当前受 KMS 认证的 status 中核对 `published`、相同的 Stable source/release、Desktop
 smoke URL 与 Factory revision；只有这份精确 Beta callback 证据存在时才不重复发送 Desktop 矩阵。旧内置插件的人工 Stable
@@ -279,7 +279,7 @@ smoke callback payload：
 {"trigger_kind":"smoke_callback","delivery_key":"...","plugin_id":"","source_repository":"","source_ref":"","source_sha":"","marketplace_revision":"40-hex","channel":"beta|stable","smoke_workflow_run_id":"positive decimal","smoke_workflow_run_attempt":"positive decimal"}
 ```
 
-Factory 要求 smoke revision 是当前 protected main 的祖先。仅 `beta` smoke 会读取该精确
+Factory 要求 smoke revision 是当前 Factory main 的祖先。仅 `beta` smoke 会读取该精确
 revision 的 Beta pointer；只有 smoke revision 和当前 Factory status 都仍为同一个
 `waiting_for_smoke` Beta releaseId/source SHA，才读取每个注册来源的当前 `main` SHA 并调度
 `publish.yml` Stable。若较新的 main reconcile 已将相同 Beta 改为 `waiting_for_beta`，旧的保留

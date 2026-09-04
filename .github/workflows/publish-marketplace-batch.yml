@@ -166,13 +166,13 @@ jobs:
         with:
           ref: refs/heads/main
           fetch-depth: 0
-      - name: Record the current protected Factory revision after acquiring the publication slot
+      - name: Record the current Factory revision after acquiring the publication slot
         id: current-main
         run: |
           set -euo pipefail
           source_revision="$(git rev-parse HEAD)"
           [ "$source_revision" = "$(git rev-parse origin/main)" ] || {
-            echo "Current checkout is not protected main." >&2
+            echo "Current checkout is not Factory main." >&2
             exit 1
           }
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
@@ -185,7 +185,7 @@ jobs:
           pattern: xsec-native-sidecars-*
           path: ${{ runner.temp }}/xsec-native-sidecars
           merge-multiple: false
-      - name: Read the complete active Registry batch from protected main
+      - name: Read the complete active Registry batch from Factory main
         id: registry
         run: |
           set -euo pipefail

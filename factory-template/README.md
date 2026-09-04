@@ -24,20 +24,17 @@ source, and Desktop treats it as a confirmation-driven custom marketplace.
 
 ## One-time setup
 
-1. Create a public GitHub repository from this directory and protect `main`.
-   Both release workflows fail closed unless GitHub reports
-   `github.ref_protected == true`. Then create a GitHub Environment named
-   `production` with **required reviewers limited to release maintainers**.
+1. Create a public GitHub repository from this directory and use `main` for
+   Factory publication. Then create a GitHub Environment named `production`
+   with **required reviewers limited to release maintainers**.
    Enable the Environment's “prevent self-review” setting where available.
    The write-capable Beta and Stable jobs are explicitly bound to that
    Environment: anyone may request a dispatch, but no source token, Release
    asset, or generated metadata write is available until a designated releaser
-   approves it. Do not treat protected-branch status as dispatcher
-   authorization. The Factory workflows need a narrowly scoped bypass to
-   commit their approved generated metadata to `main`; configure that bypass
-   only for the repository's GitHub Actions bot, or replace the final commit
-   step with your reviewed generated-PR policy. Do not remove protection or
-   Environment review just to make a release run succeed.
+   approves it. `main`, the reviewed Environment approval, the exact revision,
+   and the source/release checks together define the publication boundary.
+   Branch-protection rules remain an optional repository-administration
+   hardening measure; they are not a release precondition.
 2. Create a GitHub App with only **Contents: Read** and **Metadata: Read**.
    Install it only on source repositories already authorized in the registry.
    Store its ID and private key as the Factory repository secrets
@@ -108,7 +105,7 @@ Desktop's developer tool is the normal trigger; pushing arbitrary code alone
 does not publish. This avoids turning a source repository push into a
 credentialed Factory build. A developer chooses the exact already-pushed SHA
 in Desktop, which dispatches the corresponding Factory workflow from the
-protected Factory `main` branch. The request pauses at the required-reviewer
+Factory `main` branch. The request pauses at the required-reviewer
 `production` Environment before it receives the write-capable workflow token;
 an authorized release maintainer must approve it after checking the plugin,
 SHA, and requested channel.
@@ -172,7 +169,7 @@ python scripts\factory_validate.py --root . --factory-repository "OWNER/REPOSITO
 The download command derives every release tag and asset name from local
 evidence, fetches each fixed GitHub Release asset, and compares its exact
 bytes before validation accepts it. `--allow-unsigned-publication-attestations`
-is only the protected publisher's brief pre-upload staging bypass; it does not
+is only the controlled publisher's brief pre-upload staging bypass; it does not
 authenticate published history and must not be used as a local verification
 substitute.
 
