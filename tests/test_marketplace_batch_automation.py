@@ -97,10 +97,20 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
 
         workflow = yaml.safe_load(BATCH_RECONCILE.read_text(encoding="utf-8"))
         publisher = yaml.safe_load(BATCH_PUBLISH.read_text(encoding="utf-8"))
+        recovery = yaml.safe_load(STALE_BATCH_RECOVERY.read_text(encoding="utf-8"))
 
         self.assertEqual(workflow["permissions"], {"actions": "read", "contents": "read"})
         self.assertEqual(
             workflow["jobs"]["build-current-batch"]["permissions"],
+            {
+                "actions": "write",
+                "contents": "write",
+                "id-token": "write",
+                "pull-requests": "write",
+            },
+        )
+        self.assertEqual(
+            recovery["jobs"]["rebuild-current-batch"]["permissions"],
             {
                 "actions": "write",
                 "contents": "write",
