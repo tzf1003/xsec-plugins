@@ -56,6 +56,8 @@ jobs:
           python scripts/validate_market.py source --source-root .
           --built-root "$RUNNER_TEMP/xsec-marketplace-build"
           --allow-pending-native-sources
+      - name: Run frontend contract tests
+        run: node scripts/frontend_contracts.test.mjs
       - name: Validate official external Factory registry, snapshots and provenance
         env:
           BASELINE_AVAILABLE: ${{ steps.baseline.outputs.available }}

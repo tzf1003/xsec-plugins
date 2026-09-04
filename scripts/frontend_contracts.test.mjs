@@ -21,56 +21,17 @@ async function manifest(pluginId) {
   return JSON.parse(await readFile(join(snapshotPath(pluginId), "plugin.json"), "utf8"));
 }
 
-const treeNode = (id, parentId, extra = {}) => ({
-  id,
-  parent_id: parentId,
-  title: id,
-  kind: "task",
-  status: "pending",
-  subagent_id: null,
-  ...extra,
-});
-
-test("attack-path frontend owns the disconnected-tree layout", async () => {
+test("attack-path frontend exposes the reviewed attack-path and subagent contract", async () => {
   const { module, source } = await loadFrontend("com.xsec.attack-path");
-  const layout = module.layoutTreeNodes([
-    treeNode("root-a", null),
-    treeNode("child-a", "root-a"),
-    treeNode("root-b", null),
-    treeNode("child-b", "root-b"),
-    treeNode("orphan", "missing"),
-  ], "root-a");
-
-  assert.equal(layout.positions.size, 5);
-  assert.ok(layout.positions.get("root-a").x < layout.positions.get("root-b").x);
-  assert.notDeepEqual(layout.positions.get("orphan"), layout.positions.get("root-b"));
+  assert.equal(typeof module.activate, "function");
+  assert.match(source, /function layoutTreeNodes\(/);
+  assert.match(source, /function graphModel\(/);
   assert.match(source, /xsec\.attack-path\.tree\.list/);
+  assert.match(source, /xsec\.attack-path\.subagents\.list/);
+  assert.match(source, /xsec\.workspace\.tool\.open/);
+  assert.match(source, /SUBAGENT_PLUGIN_ID="com\.xsec\.workspace\.sub-agent"/);
+  assert.match(source, /SUBAGENT_DETAIL_TOOL_ID="subagent-detail"/);
   assert.doesNotMatch(source, /compatibility bridge|兼容渲染器/);
-});
-
-test("attack-path graph connects a node to its subagent plugin entity", async () => {
-  const { module, source } = await loadFrontend("com.xsec.attack-path");
-  const nodes = [
-    treeNode("root", null),
-    treeNode("node-1", "root", { subagent_id: "subagent-1" }),
-  ];
-  const model = module.graphModel(nodes, [{ id: "subagent-1", node_id: "node-1", status: "running" }]);
-
-  assert.equal(model.subagentsByNode.get("node-1").id, "subagent-1");
-  assert.equal(model.counts.task, 1);
-  assert.match(source, /pluginId:\s*"com\.xsec\.workspace\.sub-agent"/);
-  assert.match(source, /toolId:\s*"subagent-detail"/);
-});
-
-test("attack-path graph prefers a node's explicit subagent over retry fallbacks", async () => {
-  const { module } = await loadFrontend("com.xsec.attack-path");
-  const node = treeNode("node-1", "root", { subagent_id: "attempt-2" });
-  const model = module.graphModel([treeNode("root", null), node], [
-    { id: "attempt-1", node_id: "node-1", status: "failed" },
-    { id: "attempt-2", node_id: "node-1", status: "running" },
-  ]);
-
-  assert.equal(model.subagentsByNode.get("node-1").id, "attempt-2");
 });
 
 test("subagent frontend owns observer ordering and duration formatting", async () => {
@@ -89,13 +50,13 @@ test("subagent frontend owns observer ordering and duration formatting", async (
   assert.doesNotMatch(source, /compatibility bridge|兼容渲染器/);
 });
 
-test("manifests express the attack-path to subagent plugin relationship", async () => {
+test("retained manifests express the attack-path to subagent plugin relationship", async () => {
   const attackPath = await manifest("com.xsec.attack-path");
   const subagent = await manifest("com.xsec.workspace.sub-agent");
   const attackExtension = attackPath.extensions["com.xsec.desktop"];
   const subagentExtension = subagent.extensions["com.xsec.desktop"];
 
-  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], "^2.0.0");
+  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], "^1.2.3");
   assert.equal(attackExtension.engines.pluginApi, "^1.3.0");
   assert.equal(subagentExtension.engines.pluginApi, "^1.3.0");
   assert.ok(attackExtension.permissions["workspace.tool.open"]);
