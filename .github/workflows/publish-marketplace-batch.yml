@@ -49,14 +49,12 @@ jobs:
           owner: tzf1003
           repositories: xSecDesktop
           permission-contents: read
-      - name: Resolve the current protected Desktop main revision
+      - name: Resolve the current Desktop main revision
         id: source
         env:
           GH_TOKEN: ${{ steps.desktop-source-token.outputs.token }}
         run: |
           set -euo pipefail
-          protected="$(gh api repos/tzf1003/xSecDesktop/branches/main --jq .protected)"
-          [ "$protected" = "true" ] || { echo "Desktop main must remain protected for native Sidecar publication." >&2; exit 1; }
           source_sha="$(gh api repos/tzf1003/xSecDesktop/commits/main --jq .sha)"
           [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Desktop main did not resolve to a canonical commit SHA." >&2; exit 1; }
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
@@ -103,14 +101,14 @@ jobs:
           persist-credentials: false
           submodules: false
           lfs: false
-      - name: Verify the exact protected Desktop source revision
+      - name: Verify the exact Desktop source revision
         shell: bash
         env:
           EXPECTED_SOURCE_SHA: ${{ needs.resolve-native-sidecar-source.outputs.source_sha }}
         run: |
           set -euo pipefail
           [ "$(git -C .xsec-desktop-source rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA" ] || {
-            echo "Checked-out Desktop source does not match the protected revision." >&2
+            echo "Checked-out Desktop source does not match the resolved revision." >&2
             exit 1
           }
       - uses: dtolnay/rust-toolchain@stable

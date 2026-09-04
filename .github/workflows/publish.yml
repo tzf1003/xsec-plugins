@@ -140,7 +140,7 @@ jobs:
           fi
           if "$requires_native_sidecars"; then
             [[ "$NATIVE_SIDECARS_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || {
-              echo "Beta packaging requires native_sidecars_source_sha from protected xSecDesktop main." >&2
+              echo "Beta packaging requires native_sidecars_source_sha from xSecDesktop main." >&2
               exit 1
             }
           elif [ -n "$NATIVE_SIDECARS_SOURCE_SHA" ]; then
@@ -301,7 +301,7 @@ jobs:
           persist-credentials: false
           submodules: false
           lfs: false
-      - name: Verify the source revision is current protected Desktop main
+      - name: Verify the source revision is current Desktop main
         env:
           GH_TOKEN: ${{ steps.desktop-source-token.outputs.token }}
           EXPECTED_SOURCE_SHA: ${{ inputs.native_sidecars_source_sha }}
@@ -311,7 +311,7 @@ jobs:
           [ "$(git -C .xsec-desktop-source rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA" ]
           desktop_main="$(gh api repos/tzf1003/xSecDesktop/commits/main --jq .sha)"
           [ "$desktop_main" = "$EXPECTED_SOURCE_SHA" ] || {
-            echo "native_sidecars_source_sha must be the current protected Desktop main revision." >&2
+            echo "native_sidecars_source_sha must be the current xSecDesktop main revision." >&2
             exit 1
           }
       - uses: dtolnay/rust-toolchain@stable

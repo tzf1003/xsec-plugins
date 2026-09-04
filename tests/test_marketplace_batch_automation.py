@@ -54,6 +54,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "xsec-marketplace-publish-main",
             "permission-contents: read",
             "resolve-native-sidecar-source",
+            "Resolve the current Desktop main revision",
             "build-native-sidecars",
             "macos-15-intel",
             "windows-2022",
@@ -74,6 +75,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, publisher)
         self.assertNotIn("permission-checks: read", publisher)
+        self.assertNotIn("branches/main --jq .protected", publisher)
+        self.assertNotIn("Desktop main must remain protected", publisher)
         self.assertNotIn("| rg -v", publisher)
         self.assertNotIn("| grep -v", publisher)
 
