@@ -1462,6 +1462,56 @@ def native_candidate_release_id(
     return release_id(version, engines, artifacts, normalized)
 
 
+def reconcile_retained_native_beta(
+    root: Path,
+    source_root: Path,
+    registration: Registration,
+    destination: Path,
+) -> dict[str, object]:
+    """Materialize retained sidecars only when current source reproduces Beta."""
+
+    source_dir = resolve_source_directory(source_root, registration.source_path, "native Beta reconciliation source")
+    manifest = source_manifest(source_dir, registration)
+    _, beta_record = current_beta_record(root, registration.plugin_id)
+    beta_release_id = beta_record.get("releaseId")
+    if not isinstance(beta_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(beta_release_id):
+        fail("external beta release pointer is unavailable")
+    recipe = recipe_for_source(registration.plugin_id, source_dir)
+    provenance = beta_record.get("nativeSidecarProvenance")
+    if recipe is None or not isinstance(provenance, dict):
+        return {"plugin_id": registration.plugin_id, "reusable": "false", "beta_release_id": beta_release_id}
+    try:
+        engines = require_release_engines(manifest["extensions"]["com.xsec.desktop"]["engines"], "external plugin manifest")
+        version = manifest["version"]
+        normalized = validate_provenance(recipe, provenance)
+        targets = targets_for_provenance_version(recipe, provenance.get("targetMatrixVersion"))
+    except (KeyError, TypeError, ValueError) as error:
+        raise ExternalSourceFactoryError(f"native Beta provenance is invalid: {error}") from error
+    candidate = native_candidate_release_id(root, source_dir, registration, beta_record, recipe, version, engines)
+    if candidate != beta_release_id:
+        return {
+            "plugin_id": registration.plugin_id,
+            "reusable": "false",
+            "beta_release_id": beta_release_id,
+            "candidate_release_id": candidate,
+        }
+    if destination.exists() or is_link(destination):
+        fail("retained native Beta destination must not already exist")
+    destination.mkdir(parents=True)
+    retained_recipe = replace(recipe, targets=targets)
+    inputs = retained_native_sidecars(root, registration.plugin_id, beta_record, retained_recipe, normalized, destination)
+    return {
+        "plugin_id": registration.plugin_id,
+        "reusable": "true",
+        "beta_release_id": beta_release_id,
+        "source_revision": normalized["source"]["revision"],
+        "inputs": [
+            {"rust_target": target.rust_target, "path": str(inputs[(registration.plugin_id, target.rust_target)])}
+            for target in retained_recipe.targets
+        ],
+    }
+
+
 def retained_native_sidecars(
     root: Path,
     plugin_id: str,
@@ -3686,6 +3736,10 @@ def main() -> None:
     main_rebuild_parser = commands.add_parser("check-main-rebuild")
     main_rebuild_parser.add_argument("--plugin-id", required=True)
     main_rebuild_parser.add_argument("--source-root", type=Path, required=True)
+    retained_native_beta_parser = commands.add_parser("reconcile-retained-native-beta")
+    retained_native_beta_parser.add_argument("--plugin-id", required=True)
+    retained_native_beta_parser.add_argument("--source-root", type=Path, required=True)
+    retained_native_beta_parser.add_argument("--destination", type=Path, required=True)
     stable_parser = commands.add_parser("record-stable")
     stable_parser.add_argument("--plugin-id", required=True)
     stable_parser.add_argument("--source-sha", required=True)
@@ -3797,6 +3851,13 @@ def main() -> None:
             )
         elif args.command == "check-main-rebuild":
             result = check_main_rebuild(root, args.plugin_id, args.source_root)
+        elif args.command == "reconcile-retained-native-beta":
+            result = reconcile_retained_native_beta(
+                root,
+                args.source_root,
+                registration_for(root, args.plugin_id),
+                args.destination,
+            )
         elif args.command == "record-stable":
             result = record_stable(root, args.plugin_id, args.source_sha, args.release_id, args.publisher)
         elif args.command == "adopt-first-party":

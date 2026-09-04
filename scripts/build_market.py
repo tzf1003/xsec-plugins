@@ -11,6 +11,7 @@ as protected publication.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -24,10 +25,12 @@ from native_sidecars import (
     RECIPES,
     NativeSidecarRecipe,
     parse_native_sidecar_inputs,
+    parse_native_sidecar_source_revisions,
     provenance_for_inputs,
     recipe_for_source,
     require_inputs,
     staged_plugin,
+    targets_for_provenance_version,
     validate_provenance,
 )
 
@@ -665,6 +668,7 @@ def build_plugin(
     *,
     native_sidecar_inputs: dict[tuple[str, str], Path] | None = None,
     native_sidecar_source_revision: str | None = None,
+    native_sidecar_source_revisions: dict[str, str] | None = None,
     source_only: bool = False,
 ) -> None:
     manifest = json.loads((source_plugin_dir / "plugin.json").read_text(encoding="utf-8"))
@@ -679,11 +683,22 @@ def build_plugin(
         f"plugin manifest {plugin_id}",
     )
 
-    recipe = recipe_for_source(plugin_id, source_plugin_dir)
+    source_revisions = native_sidecar_source_revisions or {}
+    recipe, retained_provenance = retained_native_beta_contract(
+        recipe_for_source(plugin_id, source_plugin_dir),
+        release,
+        source_revisions.get(plugin_id),
+    )
     if source_only and recipe is not None:
         return
     inputs = native_sidecar_inputs or {}
-    provenance = native_sidecar_provenance(recipe, inputs, native_sidecar_source_revision)
+    provenance = native_sidecar_provenance(
+        recipe,
+        inputs,
+        source_revisions.get(plugin_id, native_sidecar_source_revision),
+    )
+    if retained_provenance is not None and provenance != retained_provenance:
+        raise ValueError(f"retained native Beta sidecars do not match {plugin_id}")
     candidates = build_candidate_artifacts(source_plugin_dir, plugin_id, version, inputs, recipe)
     candidate_artifacts = [candidate[0] for candidate in candidates]
     candidate_release_id = release_id(version, engines, candidate_artifacts, provenance)
@@ -738,7 +753,38 @@ def native_sidecar_provenance(
     if source_revision is None:
         raise ValueError(f"native MCP plugin {recipe.plugin_id} requires a protected source revision")
     inputs = require_inputs(recipe, native_inputs)
-    return provenance_for_inputs(recipe, source_revision, inputs)
+    provenance = provenance_for_inputs(recipe, source_revision, inputs)
+    full_recipe = RECIPES.get(recipe.plugin_id)
+    if full_recipe is not None and recipe.targets != full_recipe.targets:
+        provenance.pop("targetMatrixVersion")
+    return provenance
+
+
+def retained_native_beta_contract(
+    recipe: NativeSidecarRecipe | None,
+    release: dict[str, object],
+    source_revision: str | None,
+) -> tuple[NativeSidecarRecipe | None, dict[str, object] | None]:
+    """Return the signed Beta recipe and provenance for retained sidecars."""
+
+    if recipe is None or source_revision is None:
+        return recipe, None
+    channels = release.get("channels")
+    releases = release.get("releases")
+    beta = channels.get("beta") if isinstance(channels, dict) else None
+    beta_id = beta.get("releaseId") if isinstance(beta, dict) else None
+    if not isinstance(beta_id, str) or not isinstance(releases, list):
+        raise ValueError(f"release metadata for {recipe.plugin_id} has invalid Beta history")
+    selected = next((item for item in releases if isinstance(item, dict) and item.get("releaseId") == beta_id), None)
+    provenance = selected.get("nativeSidecarProvenance") if isinstance(selected, dict) else None
+    try:
+        normalized = validate_provenance(recipe, provenance)
+        targets = targets_for_provenance_version(recipe, provenance.get("targetMatrixVersion"))
+    except (AttributeError, ValueError) as error:
+        raise ValueError(f"retained native Beta provenance is invalid for {recipe.plugin_id}: {error}") from error
+    if normalized["source"]["revision"] != source_revision:
+        raise ValueError(f"retained native Beta revision does not match {recipe.plugin_id}")
+    return replace(recipe, targets=targets), normalized
 
 
 def source_plugin_dir(entry: dict[str, object]) -> Path:
@@ -763,6 +809,7 @@ def preflight_native_sidecars(
     entries: list[dict[str, object]],
     native_inputs: dict[tuple[str, str], Path],
     source_revision: str | None,
+    source_revisions: dict[str, str],
     source_only: bool,
 ) -> None:
     native_plugin_ids = set()
@@ -772,15 +819,25 @@ def preflight_native_sidecars(
             json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8")).get("name"),
             "plugin manifest name",
         )
-        recipe = recipe_for_source(plugin_id, plugin_dir)
+        release = load_release_document(plugin_dir / ".xsec-market" / "releases.json", plugin_id)
+        recipe, retained_provenance = retained_native_beta_contract(
+            recipe_for_source(plugin_id, plugin_dir),
+            release,
+            source_revisions.get(plugin_id),
+        )
         if recipe is None:
             continue
         native_plugin_ids.add(plugin_id)
         if not source_only:
-            native_sidecar_provenance(recipe, native_inputs, source_revision)
+            provenance = native_sidecar_provenance(recipe, native_inputs, source_revisions.get(plugin_id, source_revision))
+            if retained_provenance is not None and provenance != retained_provenance:
+                raise ValueError(f"retained native Beta sidecars do not match {plugin_id}")
     unexpected = {plugin_id for plugin_id, _ in native_inputs} - native_plugin_ids
     if unexpected:
         raise ValueError(f"native sidecar inputs do not match a native MCP plugin: {sorted(unexpected)[0]}")
+    unexpected_revisions = set(source_revisions) - native_plugin_ids
+    if unexpected_revisions:
+        raise ValueError(f"native sidecar source revision does not match a native MCP plugin: {sorted(unexpected_revisions)[0]}")
 
 
 def archive_candidate(
@@ -853,6 +910,13 @@ def main() -> None:
         help="exact Desktop source revision used by the protected native-sidecar builder",
     )
     parser.add_argument(
+        "--native-sidecar-source-revision-for",
+        action="append",
+        default=[],
+        metavar="PLUGIN=REVISION",
+        help="per-plugin immutable Desktop revision for retained native Beta sidecars",
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
         default=ROOT,
@@ -860,10 +924,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.source_only and (args.native_sidecar_input or args.native_sidecar_source_revision):
+    if args.source_only and (
+        args.native_sidecar_input
+        or args.native_sidecar_source_revision
+        or args.native_sidecar_source_revision_for
+    ):
         parser.error("--source-only cannot be combined with native sidecar inputs or a source revision")
 
     native_inputs = parse_native_sidecar_inputs(args.native_sidecar_input)
+    native_source_revisions = parse_native_sidecar_source_revisions(args.native_sidecar_source_revision_for)
     output_root = args.output_root.resolve()
     root = ROOT.resolve()
     if output_root != root:
@@ -880,6 +949,7 @@ def main() -> None:
         entries,
         native_inputs,
         args.native_sidecar_source_revision,
+        native_source_revisions,
         args.source_only,
     )
     if args.clean:
@@ -893,6 +963,7 @@ def main() -> None:
             output_plugin_dir,
             native_sidecar_inputs=native_inputs,
             native_sidecar_source_revision=args.native_sidecar_source_revision,
+            native_sidecar_source_revisions=native_source_revisions,
             source_only=args.source_only,
         )
 

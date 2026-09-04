@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 
@@ -79,6 +80,67 @@ def native_registration() -> factory.Registration:
 
 
 class NativeSidecarFactoryTests(unittest.TestCase):
+    def test_retained_native_beta_reconciliation_reuses_immutable_sidecars(self) -> None:
+        """A matching source must not republish a new same-version sidecar build."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-native-beta-reconciliation-") as directory:
+            root = Path(directory)
+            source = write_attack_path_source(root)
+            factory_root = root / "factory"
+            output = factory_root / ".xsec-factory" / "snapshots" / PLUGIN_ID
+            original_inputs = sidecar_inputs(root)
+            build_market.build_plugin(
+                source,
+                output,
+                native_sidecar_inputs=original_inputs,
+                native_sidecar_source_revision=SOURCE_REVISION,
+            )
+            original_release = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))
+            rebuilt_root = root / "rebuilt"
+            rebuilt_root.mkdir()
+            rebuilt_inputs = sidecar_inputs(rebuilt_root)
+            for binary in rebuilt_inputs.values():
+                binary.write_bytes(b"a different Desktop build\n")
+            with self.assertRaisesRegex(ValueError, "already contains immutable content"):
+                build_market.build_plugin(
+                    source,
+                    output,
+                    native_sidecar_inputs=rebuilt_inputs,
+                    native_sidecar_source_revision="b" * 40,
+                )
+            with self.assertRaisesRegex(ValueError, "retained native Beta sidecars do not match"):
+                build_market.build_plugin(
+                    source,
+                    output,
+                    native_sidecar_inputs=rebuilt_inputs,
+                    native_sidecar_source_revision="b" * 40,
+                    native_sidecar_source_revisions={PLUGIN_ID: SOURCE_REVISION},
+                )
+
+            registration = replace(native_registration(), source_path=PurePosixPath("."))
+            retained = factory.reconcile_retained_native_beta(
+                factory_root,
+                source,
+                registration,
+                root / "retained",
+            )
+            self.assertEqual(retained["reusable"], "true")
+            inputs = {
+                (PLUGIN_ID, item["rust_target"]): Path(item["path"])
+                for item in retained["inputs"]
+            }
+            build_market.build_plugin(
+                source,
+                output,
+                native_sidecar_inputs=inputs,
+                native_sidecar_source_revision="b" * 40,
+                native_sidecar_source_revisions={PLUGIN_ID: SOURCE_REVISION},
+            )
+            self.assertEqual(
+                json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8")),
+                original_release,
+            )
+
     def test_first_party_native_adoption_snapshot_rebuilds_the_selected_beta(self) -> None:
         """Adoption validates native snapshots from retained Sidecar evidence."""
 
