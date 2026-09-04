@@ -46,6 +46,21 @@
         "url": "artifacts/com.xsec.attack-path-1.2.4-sha256-60ceb3ad9ada05d1-any-any.xsec-plugin"
       },
       "publisher": "tzf1003"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-6bbfada32ea34f32f3ce77b1050a3fbde24826f43e45b964f5b79e0df09e6424",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-attack-path",
+        "path": "plugins/com.xsec.attack-path",
+        "ref": "refs/heads/beta",
+        "sha": "2b15b1b074fb1f131a089d8a67069081572e6aec"
+      },
+      "artifact": {
+        "sha256": "6edf9eb85b4daaa6d294911489eb22346828105e23edd7df1b656c93f9a029de",
+        "url": "artifacts/com.xsec.attack-path-2.0.0-sha256-6edf9eb85b4daaa6-macos-aarch64.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
     }
   ],
   "smokeOutcomes": [

@@ -3,8 +3,7 @@
   "mcpServers": {
     "attack-path": {
       "type": "stdio",
-      "command": "node",
-      "args": ["${PLUGIN_ROOT}/sidecar/attack-path-mcp.js"],
+      "command": "./bin/attack-path-mcp",
       "cwd": "${PLUGIN_DATA}"
     }
   }

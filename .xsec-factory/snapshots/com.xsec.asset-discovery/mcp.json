@@ -1,0 +1,28 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "asset-normalize": {
+      "type": "stdio",
+      "command": "./bin/asset-discovery-mcp",
+      "cwd": "${PLUGIN_DATA}"
+    },
+    "asset-hunter": {
+      "type": "stdio",
+      "command": "./bin/asset-discovery-mcp",
+      "args": ["--provider", "hunter"],
+      "cwd": "${PLUGIN_DATA}",
+      "env": {
+        "XSEC_ASSET_HUNTER_API_BASE_URL": "https://hunter.qianxin.com/openApi/search"
+      }
+    },
+    "asset-fofa": {
+      "type": "stdio",
+      "command": "./bin/asset-discovery-mcp",
+      "args": ["--provider", "fofa"],
+      "cwd": "${PLUGIN_DATA}",
+      "env": {
+        "XSEC_ASSET_FOFA_API_BASE_URL": "https://fofoapi.com"
+      }
+    }
+  }
+}
