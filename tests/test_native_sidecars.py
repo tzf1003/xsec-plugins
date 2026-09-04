@@ -5,13 +5,14 @@ import sys
 import tempfile
 import unittest
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import build_market  # noqa: E402
+import external_source_factory as factory  # noqa: E402
 import native_sidecars  # noqa: E402
 import validate_market  # noqa: E402
 
@@ -61,7 +62,63 @@ def sidecar_inputs(root: Path) -> dict[tuple[str, str], Path]:
     return inputs
 
 
+def native_registration() -> factory.Registration:
+    return factory.Registration(
+        plugin_id=PLUGIN_ID,
+        trust_tier="first-party",
+        repository="tzf1003/xsec-plugin-attack-path",
+        source_path=PurePosixPath("plugins") / PLUGIN_ID,
+        beta_ref="refs/heads/beta",
+        stable_ref="refs/heads/main",
+        installation="INSTALLED_BY_DEFAULT",
+        authentication="ON_INSTALL",
+        category="Security",
+        status="active",
+    )
+
+
 class NativeSidecarFactoryTests(unittest.TestCase):
+    def test_native_release_evidence_and_main_rebuild_bind_all_retained_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-evidence-") as directory:
+            root = Path(directory)
+            source = write_attack_path_source(root)
+            factory_root = root / "factory"
+            output = factory_root / ".xsec-factory" / "snapshots" / PLUGIN_ID
+            build_market.build_plugin(
+                source,
+                output,
+                native_sidecar_inputs=sidecar_inputs(root),
+                native_sidecar_source_revision=SOURCE_REVISION,
+            )
+            record = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))["releases"][0]
+            registration = native_registration()
+            self.assertEqual(factory.candidate_release_id(factory_root, source, registration, record), record["releaseId"])
+            event = factory.publication_event(registration, "beta", SOURCE_REVISION, record, "test-publisher")
+            self.assertEqual((event["artifact"]["url"], event["artifact"]["sha256"]), (record["artifacts"][0]["url"], record["artifacts"][0]["sha256"]))
+
+    def test_native_main_rebuild_accepts_portable_and_legacy_beta_records(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-legacy-rebuild-") as directory:
+            root = Path(directory)
+            source = write_attack_path_source(root)
+            factory_root = root / "factory"
+            output = factory_root / ".xsec-factory" / "snapshots" / PLUGIN_ID
+            build_market.build_plugin(source, output, native_sidecar_inputs=sidecar_inputs(root), native_sidecar_source_revision=SOURCE_REVISION)
+            record = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))["releases"][0]
+            legacy = json.loads(json.dumps(record))
+            legacy_provenance = legacy["nativeSidecarProvenance"]
+            legacy_provenance.pop("targetMatrixVersion")
+            legacy_provenance["targets"] = [target for target in legacy_provenance["targets"] if target["os"] != "linux"]
+            legacy["artifacts"] = [artifact for artifact in legacy["artifacts"] if artifact["os"] != "linux"]
+            legacy["releaseId"] = build_market.release_id(legacy["version"], legacy["engines"], legacy["artifacts"], legacy_provenance)
+            self.assertEqual(factory.candidate_release_id(factory_root, source, native_registration(), legacy), legacy["releaseId"])
+            with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-portable-") as archive_directory:
+                artifact_path = Path(archive_directory) / "portable.xsec-plugin"
+                build_market.write_zip(source, artifact_path)
+                portable_artifact = {"os": "any", "arch": "any", "url": "artifacts/portable.xsec-plugin", "sha256": build_market.sha256(artifact_path)}
+            portable = {"version": record["version"], "engines": record["engines"], "artifacts": [portable_artifact]}
+            portable["releaseId"] = build_market.release_id(portable["version"], portable["engines"], portable["artifacts"])
+            self.assertEqual(factory.candidate_release_id(factory_root, source, native_registration(), portable), portable["releaseId"])
+
     def test_builds_and_validates_distinct_artifacts_for_each_supported_target(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-build-") as directory:
             root = Path(directory)
