@@ -54,8 +54,8 @@ project、session、role、token 或 secret 写进 manifest、Skill、`mcp.json`
 
 | 插件 | Rust package | artifact 内 entrypoint | 支持 Rust target |
 | --- | --- | --- | --- |
-| `com.xsec.attack-path` | `xsec-attack-path-mcp` | `bin/attack-path-mcp` | `aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-pc-windows-msvc` |
-| `com.xsec.asset-discovery` | `xsec-asset-discovery-mcp` | `bin/asset-discovery-mcp` | `aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-pc-windows-msvc` |
+| `com.xsec.attack-path` | `xsec-attack-path-mcp` | `bin/attack-path-mcp` | `aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-unknown-linux-gnu`、`x86_64-pc-windows-msvc` |
+| `com.xsec.asset-discovery` | `xsec-asset-discovery-mcp` | `bin/asset-discovery-mcp` | `aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-unknown-linux-gnu`、`x86_64-pc-windows-msvc` |
 
 资产发现的一个 binary 精确承载三个 logical server：`asset-normalize` 无参数运行；
 `asset-hunter` 使用 `--provider hunter` 与声明的 Hunter API 地址；`asset-fofa` 使用
@@ -66,7 +66,7 @@ Factory 的通用打包器不能把 `any/any` source ZIP 当作含 native sideca
 构建必须使用受保护、显式 allowlist 的构建 recipe；它要记录输入源码 revision、Rust
 target、二进制 SHA-256 和最终 artifact SHA-256。不得执行任意第三方插件的 build script。
 
-受保护 runner 在完成 allowlist 中指定的交叉编译后，必须为每个 native 插件显式传递三个
+受保护 runner 在完成 allowlist 中指定的交叉编译后，必须为每个 native 插件显式传递四个
 普通文件，不能从插件目录发现或执行构建命令。例如，面向一次性输出目录的调用为：
 
 ```sh
@@ -74,9 +74,11 @@ python3 scripts/build_market.py --clean --output-root "$FACTORY_OUTPUT" \
   --native-sidecar-source-revision "$DESKTOP_MAIN_SHA" \
   --native-sidecar-input "com.xsec.attack-path@aarch64-apple-darwin=$RUNNER_BINARIES/attack-path-mcp-aarch64-apple-darwin" \
   --native-sidecar-input "com.xsec.attack-path@x86_64-apple-darwin=$RUNNER_BINARIES/attack-path-mcp-x86_64-apple-darwin" \
+  --native-sidecar-input "com.xsec.attack-path@x86_64-unknown-linux-gnu=$RUNNER_BINARIES/attack-path-mcp-x86_64-unknown-linux-gnu" \
   --native-sidecar-input "com.xsec.attack-path@x86_64-pc-windows-msvc=$RUNNER_BINARIES/attack-path-mcp-x86_64-pc-windows-msvc" \
   --native-sidecar-input "com.xsec.asset-discovery@aarch64-apple-darwin=$RUNNER_BINARIES/asset-discovery-mcp-aarch64-apple-darwin" \
   --native-sidecar-input "com.xsec.asset-discovery@x86_64-apple-darwin=$RUNNER_BINARIES/asset-discovery-mcp-x86_64-apple-darwin" \
+  --native-sidecar-input "com.xsec.asset-discovery@x86_64-unknown-linux-gnu=$RUNNER_BINARIES/asset-discovery-mcp-x86_64-unknown-linux-gnu" \
   --native-sidecar-input "com.xsec.asset-discovery@x86_64-pc-windows-msvc=$RUNNER_BINARIES/asset-discovery-mcp-x86_64-pc-windows-msvc"
 ```
 

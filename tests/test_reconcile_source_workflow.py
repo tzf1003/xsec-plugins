@@ -26,6 +26,13 @@ class ReconcileSourceWorkflowTests(unittest.TestCase):
             source,
         )
 
+    def test_publisher_dispatch_binds_the_current_desktop_sidecar_source(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("Resolve the current Desktop main sidecar source revision", source)
+        self.assertIn("repos/tzf1003/xSecDesktop/commits/main", source)
+        self.assertIn('native_sidecars_source_sha="$NATIVE_SIDECARS_SOURCE_SHA"', source)
+
     def test_sensitive_reconciliation_scripts_have_valid_bash_syntax(self) -> None:
         bash = shutil.which("bash")
         if bash is None:

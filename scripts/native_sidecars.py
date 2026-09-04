@@ -59,6 +59,7 @@ ATTACK_PATH_RECIPE = NativeSidecarRecipe(
     targets=(
         NativeTarget("aarch64-apple-darwin", "macos", "aarch64"),
         NativeTarget("x86_64-apple-darwin", "macos", "x86_64"),
+        NativeTarget("x86_64-unknown-linux-gnu", "linux", "x86_64"),
         NativeTarget("x86_64-pc-windows-msvc", "windows", "x86_64"),
     ),
 )
@@ -84,6 +85,7 @@ ASSET_DISCOVERY_RECIPE = NativeSidecarRecipe(
     targets=(
         NativeTarget("aarch64-apple-darwin", "macos", "aarch64"),
         NativeTarget("x86_64-apple-darwin", "macos", "x86_64"),
+        NativeTarget("x86_64-unknown-linux-gnu", "linux", "x86_64"),
         NativeTarget("x86_64-pc-windows-msvc", "windows", "x86_64"),
     ),
 )

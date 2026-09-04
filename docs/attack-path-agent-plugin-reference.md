@@ -69,7 +69,7 @@ Fabric 只接受 Bearer task capability，并在调用边界重建 opaque contex
 
 ## Factory Beta 检查表
 
-- 三个平台各自打包并运行 sidecar；release record 不能使用 `any/any`。
+- Windows x64、Linux x64、macOS arm64/x64 各自打包并运行 sidecar；release record 不能使用 `any/any`。
 - archive 必须包含 `plugin.json`、`mcp.json`、Skill、frontend 与平台 sidecar。
 - 独立 OMP 18.0.9 和嵌入式 OMP ACP 都发现相同的逻辑 server 名及 raw Tool。
 - 两个真实 assignment 复用 Broker 时保持数据隔离；伪造参数与 `_meta` 不得越权。
