@@ -32,6 +32,14 @@ class ReconcileSourceWorkflowTests(unittest.TestCase):
         self.assertIn("Resolve the current Desktop main sidecar source revision", source)
         self.assertIn("repos/tzf1003/xSecDesktop/commits/main", source)
         self.assertIn('native_sidecars_source_sha="$NATIVE_SIDECARS_SOURCE_SHA"', source)
+        self.assertIn("actions/create-github-app-token@v2", source)
+        self.assertIn("XSEC_DESKTOP_SIDECAR_SOURCE_APP_ID", source)
+        self.assertIn("steps.desktop-source-token.outputs.token", source)
+        desktop_step = source.index("Resolve the current Desktop main sidecar source revision")
+        desktop_api = source.index("repos/tzf1003/xSecDesktop/commits/main", desktop_step)
+        window = source[desktop_step:desktop_api]
+        self.assertIn("steps.desktop-source-token.outputs.token", window)
+        self.assertNotIn("github.token", window)
 
     def test_sensitive_reconciliation_scripts_have_valid_bash_syntax(self) -> None:
         bash = shutil.which("bash")
