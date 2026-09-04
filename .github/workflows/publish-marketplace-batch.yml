@@ -281,15 +281,37 @@ jobs:
           set -euo pipefail
           sidecar_root="$RUNNER_TEMP/xsec-native-sidecars"
           native_inputs=()
-          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
-            attack_path_binary="$sidecar_root/xsec-native-sidecars-$target/attack-path-mcp"
-            asset_discovery_binary="$sidecar_root/xsec-native-sidecars-$target/asset-discovery-mcp"
-            [ -f "$attack_path_binary" ] && [ ! -L "$attack_path_binary" ] && [ -s "$attack_path_binary" ] || { echo "Protected builder did not provide an attack-path sidecar for $target." >&2; exit 1; }
-            [ -f "$asset_discovery_binary" ] && [ ! -L "$asset_discovery_binary" ] && [ -s "$asset_discovery_binary" ] || { echo "Protected builder did not provide an asset-discovery sidecar for $target." >&2; exit 1; }
-            native_inputs+=("--native-sidecar-input" "com.xsec.attack-path@$target=$attack_path_binary")
-            native_inputs+=("--native-sidecar-input" "com.xsec.asset-discovery@$target=$asset_discovery_binary")
+          retained_revisions=()
+          for native_plugin in com.xsec.attack-path com.xsec.asset-discovery; do
+            record="$(jq -ce --arg plugin_id "$native_plugin" '.[] | select(.plugin_id == $plugin_id)' "$RECORDS")"
+            source_root="$(printf '%s' "$record" | jq -er .source_root)"
+            retained_root="$RUNNER_TEMP/xsec-retained-native-beta/${native_plugin}"
+            reconciliation="$(python scripts/external_source_factory.py --json reconcile-retained-native-beta --plugin-id "$native_plugin" --source-root "$source_root" --destination "$retained_root")"
+            reusable="$(printf '%s' "$reconciliation" | jq -er .reusable)"
+            if [ "$reusable" = "true" ]; then
+              retained_revision="$(printf '%s' "$reconciliation" | jq -er .source_revision)"
+              retained_revisions+=("--native-sidecar-source-revision-for" "$native_plugin=$retained_revision")
+              while IFS= read -r retained; do
+                rust_target="$(printf '%s' "$retained" | jq -er .rust_target)"
+                binary="$(printf '%s' "$retained" | jq -er .path)"
+                [ -f "$binary" ] && [ ! -L "$binary" ] && [ -s "$binary" ] || { echo "Retained Beta sidecar is unavailable for $native_plugin@$rust_target." >&2; exit 1; }
+                native_inputs+=("--native-sidecar-input" "$native_plugin@$rust_target=$binary")
+              done < <(printf '%s' "$reconciliation" | jq -rc '.inputs | fromjson | .[]')
+              continue
+            fi
+            echo "${native_plugin} does not reproduce its retained Beta; requiring current protected sidecars."
+            case "$native_plugin" in
+              com.xsec.attack-path) binary_name="attack-path-mcp" ;;
+              com.xsec.asset-discovery) binary_name="asset-discovery-mcp" ;;
+              *) echo "Unknown native plugin: $native_plugin" >&2; exit 1 ;;
+            esac
+            for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+              binary="$sidecar_root/xsec-native-sidecars-$target/$binary_name"
+              [ -f "$binary" ] && [ ! -L "$binary" ] && [ -s "$binary" ] || { echo "Protected builder did not provide a $native_plugin sidecar for $target." >&2; exit 1; }
+              native_inputs+=("--native-sidecar-input" "$native_plugin@$target=$binary")
+            done
           done
-          python scripts/build_market.py --clean --native-sidecar-source-revision "$NATIVE_SIDECARS_SOURCE_SHA" "${native_inputs[@]}"
+          python scripts/build_market.py --clean --native-sidecar-source-revision "$NATIVE_SIDECARS_SOURCE_SHA" "${retained_revisions[@]}" "${native_inputs[@]}"
           while IFS= read -r item; do
             plugin_id="$(printf '%s' "$item" | jq -er .plugin_id)"
             beta_sha="$(printf '%s' "$item" | jq -er .beta_sha)"

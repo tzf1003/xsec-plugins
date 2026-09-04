@@ -250,6 +250,22 @@ def parse_native_sidecar_inputs(values: Sequence[str]) -> dict[tuple[str, str], 
     return parsed
 
 
+def parse_native_sidecar_source_revisions(values: Sequence[str]) -> dict[str, str]:
+    """Parse allowlisted ``plugin-id=desktop-revision`` provenance overrides."""
+
+    parsed: dict[str, str] = {}
+    for value in values:
+        plugin_id, separator, revision = value.partition("=")
+        if not separator or not plugin_id or not SOURCE_REVISION_PATTERN.fullmatch(revision):
+            raise ValueError("native sidecar source revision must use plugin-id=lowercase-40-character-Git-SHA")
+        if plugin_id in parsed:
+            raise ValueError(f"duplicate native sidecar source revision for {plugin_id}")
+        if plugin_id not in RECIPES:
+            raise ValueError(f"native sidecar source revision is not allowlisted: {plugin_id}")
+        parsed[plugin_id] = revision
+    return parsed
+
+
 def recipe_for_source(plugin_id: str, source_dir: Path) -> NativeSidecarRecipe | None:
     """Return the recipe only for an explicit native Agent Plugin contract."""
 
