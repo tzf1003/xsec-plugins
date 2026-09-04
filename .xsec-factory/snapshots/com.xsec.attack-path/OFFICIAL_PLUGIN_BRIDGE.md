@@ -13,9 +13,8 @@ and `native.execute` permissions, and exposes the sidecar through its authentica
 MCP Fabric. Oh My Pi receives only that session projection; it does not install or
 start a second copy of the sidecar.
 
-The sidecar forwards `tools/call` to the XSec Host domain RPC named by
-`XSEC_ATTACK_PATH_HOST_RPC`. The Host derives assignment/project/lease context from
-the authenticated session and validates parent ownership, node relationships,
-revision conflicts, and audit events before writing AttackPathStore. Plugin package
-files stay immutable; nodes and findings are runtime data under the host-owned
-plugin data directory.
+Release artifacts inject the platform-native `bin/attack-path-mcp`; source
+directories remain binary-free. The MCP Fabric supplies task identity and
+permissions, while the sidecar stores nodes and findings in `PLUGIN_DATA`.
+Package files stay immutable; Host APIs retain browser, proxy, evidence, report,
+terminal, audit and sub-agent operations.

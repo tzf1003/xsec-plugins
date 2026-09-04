@@ -1,13 +1,13 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "com.xsec.asset-discovery",
-  "version": "1.3.9",
+  "version": "2.1.0",
   "description": "XSEC asset discovery business surface",
   "author": { "name": "XSEC" },
   "license": "MIT",
   "extensions": {
     "com.xsec.desktop": {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "displayName": "资产发现",
       "publisher": "XSEC",
       "icon": "compass",
@@ -20,7 +20,20 @@
         "workspace.session.read": { "reason": "显示资产收集的执行过程与日志" },
         "process.spawn": { "reason": "按用户确认启动或停止资产收集任务" },
         "pluginData.read": { "reason": "读取资产发现的账户级设置" },
-        "pluginData.write": { "reason": "保存资产发现设置和凭据" }
+        "pluginData.write": { "reason": "保存资产发现设置和凭据" },
+        "mcp.servers.register": { "reason": "注册资产归一化和查询 MCP server" },
+        "native.execute": { "reason": "执行已验证的资产发现 MCP sidecar" },
+        "secrets.own.read": { "reason": "将账户凭据注入声明的 MCP server" }
+      },
+      "credentialSlots": {
+        "hunter-api-key": {
+          "mcpServer": "asset-hunter",
+          "inject": { "kind": "environment", "name": "XSEC_ASSET_HUNTER_API_KEY" }
+        },
+        "fofa-api-key": {
+          "mcpServer": "asset-fofa",
+          "inject": { "kind": "environment", "name": "XSEC_ASSET_FOFA_API_KEY" }
+        }
       },
       "frontendApi": { "version": 2, "module": "single-esm", "methods": {
         "xsec.asset-discovery.defaults.get": { "capability": "workspace.session.read", "binding": "context" },
@@ -43,6 +56,23 @@
       "contributes": {
         "navigation": { "items": { "asset-discovery": { "location": "primary", "title": "资产发现", "icon": "compass", "route": "asset-discovery", "order": 400 } } },
         "routes": { "asset-discovery": { "path": "asset-discovery", "page": "asset-discovery" } },
+        "agentTools": {
+          "asset-candidates-normalize": {
+            "mcpServer": "asset-normalize",
+            "mcpTool": "asset_candidates_normalize",
+            "permission": "workspace.project.read"
+          },
+          "asset-hunter-query": {
+            "mcpServer": "asset-hunter",
+            "mcpTool": "asset_hunter_query",
+            "permission": "workspace.project.read"
+          },
+          "asset-fofa-query": {
+            "mcpServer": "asset-fofa",
+            "mcpTool": "asset_fofa_query",
+            "permission": "workspace.project.read"
+          }
+        },
         "settingsPages": {
           "asset-discovery": { "title": "资产发现", "group": "plugins", "page": "asset-discovery", "icon": "compass", "order": 100 }
         }
