@@ -96,10 +96,20 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         """Keep write authority on the reusable publication job."""
 
         workflow = yaml.safe_load(BATCH_RECONCILE.read_text(encoding="utf-8"))
+        publisher = yaml.safe_load(BATCH_PUBLISH.read_text(encoding="utf-8"))
+        recovery = yaml.safe_load(STALE_BATCH_RECOVERY.read_text(encoding="utf-8"))
 
         self.assertEqual(workflow["permissions"], {"actions": "read", "contents": "read"})
         self.assertEqual(
             workflow["jobs"]["build-current-batch"]["permissions"],
+            {"contents": "write", "id-token": "write", "pull-requests": "write"},
+        )
+        self.assertEqual(
+            publisher["jobs"]["build-native-sidecars"]["permissions"],
+            {"contents": "read"},
+        )
+        self.assertEqual(
+            recovery["jobs"]["rebuild-current-batch"]["permissions"],
             {"contents": "write", "id-token": "write", "pull-requests": "write"},
         )
 
