@@ -1975,10 +1975,8 @@ export function renderPlaceholder() {}
             with zipfile.ZipFile(artifact, "w") as archive:
                 archive.writestr("plugin.json", '{"name":"com.xsec.test","version":"1.0.0"}')
                 archive.writestr("./mcp.json", json.dumps({"mcpServers": {}}))
-            try:
+            with self.assertRaises(MarketplaceValidationError):
                 validate_archive(artifact, "com.xsec.test", "1.0.0")
-            except MarketplaceValidationError:
-                pass
 
     def test_unsafe_zip_member_is_rejected_before_manifest_read(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-zip-test-") as directory:
