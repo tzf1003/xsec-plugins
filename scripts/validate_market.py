@@ -3082,17 +3082,21 @@ def validate_native_sidecar_provenance(
     targets = artifact_targets(artifacts)
     if targets == {("any", "any")} and provenance is None:
         return
-    expected = {(target.os_name, target.arch) for target in recipe.targets}
-    if targets != expected:
-        fail(f"{label} native MCP artifacts must match the complete Factory target set")
     if provenance is None:
         fail(f"{label} native MCP release requires native sidecar provenance")
     try:
         normalized = validate_provenance(recipe, provenance)
     except ValueError as error:
         fail(str(error))
-    targets = normalized["targets"]
-    for target in targets:
+    provenance_targets = normalized["targets"]
+    expected = {
+        (target["os"], target["arch"])
+        for target in provenance_targets
+        if isinstance(target, dict)
+    }
+    if targets != expected:
+        fail(f"{label} native MCP artifacts must match its provenance target matrix")
+    for target in provenance_targets:
         if not isinstance(target, dict):
             raise AssertionError("validated native target must be an object")
         rust_target = target.get("rustTarget")

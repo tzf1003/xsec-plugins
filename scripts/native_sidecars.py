@@ -24,6 +24,12 @@ from typing import Iterator, Mapping, Sequence
 MAX_SIDECAR_BYTES = 64 * 1024 * 1024
 SOURCE_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 NATIVE_SIDECAR_PERMISSIONS = frozenset({"mcp.servers.register", "native.execute"})
+NATIVE_SIDECAR_TARGET_MATRIX_VERSION = 2
+LEGACY_NATIVE_SIDECAR_RUST_TARGETS = frozenset({
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+})
 
 
 @dataclass(frozen=True)
@@ -136,6 +142,7 @@ def provenance_for_inputs(
             "repository": recipe.source_repository,
             "revision": source_revision,
         },
+        "targetMatrixVersion": NATIVE_SIDECAR_TARGET_MATRIX_VERSION,
         "targets": targets,
     }
 
@@ -143,18 +150,16 @@ def provenance_for_inputs(
 def validate_provenance(recipe: NativeSidecarRecipe, value: object) -> dict[str, object]:
     """Validate signed release metadata before comparing packaged binaries."""
 
-    if not isinstance(value, dict) or set(value) != {"source", "targets"}:
-        raise ValueError("native sidecar provenance must contain only source and targets")
-    source = value.get("source")
+    if not isinstance(value, dict) or set(value) not in (
+        {"source", "targets"},
+        {"source", "targetMatrixVersion", "targets"},
+    ):
+        raise ValueError("native sidecar provenance has an unsupported schema")
     targets = value.get("targets")
-    if not isinstance(source, dict) or set(source) != {"repository", "revision"}:
-        raise ValueError("native sidecar provenance source must contain repository and revision")
-    if source.get("repository") != recipe.source_repository:
-        raise ValueError(f"native sidecar provenance source must be {recipe.source_repository}")
-    revision = source.get("revision")
-    if not isinstance(revision, str) or not SOURCE_REVISION_PATTERN.fullmatch(revision):
-        raise ValueError("native sidecar provenance source revision must be a lowercase 40-character Git SHA")
-    if not isinstance(targets, list) or len(targets) != len(recipe.targets):
+    revision = provenance_source_revision(recipe, value.get("source"))
+    target_matrix_version = value.get("targetMatrixVersion")
+    expected_targets = targets_for_provenance_version(recipe, target_matrix_version)
+    if not isinstance(targets, list) or len(targets) != len(expected_targets):
         raise ValueError("native sidecar provenance must declare every allowlisted target exactly once")
     actual: dict[str, dict[str, object]] = {}
     for target in targets:
@@ -168,7 +173,7 @@ def validate_provenance(recipe: NativeSidecarRecipe, value: object) -> dict[str,
             raise ValueError("native sidecar provenance target must have a lowercase SHA-256")
         actual[rust_target] = target
     normalized_targets = []
-    for expected in recipe.targets:
+    for expected in expected_targets:
         target = actual.get(expected.rust_target)
         if target is None or target.get("os") != expected.os_name or target.get("arch") != expected.arch:
             raise ValueError(f"native sidecar provenance has invalid target {expected.rust_target}")
@@ -178,7 +183,43 @@ def validate_provenance(recipe: NativeSidecarRecipe, value: object) -> dict[str,
             "arch": expected.arch,
             "sha256": target["sha256"],
         })
-    return {"source": {"repository": recipe.source_repository, "revision": revision}, "targets": normalized_targets}
+    normalized = {
+        "source": {"repository": recipe.source_repository, "revision": revision},
+        "targets": normalized_targets,
+    }
+    if target_matrix_version is not None:
+        normalized["targetMatrixVersion"] = target_matrix_version
+    return normalized
+
+
+def provenance_source_revision(recipe: NativeSidecarRecipe, source: object) -> str:
+    """Validate the immutable source evidence and return its revision."""
+
+    if not isinstance(source, dict) or set(source) != {"repository", "revision"}:
+        raise ValueError("native sidecar provenance source must contain repository and revision")
+    if source.get("repository") != recipe.source_repository:
+        raise ValueError(f"native sidecar provenance source must be {recipe.source_repository}")
+    revision = source.get("revision")
+    if not isinstance(revision, str) or not SOURCE_REVISION_PATTERN.fullmatch(revision):
+        raise ValueError("native sidecar provenance source revision must be a lowercase 40-character Git SHA")
+    return revision
+
+
+def targets_for_provenance_version(
+    recipe: NativeSidecarRecipe,
+    target_matrix_version: object,
+) -> tuple[NativeTarget, ...]:
+    """Return the exact target matrix selected by signed provenance."""
+
+    if target_matrix_version is None:
+        return tuple(
+            target
+            for target in recipe.targets
+            if target.rust_target in LEGACY_NATIVE_SIDECAR_RUST_TARGETS
+        )
+    if target_matrix_version == NATIVE_SIDECAR_TARGET_MATRIX_VERSION:
+        return recipe.targets
+    raise ValueError("native sidecar provenance has an unsupported target matrix version")
 
 
 def sha256_file(path: Path) -> str:
