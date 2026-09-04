@@ -51,7 +51,17 @@ def sidecar_inputs(root: Path, recipe: native_sidecars.NativeSidecarRecipe) -> d
 
 class NativeSidecarSourceContractTests(unittest.TestCase):
     def test_legacy_registered_sources_build_portable_any_artifacts(self) -> None:
-        for plugin_id in native_sidecars.RECIPES:
+        # Only cover allowlisted plugins whose snapshots have not opted into the
+        # native sidecar contract yet. Adopted native snapshots are covered by
+        # the explicit native contract / adoption tests instead.
+        legacy_plugin_ids = [
+            plugin_id
+            for plugin_id in native_sidecars.RECIPES
+            if native_sidecars.recipe_for_source(plugin_id, ROOT / ".xsec-factory" / "snapshots" / plugin_id) is None
+        ]
+        if not legacy_plugin_ids:
+            self.skipTest("all registered recipes have opted into the native sidecar contract")
+        for plugin_id in legacy_plugin_ids:
             source = ROOT / ".xsec-factory" / "snapshots" / plugin_id
             with self.subTest(plugin_id=plugin_id), tempfile.TemporaryDirectory(prefix="xsec-legacy-source-") as directory:
                 output = Path(directory) / plugin_id
