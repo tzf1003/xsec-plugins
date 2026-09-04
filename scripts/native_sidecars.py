@@ -261,10 +261,12 @@ def validate_mcp_declaration(
     target: NativeTarget | None = None,
 ) -> None:
     servers = mcp_servers(raw, label)
-    stdio_names = {name for name, server in servers.items() if isinstance(server, dict) and server.get("type") == "stdio"}
     expected_names = {server.server_id for server in recipe.servers}
-    if stdio_names != expected_names:
+    if set(servers.keys()) != expected_names:
         raise ValueError(f"{label} must declare only the allowlisted stdio servers")
+    for server in servers.values():
+        if not isinstance(server, dict) or server.get("type") != "stdio":
+            raise ValueError(f"{label} must declare only the allowlisted stdio servers")
     command = mcp_command_for(recipe, target)
     for expected in recipe.servers:
         server = servers.get(expected.server_id)

@@ -1969,6 +1969,17 @@ export function renderPlaceholder() {}
                     str(raised.exception),
                 )
 
+    def test_dot_prefixed_mcp_json_member_does_not_raise_keyerror(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-market-dot-mcp-") as directory:
+            artifact = Path(directory) / "dot-mcp.xsec-plugin"
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr("plugin.json", '{"name":"com.xsec.test","version":"1.0.0"}')
+                archive.writestr("./mcp.json", json.dumps({"mcpServers": {}}))
+            try:
+                validate_archive(artifact, "com.xsec.test", "1.0.0")
+            except MarketplaceValidationError:
+                pass
+
     def test_unsafe_zip_member_is_rejected_before_manifest_read(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-zip-test-") as directory:
             artifact = Path(directory) / "unsafe.xsec-plugin"

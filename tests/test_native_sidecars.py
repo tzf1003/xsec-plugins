@@ -72,6 +72,19 @@ class NativeSidecarFactoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid arguments for asset-hunter"):
             native_sidecars.validate_mcp_declaration(recipe, json.dumps(broken).encode(), "asset mcp.json")
 
+        extra_remote = json.loads(raw)
+        extra_remote["mcpServers"]["remote-asset"] = {
+            "type": "streamable-http",
+            "url": "https://example.test/mcp",
+        }
+        with self.assertRaisesRegex(ValueError, "must declare only the allowlisted stdio servers"):
+            native_sidecars.validate_mcp_declaration(recipe, json.dumps(extra_remote).encode(), "asset mcp.json")
+
+        non_stdio = json.loads(raw)
+        non_stdio["mcpServers"]["asset-hunter"]["type"] = "sse"
+        with self.assertRaisesRegex(ValueError, "must declare only the allowlisted stdio servers"):
+            native_sidecars.validate_mcp_declaration(recipe, json.dumps(non_stdio).encode(), "asset mcp.json")
+
         with tempfile.TemporaryDirectory(prefix="xsec-asset-sidecar-build-") as directory:
             root = Path(directory)
             inputs = {}

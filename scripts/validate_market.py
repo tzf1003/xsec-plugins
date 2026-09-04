@@ -2916,7 +2916,7 @@ def validate_archive(
                 manifest_bytes = archive.read("plugin.json")
             except KeyError:
                 fail(f"artifact {path} does not include root plugin.json")
-            mcp_bytes = archive.read("mcp.json") if "mcp.json" in members else None
+            mcp_bytes = archive.read(members["mcp.json"]) if "mcp.json" in members else None
     except (OSError, zipfile.BadZipFile, RuntimeError) as error:
         fail(f"cannot safely read artifact {path}: {error}")
     if len(manifest_bytes) > MAX_ZIP_FILE_BYTES:
