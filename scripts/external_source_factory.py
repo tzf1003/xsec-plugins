@@ -2626,6 +2626,39 @@ def beta_snapshot_artifact_digest(registration: Registration, beta: dict[str, ob
     return digest
 
 
+def validate_beta_snapshot_binding(
+    root: Path,
+    registration: Registration,
+    snapshot: Path,
+    beta: dict[str, object],
+) -> None:
+    """Prove that the retained snapshot still produces the selected Beta."""
+
+    expected_release_id = beta.get("releaseId")
+    if not isinstance(expected_release_id, str) or not RELEASE_ID_PATTERN.fullmatch(expected_release_id):
+        fail(f"external official plugin {registration.plugin_id} has an invalid Beta release ID")
+    if beta.get("nativeSidecarProvenance") is not None:
+        candidate_release = candidate_release_id(root, snapshot, registration, beta)
+        if candidate_release != expected_release_id:
+            fail(
+                f"external official plugin {registration.plugin_id} snapshot does not reproduce "
+                "its immutable Beta artifact"
+            )
+        return
+    expected_digest = beta_snapshot_artifact_digest(registration, beta)
+    with tempfile.TemporaryDirectory(prefix="xsec-disabled-external-snapshot-") as directory:
+        candidate = Path(directory) / "candidate.xsec-plugin"
+        try:
+            write_zip(snapshot, candidate)
+        except ValueError as error:
+            raise ExternalSourceFactoryError(str(error)) from error
+        if sha256(candidate) != expected_digest:
+            fail(
+                f"external official plugin {registration.plugin_id} snapshot does not reproduce "
+                "its immutable Beta artifact"
+            )
+
+
 def validate_disabled_snapshot_artifacts(
     root: Path,
     registration: Registration,
@@ -2644,18 +2677,7 @@ def validate_disabled_snapshot_artifacts(
     """
 
     require_link_free_tree(snapshot, f"disabled external official plugin {registration.plugin_id} snapshot")
-    expected_beta_digest = beta_snapshot_artifact_digest(registration, beta)
-    with tempfile.TemporaryDirectory(prefix="xsec-disabled-external-snapshot-") as directory:
-        candidate = Path(directory) / "candidate.xsec-plugin"
-        try:
-            write_zip(snapshot, candidate)
-        except ValueError as error:
-            raise ExternalSourceFactoryError(str(error)) from error
-        if sha256(candidate) != expected_beta_digest:
-            fail(
-                f"disabled external official plugin {registration.plugin_id} snapshot does not reproduce "
-                "its immutable Beta artifact"
-            )
+    validate_beta_snapshot_binding(root, registration, snapshot, beta)
 
     releases = document.get("releases")
     if not isinstance(releases, list) or not releases:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -78,6 +79,44 @@ def native_registration() -> factory.Registration:
 
 
 class NativeSidecarFactoryTests(unittest.TestCase):
+    def test_first_party_native_adoption_snapshot_rebuilds_the_selected_beta(self) -> None:
+        """Adoption validates native snapshots from retained Sidecar evidence."""
+
+        with tempfile.TemporaryDirectory(prefix="xsec-native-adoption-snapshot-") as directory:
+            root = Path(directory)
+            source = write_attack_path_source(root)
+            factory_root = root / "factory"
+            snapshot = factory_root / ".xsec-factory" / "snapshots" / PLUGIN_ID
+            snapshot.parent.mkdir(parents=True)
+            shutil.copytree(source, snapshot)
+            build_market.build_plugin(
+                snapshot,
+                snapshot,
+                native_sidecar_inputs=sidecar_inputs(root),
+                native_sidecar_source_revision=SOURCE_REVISION,
+            )
+            release = json.loads((snapshot / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))
+            beta = release["releases"][0]
+
+            factory.validate_disabled_snapshot_artifacts(
+                factory_root,
+                native_registration(),
+                snapshot,
+                release,
+                beta,
+            )
+
+            frontend = snapshot / "com.xsec.desktop" / "frontend" / "index.js"
+            frontend.write_text("export const changed = true;\n", encoding="utf-8")
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "does not reproduce its immutable Beta artifact"):
+                factory.validate_disabled_snapshot_artifacts(
+                    factory_root,
+                    native_registration(),
+                    snapshot,
+                    release,
+                    beta,
+                )
+
     def test_native_release_evidence_and_main_rebuild_bind_all_retained_sidecars(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-native-sidecar-evidence-") as directory:
             root = Path(directory)
