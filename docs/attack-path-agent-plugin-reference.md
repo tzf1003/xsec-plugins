@@ -60,8 +60,10 @@ Sidecar/control audience、单一 action、assignment、lease generation、sessi
 校验签名、audience、action、scope、到期、nonce 和当前撤销/quarantine 状态。Host 先持久化
 操作 ID、同一 scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer
 token、`context handle` 和 Secret。Sidecar 必须把操作 ID 绑定到同一 scope，并在单个原子事务中用
-compare-and-set 同时校验当前 revision 与预期 revision 后执行幂等写入；revision 过期时
-显式失败。Host 确认结果后再提交调度状态。重启后 `pending` 操作保持可见、阻断报告终结并
+operation ID 和 canonical request digest 先查询已存结果：同 digest 直接返回已提交 outcome，不再做
+revision 校验；同 ID 不同 digest 显式拒绝。只有新操作才使用 compare-and-set 校验当前
+revision 与预期 revision，并在同一事务内提交领域写入、revision 递增和 outcome。revision
+过期时显式失败。Host 确认结果后再提交调度状态。重启后 `pending` 操作保持可见、阻断报告终结并
 由用户显式恢复；已失败且事务未提交的操作保留诊断，不计为在途写入。恢复时重新建立并验证
 授权，且列出和恢复都必须匹配调用方当前 assignment，不能复用持久化 context handle 或只凭
 operation ID 跨任务重放。

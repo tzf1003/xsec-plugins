@@ -53,9 +53,11 @@ agentTools、存储和真实测试。
   停止切换、revision 核对、失败和重启恢复；验证共用线性化准入门的延迟写入无法
   越过已排空栅栏，并验证 `prepared` 崩溃回到上一个 generation、`committed` 崩溃幂等完成切换。
 - 控制权限：验证 context handle 的 audience/action/assignment/lease/session/operation/revision 绑定、
-  短时过期、单次 nonce，以及每次调用的签名与撤销/quarantine 重验。
+  短时过期、单次 nonce，以及每次调用的签名与撤销/quarantine 重验；覆盖写入已提交但
+  响应丢失后同 operation/digest 直接回放 outcome，以及同 ID 不同 digest 被拒绝。
 - 能力统计：同一 artifact/capability/role/来源投影键的契约分歧必须阻断门禁；滚动更新
-  与 parent/sub-Agent 的不同投影键作为预期变体分别核对。
+  与 parent/sub-Agent 的不同投影键作为预期变体分别核对；用包含凭据、任务上下文、
+  超限 Schema 或动态值的 `tools/list` 验证创建会话显式失败，且快照只保留已审批契约。
 - 交付：对应平台的不可变 archive、签名、Factory Beta smoke 和 Stable 指针提升。
 
 交付报告必须列出最终矩阵、portable/embedded 数据流、manifest/MCP/Skill/Host binding、

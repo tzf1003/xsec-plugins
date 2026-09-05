@@ -34,7 +34,11 @@ project、session、role、token 或 secret 写进 manifest、Skill、`mcp.json`
 
 Desktop 会话快照持久保存 artifact SHA、`PLUGIN_DATA` 映射、Skill roots、Tool 契约、
 allowlist、角色和 capability revision。活动 lease、保留历史与回滚指针共同保护这些
-artifact。恢复时必须先核对快照归属和精确 artifact，再按当前项目/会话成员关系、Host
+artifact。Tool 契约只能来自不携带生产凭据的候选 probe；Host 先对响应执行规范化、
+Schema/字符集/大小限制和 Secret/任务上下文检查，将通过审批的契约及摘要写入
+capability registry。带运行时凭据的 `tools/list` 只能与该摘要精确比较，不得把其原始响应
+写入会话快照；动态值或敏感/上下文值直接使会话创建失败。恢复时必须先核对快照归属和精确
+artifact，再按当前项目/会话成员关系、Host
 授权策略、插件启停状态、签名信任、quarantine 和撤销记录重新鉴权；当前权限不能完整授权
 冻结投影时必须拒绝恢复，不得按旧 allowlist 签发凭据。Bearer token 与 context
 handle 不进入快照。历史恢复验收必须覆盖成员权限降低、插件停用、信任撤销、quarantine
@@ -136,7 +140,8 @@ Beta 前的本地/CI 门禁至少包括：真实 archive 验证、独立 OMP 18.
 Desktop 的只读 `_xsec/session/capabilities` 回读必须能逐项核对最终启用 Tool 的来源、
 schema 与 annotations。契约比较键至少包含 artifact SHA、capability revision、角色/投影
 和启用来源集；滚动更新或 parent/sub-Agent 导致的不同键是可并存变体，只有同一键内返回
-不同 Tool 契约才是冲突。必需会话未连接、失败或同键冲突时，当前统计为
+不同 Tool 契约才是冲突。回读只使用 capability registry 中的已审批规范契约，不回显未持久的
+运行时 `tools/list` 值。必需会话未连接、失败或同键冲突时，当前统计为
 `unknown/incomplete`；历史数量不得进入当前合计。必需会话出现上述任一失败条件时，Beta
 与 Stable 门禁必须失败，不得被成功会话汇总掩盖。
 
