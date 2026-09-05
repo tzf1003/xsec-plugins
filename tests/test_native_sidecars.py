@@ -95,7 +95,14 @@ class NativeSidecarFactoryTests(unittest.TestCase):
                 native_sidecar_inputs=original_inputs,
                 native_sidecar_source_revision=SOURCE_REVISION,
             )
-            original_release = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))
+            release_path = output / ".xsec-market" / "releases.json"
+            original_release = json.loads(release_path.read_text(encoding="utf-8"))
+            preserved_release_bytes = json.dumps(
+                original_release,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            release_path.write_bytes(preserved_release_bytes)
             rebuilt_root = root / "rebuilt"
             rebuilt_root.mkdir()
             rebuilt_inputs = sidecar_inputs(rebuilt_root)
@@ -137,9 +144,10 @@ class NativeSidecarFactoryTests(unittest.TestCase):
                 native_sidecar_source_revisions={PLUGIN_ID: SOURCE_REVISION},
             )
             self.assertEqual(
-                json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8")),
+                json.loads(release_path.read_text(encoding="utf-8")),
                 original_release,
             )
+            self.assertEqual(release_path.read_bytes(), preserved_release_bytes)
 
     def test_first_party_native_adoption_snapshot_rebuilds_the_selected_beta(self) -> None:
         """Adoption validates native snapshots from retained Sidecar evidence."""

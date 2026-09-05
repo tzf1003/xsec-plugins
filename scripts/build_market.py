@@ -469,6 +469,19 @@ def load_release_document(release_path: Path, plugin_id: str) -> dict[str, objec
     return {"schemaVersion": 2, "pluginId": plugin_id, "releases": releases, "channels": normalized_channels}
 
 
+def write_release_document(
+    release_path: Path,
+    release: dict[str, object],
+    original_bytes: bytes | None,
+) -> None:
+    """Write only semantic release changes, preserving immutable index bytes."""
+
+    if original_bytes is not None and json.loads(original_bytes.decode("utf-8")) == release:
+        return
+    release_path.parent.mkdir(parents=True, exist_ok=True)
+    release_path.write_bytes(stable_json(release))
+
+
 def write_zip(plugin_dir: Path, destination: Path) -> None:
     files = iter_plugin_files(plugin_dir)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -678,6 +691,7 @@ def build_plugin(
     artifact_dir = release_root / ARTIFACT_DIR_NAME
     release_path = release_root / "releases.json"
     release = load_release_document(release_path, plugin_id)
+    original_release_bytes = release_path.read_bytes() if release_path.exists() else None
     engines = require_release_engines(
         manifest["extensions"]["com.xsec.desktop"]["engines"],
         f"plugin manifest {plugin_id}",
@@ -717,8 +731,7 @@ def build_plugin(
     if not isinstance(channels, dict):
         raise ValueError(f"release metadata for {plugin_id} has invalid channels")
     channels["beta"] = {"releaseId": target["releaseId"]}
-    release_path.parent.mkdir(parents=True, exist_ok=True)
-    release_path.write_bytes(stable_json(release))
+    write_release_document(release_path, release, original_release_bytes)
 
 
 def build_candidate_artifacts(
