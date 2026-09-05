@@ -2230,6 +2230,15 @@ export function renderPlaceholder() {}
         self.assertIn('$native_plugin@$target=$binary', steps)
         self.assertIn("--native-sidecar-source-revision-for", steps)
         self.assertIn("--native-sidecar-source-revision", steps)
+        self.assertIn("NATIVE_SIDECARS_SOURCE_SHA: ${{ inputs.native_sidecars_source_sha }}", steps)
+        self.assertIn(
+            'build_args=(--clean --native-sidecar-source-revision "$NATIVE_SIDECARS_SOURCE_SHA")',
+            steps,
+        )
+        self.assertNotIn(
+            'build_args=(--clean --native-sidecar-source-revision "${{ inputs.native_sidecars_source_sha }}")',
+            steps,
+        )
 
     def test_disposable_build_rejects_nested_plugin_link_before_copytree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-copy-link-") as directory:

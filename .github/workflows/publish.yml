@@ -736,6 +736,7 @@ jobs:
         env:
           EXTERNAL: ${{ steps.request.outputs.external }}
           TARGET_PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
+          NATIVE_SIDECARS_SOURCE_SHA: ${{ inputs.native_sidecars_source_sha }}
         run: |
           set -euo pipefail
           sidecar_root="$RUNNER_TEMP/xsec-native-sidecars"
@@ -780,7 +781,7 @@ jobs:
               native_inputs+=("--native-sidecar-input" "$native_plugin@$target=$binary")
             done
           done
-          build_args=(--clean --native-sidecar-source-revision "${{ inputs.native_sidecars_source_sha }}")
+          build_args=(--clean --native-sidecar-source-revision "$NATIVE_SIDECARS_SOURCE_SHA")
           build_args+=("${retained_revisions[@]}")
           build_args+=("${native_inputs[@]}")
           python scripts/build_market.py "${build_args[@]}"
