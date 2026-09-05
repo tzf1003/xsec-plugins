@@ -733,19 +733,55 @@ jobs:
             --plugin-id "$PLUGIN_ID" --source-sha "$SOURCE_SHA" --release-id "$RELEASE_ID" --publisher "$PUBLISHER"
       - name: Build an immutable beta release with reviewed native sidecars
         if: ${{ steps.request.outputs.maintenance != 'true' && (steps.request.outputs.external != 'true' || steps.request.outputs.channel == 'beta') }}
+        env:
+          EXTERNAL: ${{ steps.request.outputs.external }}
+          TARGET_PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
         run: |
           set -euo pipefail
           sidecar_root="$RUNNER_TEMP/xsec-native-sidecars"
           native_inputs=()
-          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
-            attack_path_binary="$sidecar_root/xsec-native-sidecars-$target/attack-path-mcp"
-            asset_discovery_binary="$sidecar_root/xsec-native-sidecars-$target/asset-discovery-mcp"
-            [ -f "$attack_path_binary" ] && [ ! -L "$attack_path_binary" ] && [ -s "$attack_path_binary" ] || { echo "Protected builder did not provide an attack-path sidecar for $target." >&2; exit 1; }
-            [ -f "$asset_discovery_binary" ] && [ ! -L "$asset_discovery_binary" ] && [ -s "$asset_discovery_binary" ] || { echo "Protected builder did not provide an asset-discovery sidecar for $target." >&2; exit 1; }
-            native_inputs+=("--native-sidecar-input" "com.xsec.attack-path@$target=$attack_path_binary")
-            native_inputs+=("--native-sidecar-input" "com.xsec.asset-discovery@$target=$asset_discovery_binary")
+          retained_revisions=()
+          for native_plugin in com.xsec.attack-path com.xsec.asset-discovery; do
+            if [ "$EXTERNAL" = "true" ] && [ "$native_plugin" != "$TARGET_PLUGIN_ID" ]; then
+              retained_source_root="$RUNNER_TEMP/xsec-retained-native-source/$native_plugin"
+              retained_root="$RUNNER_TEMP/xsec-retained-native-beta/$native_plugin"
+              mkdir -p "$retained_source_root/plugins"
+              cp -R ".xsec-factory/snapshots/$native_plugin" "$retained_source_root/plugins/$native_plugin"
+              reconciliation="$(python scripts/external_source_factory.py --json reconcile-retained-native-beta \
+                --plugin-id "$native_plugin" --source-root "$retained_source_root" --destination "$retained_root")"
+              [ "$(printf '%s' "$reconciliation" | jq -er .reusable)" = "true" ] || {
+                echo "Untargeted native plugin $native_plugin does not reproduce its retained Beta." >&2
+                exit 1
+              }
+              retained_revision="$(printf '%s' "$reconciliation" | jq -er .source_revision)"
+              retained_revisions+=("--native-sidecar-source-revision-for" "$native_plugin=$retained_revision")
+              while IFS= read -r retained; do
+                rust_target="$(printf '%s' "$retained" | jq -er .rust_target)"
+                binary="$(printf '%s' "$retained" | jq -er .path)"
+                [ -f "$binary" ] && [ ! -L "$binary" ] && [ -s "$binary" ] || {
+                  echo "Retained Beta sidecar is unavailable for $native_plugin@$rust_target." >&2
+                  exit 1
+                }
+                native_inputs+=("--native-sidecar-input" "$native_plugin@$rust_target=$binary")
+              done < <(printf '%s' "$reconciliation" | jq -rc '.inputs | fromjson | .[]')
+              continue
+            fi
+            case "$native_plugin" in
+              com.xsec.attack-path) binary_name="attack-path-mcp" ;;
+              com.xsec.asset-discovery) binary_name="asset-discovery-mcp" ;;
+              *) echo "Unknown native plugin: $native_plugin" >&2; exit 1 ;;
+            esac
+            for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+              binary="$sidecar_root/xsec-native-sidecars-$target/$binary_name"
+              [ -f "$binary" ] && [ ! -L "$binary" ] && [ -s "$binary" ] || {
+                echo "Protected builder did not provide a $native_plugin sidecar for $target." >&2
+                exit 1
+              }
+              native_inputs+=("--native-sidecar-input" "$native_plugin@$target=$binary")
+            done
           done
           build_args=(--clean --native-sidecar-source-revision "${{ inputs.native_sidecars_source_sha }}")
+          build_args+=("${retained_revisions[@]}")
           build_args+=("${native_inputs[@]}")
           python scripts/build_market.py "${build_args[@]}"
       - name: Gate external Beta smoke on deterministic registered main rebuild

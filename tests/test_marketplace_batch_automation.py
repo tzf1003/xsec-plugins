@@ -97,6 +97,20 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
         )
         self.assertNotIn("outputs.event_plugin_id", workflow)
 
+    def test_single_source_publication_retains_untargeted_native_betas(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+
+        for rule in (
+            'TARGET_PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}',
+            '[ "$EXTERNAL" = "true" ] && [ "$native_plugin" != "$TARGET_PLUGIN_ID" ]',
+            "reconcile-retained-native-beta",
+            "--native-sidecar-source-revision-for",
+            "Untargeted native plugin $native_plugin does not reproduce its retained Beta.",
+            ".inputs | fromjson | .[]",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, workflow)
+
     def test_batch_caller_grants_write_scope_only_to_the_publisher(self) -> None:
         """Keep write authority on the reusable publication job."""
 

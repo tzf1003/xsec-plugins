@@ -2226,7 +2226,9 @@ export function renderPlaceholder() {}
         self.assertIn("--package xsec-attack-path-mcp", sidecar_job)
         self.assertIn("--package xsec-asset-discovery-mcp", sidecar_job)
         self.assertIn("xsec-native-sidecars-${{ matrix.rust_target }}", sidecar_job)
-        self.assertIn("com.xsec.asset-discovery@$target=$asset_discovery_binary", steps)
+        self.assertIn('for native_plugin in com.xsec.attack-path com.xsec.asset-discovery', steps)
+        self.assertIn('$native_plugin@$target=$binary', steps)
+        self.assertIn("--native-sidecar-source-revision-for", steps)
         self.assertIn("--native-sidecar-source-revision", steps)
 
     def test_disposable_build_rejects_nested_plugin_link_before_copytree(self) -> None:
