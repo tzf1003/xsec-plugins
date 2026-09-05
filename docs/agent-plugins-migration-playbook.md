@@ -43,6 +43,8 @@ agentTools、存储和真实测试。
   OMP 16.4.8 与 18.0.9 各自命名函数下的最终合并 Tool 集合 wire-name 冲突和审批；Skill
   重名还要覆盖全部实际启用来源。受限 probe 环境必须证明失败探测不能触及活动 artifact、
   生产数据、激活指针或 capability revision。
+- schema v2：验证 `agentTools.<binding-id>.roles` 只接受非空、无重复的 `parent`/`sub`
+  数组，缺省时投影为 `["parent"]`；无效 binding 只停用该 binding。
 - 生命周期：持久化 artifact/`PLUGIN_DATA` 引用、A→B→C 会话冻结、历史恢复重新鉴权（含撤销
   成员资格、策略变更、插件停用、信任撤销或 quarantine 后拒绝）、普通更新、组件停用、
   quarantine、lease 回收和 `PLUGIN_DATA` 跨升级。

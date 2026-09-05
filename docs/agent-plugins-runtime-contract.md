@@ -51,8 +51,9 @@ handle 不进入快照。历史恢复验收必须覆盖成员权限降低、插�
 
 - `agentTools` 仅绑定 `mcpServer`、`mcpTool`、权限和可选 UI 归属；Tool schema、简介
   与执行契约来自 server 的真实 `tools/list`。
-- `agentTools.roles` 可声明 `parent`、`sub`，省略时仅允许主 Agent。子会话能力是父投影、
-  插件声明和 Host 授权的交集；攻击路径的节点范围由服务端强制执行。
+- 每个 binding 可在 `agentTools.<binding-id>.roles` 声明一个非空、无重复的字符串数组，
+  元素只能是 `parent` 或 `sub`；省略时默认为 `["parent"]`。子会话能力是父投影、
+  binding 声明和 Host 授权的交集；攻击路径的节点范围由服务端强制执行。
 - `frontendApi` 可绑定同一 MCP Tool；Desktop 在调用时注入 renderer context。
 - credential slot 只声明名称与注入位置；值由 XSec Secret Vault 保存。
 - 旧 schema v1 仅可通过 Desktop 的 `LegacyHostToolAdapter` 保留历史会话，不能声明新
