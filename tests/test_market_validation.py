@@ -2226,8 +2226,19 @@ export function renderPlaceholder() {}
         self.assertIn("--package xsec-attack-path-mcp", sidecar_job)
         self.assertIn("--package xsec-asset-discovery-mcp", sidecar_job)
         self.assertIn("xsec-native-sidecars-${{ matrix.rust_target }}", sidecar_job)
-        self.assertIn("com.xsec.asset-discovery@$target=$asset_discovery_binary", steps)
+        self.assertIn('for native_plugin in com.xsec.attack-path com.xsec.asset-discovery', steps)
+        self.assertIn('$native_plugin@$target=$binary', steps)
+        self.assertIn("--native-sidecar-source-revision-for", steps)
         self.assertIn("--native-sidecar-source-revision", steps)
+        self.assertIn("NATIVE_SIDECARS_SOURCE_SHA: ${{ inputs.native_sidecars_source_sha }}", steps)
+        self.assertIn(
+            'build_args=(--clean --native-sidecar-source-revision "$NATIVE_SIDECARS_SOURCE_SHA")',
+            steps,
+        )
+        self.assertNotIn(
+            'build_args=(--clean --native-sidecar-source-revision "${{ inputs.native_sidecars_source_sha }}")',
+            steps,
+        )
 
     def test_disposable_build_rejects_nested_plugin_link_before_copytree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-copy-link-") as directory:
