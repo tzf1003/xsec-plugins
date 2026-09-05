@@ -29,7 +29,7 @@ agentTools、存储和真实测试。
    extension 使用 schema v2。
 2. 将领域实现放入真实 stdio 或 HTTPS MCP，并让其使用插件实例的 `PLUGIN_DATA`。
 3. 以真实 `tools/list` 作为 schema 与描述来源；在 schema v2 中添加 MCP allowlist、
-   permission 和 frontend binding，不复制 Tool schema。
+   permission、可选 `parent`/`sub` 角色和 frontend binding，不复制 Tool schema。
 4. 按需要定义旧 Tool、旧存储和历史会话的有期限 projection。
 5. 增加真实边界验收：SQLite、子进程、loopback MCP、OMP ACP 和 Tauri。
 6. 更新源码 README、Factory 发布输入和平台 artifact 验收；再进入 Beta。
@@ -39,8 +39,12 @@ agentTools、存储和真实测试。
 - 安装：纯 portable 包、有效/缺失/无效 XSec extension、无效 Skill、无效 MCP 文档和
   单 server 失败。
 - 运行：`initialize`、`tools/list`、`tools/call`、Tool allowlist、任务隔离、更新产生的
-  capability revision、unknown/incomplete 统计、wire-name 冲突和审批。
-- 生命周期：会话冻结、普通更新、组件停用、quarantine、lease 回收和 `PLUGIN_DATA` 跨升级。
+  capability revision、unknown/incomplete 统计、最终合并 Tool 集合的 wire-name 冲突和审批；
+  Skill 重名还要覆盖全部实际启用来源。
+- 生命周期：持久化 artifact/`PLUGIN_DATA` 引用、A→B→C 会话冻结、历史恢复重新鉴权、普通
+  更新、组件停用、quarantine、lease 回收和 `PLUGIN_DATA` 跨升级。
+- 数据：Host/Sidecar 操作幂等、在途写入栅栏、真实数据库候选迁移、双库无冲突合并、冲突
+  停止切换、revision 核对、失败和重启恢复。
 - 交付：对应平台的不可变 archive、签名、Factory Beta smoke 和 Stable 指针提升。
 
 交付报告必须列出最终矩阵、portable/embedded 数据流、manifest/MCP/Skill/Host binding、

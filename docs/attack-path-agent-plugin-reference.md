@@ -53,19 +53,28 @@ Fabric 只接受 Bearer task capability，并在调用边界重建 opaque contex
 `resources/updated`。侧边栏收到事件后按 revision 重新读取，不以 renderer 的乐观状态
 作为权威结果。
 
+节点绑定、完成、释放和 scope 清理由隐藏的 `xsec/attack-path/control` 处理。该请求不进入
+Agent Tool 清单，只接受 Host 签发的受限 context handle。Host 先持久化操作 ID、预期
+revision、请求与状态；Sidecar 按操作 ID 幂等写入，Host 确认结果后再提交调度状态。重启后
+未决操作保持可见，并由用户显式恢复。
+
+报告终结与清理按 assignment 建立写入栅栏，等待在途事务完成，再核对 Sidecar revision、
+节点、子 Agent 和 Host 操作。栅栏后的迟到写入显式失败。
+
 ## 数据迁移与兼容
 
 旧 store 切换到 sidecar 时按下列顺序执行：
 
-1. 禁止旧 handler 新写入并 checkpoint WAL。
-2. 建立只读备份和候选 `store.sqlite`。
-3. 用真实 sidecar 运行迁移、读取和计数校验。
-4. 在写 fence 内原子切换数据库和 capability revision，再发布新 Tool Registry。
-5. 任意步骤失败时保留旧 handler 和旧数据库；候选数据仅在未发布时可丢弃。
+1. 对旧 handler、Fabric 和 Host 写入建立迁移栅栏并 checkpoint WAL。
+2. 分别备份旧库与已有 2.0.1 `PLUGIN_DATA`，再建立候选 `store.sqlite`。
+3. 按 scope 与记录 ID 合并不冲突数据；任何冲突停止切换并输出明细。
+4. 用真实 sidecar 核对数据、关联、数量和 revision。
+5. 在一条持久化提交记录中发布 artifact SHA、数据库位置和 capability revision。
+6. 任意步骤失败时保持最后一次已提交权威不变；不兼容升级等待旧 backend lease 释放。
 
 历史会话经 compatibility projection 继续使用 `xsec_tree_*`；新会话只看到
-`attack_path_*`。兼容投影至少覆盖两个稳定版本和所有仍可恢复的 session snapshot。这个
-窗口必须有明确版本界限和可执行验收，不能依赖未说明的 legacy alias。
+`attack_path_*`。兼容投影只有在至少两个稳定版本已经发布，并且全部引用旧契约的历史
+snapshot 已结束保留后才能退出。
 
 ## Factory Beta 检查表
 
