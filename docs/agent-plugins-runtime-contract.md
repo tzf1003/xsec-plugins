@@ -134,7 +134,9 @@ Beta 前的本地/CI 门禁至少包括：真实 archive 验证、独立 OMP 18.
 `initialize`、`tools/list` 和 `tools/call`。native sidecar 的验收还必须在对应平台实际运行。
 
 Desktop 的只读 `_xsec/session/capabilities` 回读必须能逐项核对最终启用 Tool 的来源、
-schema 与 annotations。未连接、失败或不同活动会话返回冲突契约时，当前统计为
+schema 与 annotations。契约比较键至少包含 artifact SHA、capability revision、角色/投影
+和启用来源集；滚动更新或 parent/sub-Agent 导致的不同键是可并存变体，只有同一键内返回
+不同 Tool 契约才是冲突。必需会话未连接、失败或同键冲突时，当前统计为
 `unknown/incomplete`；历史数量不得进入当前合计。必需会话出现上述任一失败条件时，Beta
 与 Stable 门禁必须失败，不得被成功会话汇总掩盖。
 

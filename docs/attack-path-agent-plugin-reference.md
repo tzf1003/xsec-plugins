@@ -54,16 +54,22 @@ Fabric 只接受 Bearer task capability，并在调用边界重建 opaque contex
 作为权威结果。
 
 节点绑定、完成、释放和 scope 清理由隐藏的 `xsec/attack-path/control` 处理。该请求不进入
-Agent Tool 清单，只接受 Host 签发的受限 context handle。Host 先持久化操作 ID、同一
-scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer token、`context
-handle` 和 Secret。Sidecar 必须把操作 ID 绑定到同一 scope，并在单个原子事务中用
+Agent Tool 清单，只接受 Host 签发的短时受限 context handle。handle 必须签名绑定
+Sidecar/control audience、单一 action、assignment、lease generation、session、operation ID、
+预期 revision、到期时间和 nonce；写操作 nonce 只能成功消费一次。Sidecar 在每次调用时
+校验签名、audience、action、scope、到期、nonce 和当前撤销/quarantine 状态。Host 先持久化
+操作 ID、同一 scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer
+token、`context handle` 和 Secret。Sidecar 必须把操作 ID 绑定到同一 scope，并在单个原子事务中用
 compare-and-set 同时校验当前 revision 与预期 revision 后执行幂等写入；revision 过期时
 显式失败。Host 确认结果后再提交调度状态。重启后 `pending` 操作保持可见、阻断报告终结并
 由用户显式恢复；已失败且事务未提交的操作保留诊断，不计为在途写入。恢复时重新建立并验证
 授权，且列出和恢复都必须匹配调用方当前 assignment，不能复用持久化 context handle 或只凭
 operation ID 跨任务重放。
 
-报告终结与清理按 assignment 建立写入栅栏，等待在途事务完成，再核对 Sidecar revision、
+旧 handler、Fabric 和 Host 写入共用一个持久、线性化的准入门。每个写入在任何预检或
+领域修改前原子获取并注册 permit，事务提交或回滚后才释放；安装栅栏与关闭准入在同一
+顺序点完成，然后等待全部已注册 permit 排空。报告终结与清理按 assignment 建立栅栏，
+等待在途事务完成，再核对 Sidecar revision、
 节点、子 Agent 和 Host 操作。清理接管报告栅栏时必须携带精确 fence revision，并将其原子
 转换为持久的 cleanup fence；不匹配或未知栅栏拒绝清理。栅栏后的迟到写入显式失败。
 
@@ -71,15 +77,18 @@ operation ID 跨任务重放。
 
 旧 store 切换到 sidecar 时按下列顺序执行：
 
-1. 对旧 handler、Fabric 和 Host 写入建立迁移栅栏：停止新写入，等待所有已获准事务提交或
-   回滚，确认没有活动写入者；随后再 checkpoint WAL。
+1. 在共用准入门上原子安装迁移栅栏并关闭新 permit，等待旧 handler、Fabric 和 Host
+   的全部已注册 permit 提交或回滚，确认没有活动写入者；随后再 checkpoint WAL。
 2. 分别备份旧库与已有 2.0.1 `PLUGIN_DATA`，再建立候选 `store.sqlite`。
 3. 按 scope 与记录 ID 合并不冲突数据；任何冲突停止切换并输出明细。
 4. 用真实 sidecar 核对数据、关联、数量和 revision。
-5. 在写入栅栏内、以一条持久化提交记录原子发布 artifact SHA、数据库位置、capability
-   revision，以及新的 Tool Registry 与其它 live capability projection 指针；栅栏保持到
-   该提交持久化完成。
-6. 任意步骤失败时保持最后一次已提交权威不变；不兼容升级等待旧 backend lease 释放。
+5. 先写入 `prepared` generation，它包含 artifact SHA、数据库位置、capability revision、Tool
+   Registry 摘要和 live projection 摘要，候选仍不可见。全部核对通过后在写入栅栏内原子将该
+   generation 标记为 `committed`；这条 generation 记录是数据库、artifact、Tool Registry 和会话投影
+   的唯一权威选择源，消费者不维护独立可写指针。
+6. 进程重启时先按 generation 记录幂等对齐所有消费者：`prepared` 一律回滚并继续使用
+   上一个 `committed` generation；`committed` 一律完成切换，不回退到旧指针。栅栏保持到提交持久
+   且本地消费者对齐；不兼容升级等待旧 backend lease 释放。
 
 历史会话经 compatibility projection 继续使用 `xsec_tree_*`；新会话只看到
 `attack_path_*`。兼容投影只有在至少两个稳定版本已经发布，并且全部引用旧契约的历史
