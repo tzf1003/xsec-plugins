@@ -33,8 +33,11 @@ test("attack-path frontend exposes the reviewed attack-path and subagent contrac
   assert.match(source, /xsec\.workspace\.tool\.open/);
   assert.match(source, /(?:SUBAGENT_PLUGIN_ID\s*=\s*|pluginId:\s*)"com\.xsec\.workspace\.sub-agent"/);
   assert.match(source, /(?:SUBAGENT_DETAIL_TOOL_ID\s*=\s*|toolId:\s*)"subagent-detail"/);
+  assert.equal(
+    Boolean(methods["xsec.attack-path.operations.list"]),
+    Boolean(methods["xsec.attack-path.operations.resume"]),
+  );
   if (methods["xsec.attack-path.operations.list"]) {
-    assert.ok(methods["xsec.attack-path.operations.resume"]);
     assert.match(source, /xsec\.attack-path\.operations\.list/);
     assert.match(source, /xsec\.attack-path\.operations\.resume/);
   }
