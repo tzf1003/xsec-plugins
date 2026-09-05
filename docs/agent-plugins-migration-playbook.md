@@ -29,7 +29,7 @@ agentTools、存储和真实测试。
    extension 使用 schema v2。
 2. 将领域实现放入真实 stdio 或 HTTPS MCP，并让其使用插件实例的 `PLUGIN_DATA`。
 3. 以真实 `tools/list` 作为 schema 与描述来源；在 schema v2 中添加 MCP allowlist、
-   permission 和 frontend binding，不复制 Tool schema。
+   permission、可选 `parent`/`sub` 角色和 frontend binding，不复制 Tool schema。
 4. 按需要定义旧 Tool、旧存储和历史会话的有期限 projection。
 5. 增加真实边界验收：SQLite、子进程、loopback MCP、OMP ACP 和 Tauri。
 6. 更新源码 README、Factory 发布输入和平台 artifact 验收；再进入 Beta。
@@ -39,8 +39,40 @@ agentTools、存储和真实测试。
 - 安装：纯 portable 包、有效/缺失/无效 XSec extension、无效 Skill、无效 MCP 文档和
   单 server 失败。
 - 运行：`initialize`、`tools/list`、`tools/call`、Tool allowlist、任务隔离、更新产生的
-  capability revision、unknown/incomplete 统计、wire-name 冲突和审批。
-- 生命周期：会话冻结、普通更新、组件停用、quarantine、lease 回收和 `PLUGIN_DATA` 跨升级。
+  capability revision、unknown/incomplete 统计（含必需会话未连接/失败/契约冲突时门禁失败）、
+  OMP 16.4.8 与 18.0.9 各自命名函数下的最终合并 Tool 集合 wire-name 冲突和审批；Skill
+  重名还要覆盖全部实际启用来源。受限 probe 环境必须证明失败探测不能触及活动 artifact、
+  生产数据、激活指针或 capability revision。
+- schema v2：验证 `agentTools.<binding-id>.roles` 只接受非空、无重复的 `parent`/`sub`
+  数组，缺省时投影为 `["parent"]`；无效 binding 只停用该 binding。
+- 生命周期：持久化 artifact/`PLUGIN_DATA` 引用、A→B→C 会话冻结、历史恢复重新鉴权（含撤销
+  成员资格、策略变更、插件停用、信任撤销或 quarantine 后拒绝）、普通更新、组件停用、
+  quarantine、lease 回收和 `PLUGIN_DATA` 跨升级。快照还要固定数据 generation/schema 兼容
+  身份；旧 sidecar 与当前数据不兼容时拒绝恢复，保留期内的兼容数据库纳入回收引用。
+- 候选预检：真实 `initialize` 与 `tools/list` 只在一次性受限 probe 中运行。验收必须证明专用
+  非特权身份、只读 artifact 挂载、白名单内的私有可丢弃 `PLUGIN_DATA`、无生产权限的上下文
+  与凭据、无继承环境/FD/IPC，以及默认拒绝网络/子进程能力（仅契约明确且已审批的窄例外）。
+  四平台都要实测壁钟时间、CPU、内存、进程数、输出/日志和磁盘配额，以及 watchdog 超限终止完整进程树。
+- 数据：Host/Sidecar 操作幂等、在途写入栅栏、真实数据库候选迁移、双库无冲突合并、冲突
+  停止切换、revision 核对、失败和重启恢复；验证共用线性化准入门的延迟写入无法
+  越过已排空栅栏，并验证 `prepared` 崩溃回到上一个 generation、`committed` 崩溃幂等完成切换，
+  以及发布前失败会隔离候选、恢复旧 lease 并安全解除栅栏；不能解除时持久化 `blocked` 和恢复入口。
+  双库同一 scope 只有 canonical content digest 相同，或 hash-chained revision log 能证明一方是
+  另一方严格前缀时才可采用后继状态；否则即使 scalar revision 相同或记录 ID 不同也判冲突。
+  合并结果使用严格更新的 revision。通过
+  SQLite/WAL checkpoint、逐组件校验和、文件与目录 `fsync`、同文件系统原子 rename 和 durable
+  generation 提交验证断电顺序；重启发现已提交引用损坏时进入 `blocked`，不能激活该 generation。
+- 控制权限：验证 context handle 的 audience/action/assignment/lease/session/operation/revision 绑定、
+  canonical scope/resource、授权 epoch、短时过期、单次 nonce，以及每次调用的签名与
+  撤销/quarantine 重验；Host 持久化共享 epoch 行与准入门 permit，Sidecar control 必须从准入
+  到领域事务结束持有 permit，撤销完成需等待这些 permit 提交、回滚或失效。覆盖写入已提交但
+  响应丢失后先重验凭据与撤销状态、再以已消费 nonce 回放同 operation/digest outcome，
+  以及新写入的 nonce 在事务内单次消费和同 ID 不同 digest 被拒绝。
+- 能力统计：同一 artifact/capability/role/来源投影键的契约分歧必须阻断门禁；滚动更新
+  与 parent/sub-Agent 的不同投影键作为预期变体分别核对；用包含凭据、任务上下文、
+  超限 Schema 或动态值的 `tools/list` 验证创建会话显式失败，且快照只保留已审批契约。
+  执行 runtime 必须先在无执行凭据、无生产 context 和禁止外联的 contract-discovery 阶段完成
+  真实 `initialize`/`tools/list` 比对，通过后才允许 `tools/call` 从受限 broker 获得凭据。
 - 交付：对应平台的不可变 archive、签名、Factory Beta smoke 和 Stable 指针提升。
 
 交付报告必须列出最终矩阵、portable/embedded 数据流、manifest/MCP/Skill/Host binding、

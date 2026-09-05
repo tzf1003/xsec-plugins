@@ -53,19 +53,69 @@ Fabric 只接受 Bearer task capability，并在调用边界重建 opaque contex
 `resources/updated`。侧边栏收到事件后按 revision 重新读取，不以 renderer 的乐观状态
 作为权威结果。
 
+节点绑定、完成、释放和 scope 清理由隐藏的 `xsec/attack-path/control` 处理。该请求不进入
+Agent Tool 清单，只接受 Host 签发的短时受限 context handle。handle 必须签名绑定
+Sidecar/control audience、单一 action、assignment、canonical scope/resource ID、lease generation、
+session、operation ID、预期 revision、授权 epoch、到期时间和 nonce；请求中的 scope/resource
+必须与签名 claim 完全相同，不能由调用方替换。写操作 nonce 只能成功消费一次。Sidecar 在每次调用时
+先校验签名、audience、action、scope、到期和当前撤销/quarantine 状态，再查询该
+operation 已提交的 outcome；已提交的同请求可在 nonce 已消费时完成鉴权回放。只有新写入
+才在获取共用准入门 permit 之后、并在与授权 epoch 权威共享的同一事务/线性化点内，重验授权
+epoch 和撤销状态、校验 nonce 未使用并消费一次，再提交领域写入；Sidecar 控制写不得只在本地
+SQLite 事务中重验 epoch。授权 epoch 权威驻留在 Host 持久化的共享状态（同一准入门可线性化读取的
+epoch 行），Sidecar 控制事务与 Host 撤销都必须读写该权威，而不是各自本地副本。撤销或
+quarantine 必须原子推进该共享 epoch、关闭同一准入门，并等待包括 Sidecar 控制写在内的全部已注册
+写事务完成或失效后才报告成功；旧 epoch 的 handle 随即失效。Host 先持久化
+操作 ID、同一 scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer
+token、`context handle` 和 Secret。Host 为每个新控制请求生成全局唯一 operation ID。Sidecar
+按 scope 持久化 operation ID、action、expected revision 与规范业务字段的完整 canonical request
+digest，并在单个原子事务中先查询已存结果：同 digest 直接返回已提交 outcome，不再做
+revision 校验；同 ID 不同 digest 显式拒绝。只有新操作才使用 compare-and-set 校验当前
+revision 与预期 revision，并在同一事务内提交领域写入、revision 递增和 outcome。revision
+过期时显式失败。Host 确认结果后再提交调度状态。重启后 `pending` 操作保持可见、阻断报告终结并
+由用户显式恢复；已失败且事务未提交的操作保留诊断，不计为在途写入。恢复时重新建立并验证
+授权，且列出和恢复都必须匹配调用方当前 assignment，不能复用持久化 context handle 或只凭
+operation ID 跨任务重放。
+
+旧 handler、Fabric、Host 以及 Sidecar 的特权 `xsec/attack-path/control` 写入共用一个持久、
+线性化的准入门。每个写入在任何预检或领域修改前原子获取并注册 permit，事务提交或回滚后才
+释放；安装栅栏与关闭准入在同一顺序点完成，然后等待全部已注册 permit 排空（含 Sidecar 控制
+permit）。报告终结与清理按 assignment 建立栅栏，等待在途事务完成，再核对 Sidecar revision、
+节点、子 Agent 和 Host 操作。清理接管报告栅栏时必须携带精确 fence revision，并将其原子
+转换为持久的 cleanup fence；不匹配或未知栅栏拒绝清理。栅栏后的迟到写入显式失败。
+
 ## 数据迁移与兼容
 
 旧 store 切换到 sidecar 时按下列顺序执行：
 
-1. 禁止旧 handler 新写入并 checkpoint WAL。
-2. 建立只读备份和候选 `store.sqlite`。
-3. 用真实 sidecar 运行迁移、读取和计数校验。
-4. 在写 fence 内原子切换数据库和 capability revision，再发布新 Tool Registry。
-5. 任意步骤失败时保留旧 handler 和旧数据库；候选数据仅在未发布时可丢弃。
+1. 在共用准入门上原子安装迁移栅栏并关闭新 permit，等待旧 handler、Fabric、Host 和 Sidecar
+   控制写的全部已注册 permit 提交或回滚，确认没有活动写入者；随后再 checkpoint WAL。
+2. 分别备份旧库与已有 2.0.1 `PLUGIN_DATA`，再建立候选 `store.sqlite`。
+3. 先按 scope 比较历史：仅靠标量 head revision 相等不足以判定一致。对每个双侧都存在的
+   scope，计算两侧内容 digest（规范化记录集）；若 digest 不同，则仅当一方是另一方的已验证
+   严格前缀（或提供等价的 per-scope hash-chained revision log / version vector 证明同一线性
+   历史）时才可合并，否则视为冲突并停止切换、输出明细。仅当 history 按上述规则一致时，才按
+   记录 ID 合并不冲突数据，并为结果分配严格大于所有导入 head 的新 revision，不能沿用任一
+   来源的旧 CAS token。
+4. 用真实 sidecar 核对数据、关联、数量和 revision。
+5. 先写入 `prepared` generation，它包含 artifact SHA、数据库位置、capability revision、Tool
+   Registry 摘要和 live projection 摘要，候选仍不可见。提交前 checkpoint 候选 SQLite/WAL，
+   对数据库、registry 和 projection 元数据逐项计算校验和并 `fsync` 文件；用同文件系统原子
+   rename 发布其 generation 目录，再 `fsync` 父目录。全部引用的字节和校验和持久后，才在写入
+   栅栏内以 durable 数据库事务将 generation 标记为 `committed` 并同步该记录；这条 generation
+   记录是数据库、artifact、Tool Registry 和会话投影的唯一权威选择源，消费者不维护独立可写指针。
+6. 进程重启时先按 generation 记录幂等对齐所有消费者：`prepared` 一律回滚并继续使用
+   上一个 `committed` generation；对 `committed` 先逐项验证引用存在、校验和与完整 SQLite，再
+   完成切换且不回退到旧指针。不可验证的 `committed` generation 不得激活，进入持久化 `blocked`
+   恢复路径。栅栏保持到提交持久且本地消费者对齐；不兼容升级等待旧 backend lease 释放。
+7. 第 2 至第 5 步或发布新权威前失败时执行幂等 abort/recovery：保留最后一个 `committed`
+   generation，将候选库标记为隔离并恢复旧 backend lease；确认没有活动写入者、消费者均重新
+   对齐旧权威后才解除迁移栅栏。不能安全解除时持久化 `blocked` 状态、原因和显式恢复入口，
+   重启后继续显示并阻断写入，不能把失败候选发布为权威。候选备份不得覆盖切换后新增的数据。
 
 历史会话经 compatibility projection 继续使用 `xsec_tree_*`；新会话只看到
-`attack_path_*`。兼容投影至少覆盖两个稳定版本和所有仍可恢复的 session snapshot。这个
-窗口必须有明确版本界限和可执行验收，不能依赖未说明的 legacy alias。
+`attack_path_*`。兼容投影只有在至少两个稳定版本已经发布，并且全部引用旧契约的历史
+snapshot 已结束保留后才能退出。
 
 ## Factory Beta 检查表
 
@@ -74,7 +124,7 @@ Fabric 只接受 Bearer task capability，并在调用边界重建 opaque contex
 - 独立 OMP 18.0.9 和嵌入式 OMP ACP 都发现相同的逻辑 server 名及 raw Tool。
 - 两个真实 assignment 复用 Broker 时保持数据隔离；伪造参数与 `_meta` 不得越权。
 - 真实 Tauri 边界验证 Agent 写入后的事件、侧边栏重新读取、升级/回滚/重启和
-  `PLUGIN_DATA` 保留。
+  `PLUGIN_DATA` 保留；迁移失败还要验证 abort/recovery、`blocked` 状态和显式恢复。
 
 通过 Beta 后，Stable 只提升同一 immutable release；它不重新编译 sidecar，也不替换
 已有 artifact 字节。

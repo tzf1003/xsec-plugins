@@ -32,6 +32,23 @@ portable core 伪装为无效，Desktop 只停用 UI 和 Host binding。
 OMP 读取冻结的 Skill 投影，MCP 连接始终经过 Fabric。Factory 不得把 assignment、
 project、session、role、token 或 secret 写进 manifest、Skill、`mcp.json` 或 archive。
 
+Desktop 会话快照持久保存 artifact SHA、`PLUGIN_DATA` 映射、数据 generation/schema
+兼容身份、Skill roots、Tool 契约、allowlist、角色和 capability revision。活动 lease、保留历史
+与回滚指针共同保护这些 artifact 和兼容数据库 generation。Tool 契约只能来自不携带生产凭据
+或生产 context 的候选 probe；Host 先对响应执行规范化、
+Schema/字符集/大小限制和 Secret/任务上下文检查，将通过审批的契约及摘要写入
+capability registry。启动执行 runtime 时必须先在不注入执行凭据和生产 context、禁止外联的
+contract-discovery 阶段完成真实 `initialize`/`tools/list` 并与该摘要精确比较；匹配后才能通过
+受限 broker 为 `tools/call` 签发凭据。不能在无凭据模式列出契约的 server 必须提供经过同等
+隔离和校验的 listing mode，否则会话创建失败。原始响应不得写入会话快照；动态值或敏感/上下文
+值直接使会话创建失败。恢复时必须先核对快照归属、精确 artifact 和数据 generation/schema
+兼容身份；当前数据库没有显式兼容声明时拒绝恢复，不能让旧 sidecar 打开较新的不兼容数据。
+通过数据兼容检查后，再按当前项目/会话成员关系、Host
+授权策略、插件启停状态、签名信任、quarantine 和撤销记录重新鉴权；当前权限不能完整授权
+冻结投影时必须拒绝恢复，不得按旧 allowlist 签发凭据。Bearer token 与 context
+handle 不进入快照。历史恢复验收必须覆盖成员权限降低、插件停用、信任撤销、quarantine
+以及 artifact、数据 generation 或 schema 归属不匹配。
+
 ## schemaVersion 2
 
 `extensions.com.xsec.desktop` 是可选扩展。新 MCP 迁移使用
@@ -39,6 +56,9 @@ project、session、role、token 或 secret 写进 manifest、Skill、`mcp.json`
 
 - `agentTools` 仅绑定 `mcpServer`、`mcpTool`、权限和可选 UI 归属；Tool schema、简介
   与执行契约来自 server 的真实 `tools/list`。
+- 每个 binding 可在 `agentTools.<binding-id>.roles` 声明一个非空、无重复的字符串数组，
+  元素只能是 `parent` 或 `sub`；省略时默认为 `["parent"]`。子会话能力是父投影、
+  binding 声明和 Host 授权的交集；攻击路径的节点范围由服务端强制执行。
 - `frontendApi` 可绑定同一 MCP Tool；Desktop 在调用时注入 renderer context。
 - credential slot 只声明名称与注入位置；值由 XSec Secret Vault 保存。
 - 旧 schema v1 仅可通过 Desktop 的 `LegacyHostToolAdapter` 保留历史会话，不能声明新
@@ -102,11 +122,38 @@ runner 编译、签名、发布或推广 release。
 4. release record 为每个平台保存独立 SHA-256；Stable 只移动已经验证的 Beta
    `releaseId`，不重建或替换 artifact。
 
+安装只执行静态验证。启用和更新必须针对候选 artifact 完成真实 `initialize`、
+`tools/list`、binding 与名称冲突预检；数据升级使用真实数据库副本。候选预检运行在独立的
+一次性 probe 进程中：使用专用非特权身份，artifact 只读挂载，`PLUGIN_DATA` 仅是白名单
+内的私有可丢弃数据库副本，Host context 与凭据没有生产权限，且不继承宿主环境变量、
+文件描述符或 IPC。网络与子进程能力默认拒绝，仅允许契约明确列出且已审批的窄例外；
+允许的文件系统操作限制在 probe 根目录。每个平台还必须用 cgroup、Job Object 或对应
+sandbox 机制强制壁钟时间、CPU、内存、进程数、输出/日志和可丢弃磁盘配额；超限时 watchdog
+必须终止完整进程树并报告明确错误。失败或终止的 probe 必须销毁其凭据与数据，不能修改
+活动 artifact、生产 `PLUGIN_DATA`、激活指针或 capability revision。上述隔离策略本身是
+Beta/Stable 验收项。
+
+overlay revision 只用于组件编辑并发控制，capability revision 标识一次发布的运行时投影。
+最终 Tool 合集的 wire name 必须分别使用受支持 OMP 16.4.8 和 18.0.9 导出的实际命名函数
+检查，覆盖插件、独立、产品、Host 与对应版本 OMP 内置来源；任一版本发生冲突都阻断新会话。
+每个会话快照同时保存 OMP 版本和该版本的最终 wire-name 映射，独立 OMP 18.0.9 使用同一
+18.0.9 映射验收。恢复时必须比较快照和当前 OMP 版本，并用当前版本的实际命名函数重新计算
+全部 wire name 后逐项比对冻结映射；版本或任一映射不匹配都拒绝恢复。显式支持的跨版本恢复
+也必须先通过同一重算和逐项比对。
+
 ## 发布与运行时验收
 
 Beta 前的本地/CI 门禁至少包括：真实 archive 验证、独立 OMP 18.0.9 `--plugin-dir`、
-嵌入式 OMP ACP 到 Fabric、真实 stdio/loopback MCP 的 `initialize`、`tools/list` 和
-`tools/call`。native sidecar 的验收还必须在对应平台实际运行。
+嵌入式 OMP 16.4.8 与 18.0.9 ACP 到 Fabric、真实 stdio/loopback MCP 的
+`initialize`、`tools/list` 和 `tools/call`。native sidecar 的验收还必须在对应平台实际运行。
+
+Desktop 的只读 `_xsec/session/capabilities` 回读必须能逐项核对最终启用 Tool 的来源、
+schema 与 annotations。契约比较键至少包含 artifact SHA、capability revision、角色/投影
+和启用来源集；滚动更新或 parent/sub-Agent 导致的不同键是可并存变体，只有同一键内返回
+不同 Tool 契约才是冲突。回读只使用 capability registry 中的已审批规范契约，不回显未持久的
+运行时 `tools/list` 值。必需会话未连接、失败或同键冲突时，当前统计为
+`unknown/incomplete`；历史数量不得进入当前合计。必需会话出现上述任一失败条件时，Beta
+与 Stable 门禁必须失败，不得被成功会话汇总掩盖。
 
 Desktop Beta smoke 必须证明安装的 Factory artifact，而不是源码目录或临时 binary。它
 至少核验：平台/架构选择、签名和 SHA-256、sidecar 可执行路径、`PLUGIN_DATA` 跨更新
