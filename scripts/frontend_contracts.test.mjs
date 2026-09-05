@@ -23,14 +23,24 @@ async function manifest(pluginId) {
 
 test("attack-path frontend exposes the reviewed attack-path and subagent contract", async () => {
   const { module, source } = await loadFrontend("com.xsec.attack-path");
+  const attackPath = await manifest("com.xsec.attack-path");
+  const methods = attackPath.extensions["com.xsec.desktop"].frontendApi.methods;
   assert.equal(typeof module.activate, "function");
   assert.match(source, /function layoutTreeNodes\(/);
   assert.match(source, /function graphModel\(/);
   assert.match(source, /xsec\.attack-path\.tree\.list/);
   assert.match(source, /xsec\.attack-path\.subagents\.list/);
   assert.match(source, /xsec\.workspace\.tool\.open/);
-  assert.match(source, /SUBAGENT_PLUGIN_ID="com\.xsec\.workspace\.sub-agent"/);
-  assert.match(source, /SUBAGENT_DETAIL_TOOL_ID="subagent-detail"/);
+  assert.match(source, /(?:SUBAGENT_PLUGIN_ID\s*=\s*|pluginId:\s*)"com\.xsec\.workspace\.sub-agent"/);
+  assert.match(source, /(?:SUBAGENT_DETAIL_TOOL_ID\s*=\s*|toolId:\s*)"subagent-detail"/);
+  assert.equal(
+    Boolean(methods["xsec.attack-path.operations.list"]),
+    Boolean(methods["xsec.attack-path.operations.resume"]),
+  );
+  if (methods["xsec.attack-path.operations.list"]) {
+    assert.match(source, /xsec\.attack-path\.operations\.list/);
+    assert.match(source, /xsec\.attack-path\.operations\.resume/);
+  }
   assert.doesNotMatch(source, /compatibility bridge|兼容渲染器/);
 });
 
