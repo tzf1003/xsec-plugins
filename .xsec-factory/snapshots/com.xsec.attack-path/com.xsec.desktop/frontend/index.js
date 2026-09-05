@@ -43,6 +43,10 @@ export function startImmediateRefresh({ disposed, clearPending, startLoad }) {
   if (!disposed) startLoad();
 }
 
+export function shouldRefreshForContext({ visible, assignmentChanged, becameVisible }) {
+  return visible && (assignmentChanged || becameVisible);
+}
+
 /** Pure refresh-after-load policy (durable dirty intent vs in-flight queue). */
 export function resolveRefreshAfterLoad({
   succeeded,
@@ -639,7 +643,9 @@ function createController(host) {
   const updateContext = (context) => {
     const nextAssignmentId = contextAssignmentId(context);
     const assignmentChanged = nextAssignmentId !== assignmentId;
-    visible = contextVisible(context);
+    const nextVisible = contextVisible(context);
+    const becameVisible = nextVisible && !visible;
+    visible = nextVisible;
     assignmentId = nextAssignmentId;
     if (assignmentChanged) {
       requestGeneration += 1;
@@ -656,7 +662,7 @@ function createController(host) {
       renderOperations();
     }
     renderGraph();
-    if (visible) requestRefresh();
+    if (shouldRefreshForContext({ visible, assignmentChanged, becameVisible })) requestRefresh();
   };
 
   return {
