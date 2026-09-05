@@ -57,7 +57,9 @@ Fabric 只接受 Bearer task capability，并在调用边界重建 opaque contex
 Agent Tool 清单，只接受 Host 签发的短时受限 context handle。handle 必须签名绑定
 Sidecar/control audience、单一 action、assignment、lease generation、session、operation ID、
 预期 revision、到期时间和 nonce；写操作 nonce 只能成功消费一次。Sidecar 在每次调用时
-校验签名、audience、action、scope、到期、nonce 和当前撤销/quarantine 状态。Host 先持久化
+先校验签名、audience、action、scope、到期和当前撤销/quarantine 状态，再查询该
+operation 已提交的 outcome；已提交的同请求可在 nonce 已消费时完成鉴权回放。只有新写入
+才在同一事务内校验 nonce 未使用并消费一次。Host 先持久化
 操作 ID、同一 scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer
 token、`context handle` 和 Secret。Host 为每个新控制请求生成全局唯一 operation ID。Sidecar
 按 scope 持久化 operation ID、action、expected revision 与规范业务字段的完整 canonical request
@@ -92,6 +94,10 @@ operation ID 跨任务重放。
 6. 进程重启时先按 generation 记录幂等对齐所有消费者：`prepared` 一律回滚并继续使用
    上一个 `committed` generation；`committed` 一律完成切换，不回退到旧指针。栅栏保持到提交持久
    且本地消费者对齐；不兼容升级等待旧 backend lease 释放。
+7. 第 2 至第 5 步或发布新权威前失败时执行幂等 abort/recovery：保留最后一个 `committed`
+   generation，将候选库标记为隔离并恢复旧 backend lease；确认没有活动写入者、消费者均重新
+   对齐旧权威后才解除迁移栅栏。不能安全解除时持久化 `blocked` 状态、原因和显式恢复入口，
+   重启后继续显示并阻断写入，不能把失败候选发布为权威。候选备份不得覆盖切换后新增的数据。
 
 历史会话经 compatibility projection 继续使用 `xsec_tree_*`；新会话只看到
 `attack_path_*`。兼容投影只有在至少两个稳定版本已经发布，并且全部引用旧契约的历史
@@ -104,7 +110,7 @@ snapshot 已结束保留后才能退出。
 - 独立 OMP 18.0.9 和嵌入式 OMP ACP 都发现相同的逻辑 server 名及 raw Tool。
 - 两个真实 assignment 复用 Broker 时保持数据隔离；伪造参数与 `_meta` 不得越权。
 - 真实 Tauri 边界验证 Agent 写入后的事件、侧边栏重新读取、升级/回滚/重启和
-  `PLUGIN_DATA` 保留。
+  `PLUGIN_DATA` 保留；迁移失败还要验证 abort/recovery、`blocked` 状态和显式恢复。
 
 通过 Beta 后，Stable 只提升同一 immutable release；它不重新编译 sidecar，也不替换
 已有 artifact 字节。

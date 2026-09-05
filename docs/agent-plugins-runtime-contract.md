@@ -32,17 +32,22 @@ portable core 伪装为无效，Desktop 只停用 UI 和 Host binding。
 OMP 读取冻结的 Skill 投影，MCP 连接始终经过 Fabric。Factory 不得把 assignment、
 project、session、role、token 或 secret 写进 manifest、Skill、`mcp.json` 或 archive。
 
-Desktop 会话快照持久保存 artifact SHA、`PLUGIN_DATA` 映射、Skill roots、Tool 契约、
-allowlist、角色和 capability revision。活动 lease、保留历史与回滚指针共同保护这些
-artifact。Tool 契约只能来自不携带生产凭据的候选 probe；Host 先对响应执行规范化、
+Desktop 会话快照持久保存 artifact SHA、`PLUGIN_DATA` 映射、数据 generation/schema
+兼容身份、Skill roots、Tool 契约、allowlist、角色和 capability revision。活动 lease、保留历史
+与回滚指针共同保护这些 artifact 和兼容数据库 generation。Tool 契约只能来自不携带生产凭据
+或生产 context 的候选 probe；Host 先对响应执行规范化、
 Schema/字符集/大小限制和 Secret/任务上下文检查，将通过审批的契约及摘要写入
-capability registry。带运行时凭据的 `tools/list` 只能与该摘要精确比较，不得把其原始响应
-写入会话快照；动态值或敏感/上下文值直接使会话创建失败。恢复时必须先核对快照归属和精确
-artifact，再按当前项目/会话成员关系、Host
+capability registry。启动执行 runtime 时必须先在不注入执行凭据和生产 context、禁止外联的
+contract-discovery 阶段完成真实 `initialize`/`tools/list` 并与该摘要精确比较；匹配后才能通过
+受限 broker 为 `tools/call` 签发凭据。不能在无凭据模式列出契约的 server 必须提供经过同等
+隔离和校验的 listing mode，否则会话创建失败。原始响应不得写入会话快照；动态值或敏感/上下文
+值直接使会话创建失败。恢复时必须先核对快照归属、精确 artifact 和数据 generation/schema
+兼容身份；当前数据库没有显式兼容声明时拒绝恢复，不能让旧 sidecar 打开较新的不兼容数据。
+通过数据兼容检查后，再按当前项目/会话成员关系、Host
 授权策略、插件启停状态、签名信任、quarantine 和撤销记录重新鉴权；当前权限不能完整授权
 冻结投影时必须拒绝恢复，不得按旧 allowlist 签发凭据。Bearer token 与 context
 handle 不进入快照。历史恢复验收必须覆盖成员权限降低、插件停用、信任撤销、quarantine
-和 artifact 归属不匹配。
+以及 artifact、数据 generation 或 schema 归属不匹配。
 
 ## schemaVersion 2
 
@@ -122,7 +127,9 @@ runner 编译、签名、发布或推广 release。
 一次性 probe 进程中：使用专用非特权身份，artifact 只读挂载，`PLUGIN_DATA` 仅是白名单
 内的私有可丢弃数据库副本，Host context 与凭据没有生产权限，且不继承宿主环境变量、
 文件描述符或 IPC。网络与子进程能力默认拒绝，仅允许契约明确列出且已审批的窄例外；
-允许的文件系统操作限制在 probe 根目录。失败或终止的 probe 必须销毁其凭据与数据，不能修改
+允许的文件系统操作限制在 probe 根目录。每个平台还必须用 cgroup、Job Object 或对应
+sandbox 机制强制壁钟时间、CPU、内存、进程数、输出/日志和可丢弃磁盘配额；超限时 watchdog
+必须终止完整进程树并报告明确错误。失败或终止的 probe 必须销毁其凭据与数据，不能修改
 活动 artifact、生产 `PLUGIN_DATA`、激活指针或 capability revision。上述隔离策略本身是
 Beta/Stable 验收项。
 
@@ -130,7 +137,9 @@ overlay revision 只用于组件编辑并发控制，capability revision 标识�
 最终 Tool 合集的 wire name 必须分别使用受支持 OMP 16.4.8 和 18.0.9 导出的实际命名函数
 检查，覆盖插件、独立、产品、Host 与对应版本 OMP 内置来源；任一版本发生冲突都阻断新会话。
 每个会话快照同时保存 OMP 版本和该版本的最终 wire-name 映射，独立 OMP 18.0.9 使用同一
-18.0.9 映射验收。
+18.0.9 映射验收。恢复时必须比较快照和当前 OMP 版本，并用当前版本的实际命名函数重新计算
+全部 wire name 后逐项比对冻结映射；版本或任一映射不匹配都拒绝恢复。显式支持的跨版本恢复
+也必须先通过同一重算和逐项比对。
 
 ## 发布与运行时验收
 
