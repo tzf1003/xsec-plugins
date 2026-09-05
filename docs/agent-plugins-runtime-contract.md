@@ -34,9 +34,11 @@ project、session、role、token 或 secret 写进 manifest、Skill、`mcp.json`
 
 Desktop 会话快照持久保存 artifact SHA、`PLUGIN_DATA` 映射、Skill roots、Tool 契约、
 allowlist、角色和 capability revision。活动 lease、保留历史与回滚指针共同保护这些
-artifact；恢复时先核对快照归属和精确 artifact，再对照当前 project/session 成员资格、Host
-策略、插件 quarantine/disablement 与已撤销授权做重新鉴权。只有当前策略仍允许时才签发新
-凭据；否则拒绝恢复或以最小权限拒绝过期投影。Bearer token 与 context handle 不进入快照。
+artifact。恢复时必须先核对快照归属和精确 artifact，再按当前项目/会话成员关系、Host
+授权策略、插件启停状态、签名信任、quarantine 和撤销记录重新鉴权；当前权限不能完整授权
+冻结投影时必须拒绝恢复，不得按旧 allowlist 签发凭据。Bearer token 与 context
+handle 不进入快照。历史恢复验收必须覆盖成员权限降低、插件停用、信任撤销、quarantine
+和 artifact 归属不匹配。
 
 ## schemaVersion 2
 
@@ -111,15 +113,19 @@ runner 编译、签名、发布或推广 release。
    `releaseId`，不重建或替换 artifact。
 
 安装只执行静态验证。启用和更新必须针对候选 artifact 完成真实 `initialize`、
-`tools/list`、binding 与名称冲突预检；数据升级使用真实数据库副本。这些探测必须在受限
-probe 环境中执行，且强制满足下列隔离策略：专用非特权身份；只读挂载候选 artifact；
-仅允许白名单内的可丢弃 `PLUGIN_DATA`；不继承宿主环境变量、文件描述符或 IPC；网络与
-进程能力默认拒绝，仅允许契约明确列出的窄例外。不得使用生产凭据。失败的探测不得修改
-活动 artifact、活动数据或活动指针；上述隔离策略本身是 Beta/Stable 验收项。overlay revision
-只用于组件编辑并发控制，capability revision 标识一次发布的运行时投影。最终 Tool 合集的
-wire name 必须对每个受支持的嵌入式 OMP 版本（当前为 16.4.8 与 18.0.9）分别按该版本的
-实际命名函数检查，覆盖插件、独立、产品、Host 与 OMP 内置来源，并持久化/验收各版本的
-结果 registry。
+`tools/list`、binding 与名称冲突预检；数据升级使用真实数据库副本。候选预检运行在独立的
+一次性 probe 进程中：使用专用非特权身份，artifact 只读挂载，`PLUGIN_DATA` 仅是白名单
+内的私有可丢弃数据库副本，Host context 与凭据没有生产权限，且不继承宿主环境变量、
+文件描述符或 IPC。网络与子进程能力默认拒绝，仅允许契约明确列出且已审批的窄例外；
+允许的文件系统操作限制在 probe 根目录。失败或终止的 probe 必须销毁其凭据与数据，不能修改
+活动 artifact、生产 `PLUGIN_DATA`、激活指针或 capability revision。上述隔离策略本身是
+Beta/Stable 验收项。
+
+overlay revision 只用于组件编辑并发控制，capability revision 标识一次发布的运行时投影。
+最终 Tool 合集的 wire name 必须分别使用受支持 OMP 16.4.8 和 18.0.9 导出的实际命名函数
+检查，覆盖插件、独立、产品、Host 与对应版本 OMP 内置来源；任一版本发生冲突都阻断新会话。
+每个会话快照同时保存 OMP 版本和该版本的最终 wire-name 映射，独立 OMP 18.0.9 使用同一
+18.0.9 映射验收。
 
 ## 发布与运行时验收
 

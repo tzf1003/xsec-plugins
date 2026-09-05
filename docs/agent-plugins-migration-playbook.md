@@ -40,11 +40,15 @@ agentTools、存储和真实测试。
   单 server 失败。
 - 运行：`initialize`、`tools/list`、`tools/call`、Tool allowlist、任务隔离、更新产生的
   capability revision、unknown/incomplete 统计（含必需会话未连接/失败/契约冲突时门禁失败）、
-  每个受支持 OMP 版本的最终合并 Tool 集合 wire-name 冲突和审批；Skill 重名还要覆盖全部
-  实际启用来源。受限 probe 验收必须证明：专用非特权身份、只读 artifact 挂载、白名单可丢弃 `PLUGIN_DATA`、无继承环境/FD/IPC、默认拒绝网络/进程能力（仅契约窄例外），且失败探测不能触及活动 artifact/数据/指针。
+  OMP 16.4.8 与 18.0.9 各自命名函数下的最终合并 Tool 集合 wire-name 冲突和审批；Skill
+  重名还要覆盖全部实际启用来源。受限 probe 环境必须证明失败探测不能触及活动 artifact、
+  生产数据、激活指针或 capability revision。
 - 生命周期：持久化 artifact/`PLUGIN_DATA` 引用、A→B→C 会话冻结、历史恢复重新鉴权（含撤销
-  成员资格/策略变更/quarantine 后拒绝或降权）、普通更新、组件停用、quarantine、lease
-  回收和 `PLUGIN_DATA` 跨升级。
+  成员资格、策略变更、插件停用、信任撤销或 quarantine 后拒绝）、普通更新、组件停用、
+  quarantine、lease 回收和 `PLUGIN_DATA` 跨升级。
+- 候选预检：真实 `initialize` 与 `tools/list` 只在一次性受限 probe 中运行。验收必须证明专用
+  非特权身份、只读 artifact 挂载、白名单内的私有可丢弃 `PLUGIN_DATA`、无生产权限的上下文
+  与凭据、无继承环境/FD/IPC，以及默认拒绝网络/子进程能力（仅契约明确且已审批的窄例外）。
 - 数据：Host/Sidecar 操作幂等、在途写入栅栏、真实数据库候选迁移、双库无冲突合并、冲突
   停止切换、revision 核对、失败和重启恢复。
 - 交付：对应平台的不可变 archive、签名、Factory Beta smoke 和 Stable 指针提升。

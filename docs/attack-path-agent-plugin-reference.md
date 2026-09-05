@@ -58,11 +58,14 @@ Agent Tool 清单，只接受 Host 签发的受限 context handle。Host 先持�
 scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer token、`context
 handle` 和 Secret。Sidecar 必须把操作 ID 绑定到同一 scope，并在单个原子事务中用
 compare-and-set 同时校验当前 revision 与预期 revision 后执行幂等写入；revision 过期时
-显式失败。Host 确认结果后再提交调度状态。重启后未决操作保持可见，并由用户显式恢复；
-恢复时必须重新建立并验证授权，不得复用已持久化的 `context handle`。
+显式失败。Host 确认结果后再提交调度状态。重启后 `pending` 操作保持可见、阻断报告终结并
+由用户显式恢复；已失败且事务未提交的操作保留诊断，不计为在途写入。恢复时重新建立并验证
+授权，且列出和恢复都必须匹配调用方当前 assignment，不能复用持久化 context handle 或只凭
+operation ID 跨任务重放。
 
 报告终结与清理按 assignment 建立写入栅栏，等待在途事务完成，再核对 Sidecar revision、
-节点、子 Agent 和 Host 操作。栅栏后的迟到写入显式失败。
+节点、子 Agent 和 Host 操作。清理接管报告栅栏时必须携带精确 fence revision，并将其原子
+转换为持久的 cleanup fence；不匹配或未知栅栏拒绝清理。栅栏后的迟到写入显式失败。
 
 ## 数据迁移与兼容
 
