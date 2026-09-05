@@ -61,6 +61,21 @@
         "url": "artifacts/com.xsec.attack-path-2.0.1-sha256-1d45843c9a4edf6a-macos-aarch64.xsec-plugin"
       },
       "publisher": "xsec-marketplace-bot"
+    },
+    {
+      "channel": "stable",
+      "releaseId": "sha256-d41f6e7a4925729e4b409105de9b9d88302e74545671a9f50478270cf2159b89",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-attack-path",
+        "path": "plugins/com.xsec.attack-path",
+        "ref": "refs/heads/main",
+        "sha": "d29ef1674bcf13a7c4d27596e76954121c6d22b6"
+      },
+      "artifact": {
+        "sha256": "1d45843c9a4edf6a8af82e060619cd403f47d4d3c0616ad761a124ac32a2dbfe",
+        "url": "artifacts/com.xsec.attack-path-2.0.1-sha256-1d45843c9a4edf6a-macos-aarch64.xsec-plugin"
+      },
+      "publisher": "github-actions[bot]"
     }
   ],
   "smokeOutcomes": [
@@ -74,6 +89,18 @@
       "smoke": {
         "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/33576901566",
         "marketplaceRevision": "0497149028afb23adaf0be6fbe69810c137f4335"
+      }
+    },
+    {
+      "betaReleaseId": "sha256-d41f6e7a4925729e4b409105de9b9d88302e74545671a9f50478270cf2159b89",
+      "stableReleaseId": "sha256-d41f6e7a4925729e4b409105de9b9d88302e74545671a9f50478270cf2159b89",
+      "source": {
+        "betaSha": "0c260fa6e54bf3caea91466347cf0f546cd5670d",
+        "stableSha": "d29ef1674bcf13a7c4d27596e76954121c6d22b6"
+      },
+      "smoke": {
+        "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/33941655703",
+        "marketplaceRevision": "e1c4a28dea4b592c44cafe982ebaed91726a401b"
       }
     }
   ]
