@@ -60,9 +60,12 @@ session、operation ID、预期 revision、授权 epoch、到期时间和 nonce�
 必须与签名 claim 完全相同，不能由调用方替换。写操作 nonce 只能成功消费一次。Sidecar 在每次调用时
 先校验签名、audience、action、scope、到期和当前撤销/quarantine 状态，再查询该
 operation 已提交的 outcome；已提交的同请求可在 nonce 已消费时完成鉴权回放。只有新写入
-才在同一事务/线性化点内重验授权 epoch 和撤销状态、校验 nonce 未使用并消费一次，再提交领域
-写入。撤销或 quarantine 必须原子推进授权 epoch、关闭同一准入门并等待已注册写事务完成后才
-报告成功；旧 epoch 的 handle 随即失效。Host 先持久化
+才在获取共用准入门 permit 之后、并在与授权 epoch 权威共享的同一事务/线性化点内，重验授权
+epoch 和撤销状态、校验 nonce 未使用并消费一次，再提交领域写入；Sidecar 控制写不得只在本地
+SQLite 事务中重验 epoch。授权 epoch 权威驻留在 Host 持久化的共享状态（同一准入门可线性化读取的
+epoch 行），Sidecar 控制事务与 Host 撤销都必须读写该权威，而不是各自本地副本。撤销或
+quarantine 必须原子推进该共享 epoch、关闭同一准入门，并等待包括 Sidecar 控制写在内的全部已注册
+写事务完成或失效后才报告成功；旧 epoch 的 handle 随即失效。Host 先持久化
 操作 ID、同一 scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer
 token、`context handle` 和 Secret。Host 为每个新控制请求生成全局唯一 operation ID。Sidecar
 按 scope 持久化 operation ID、action、expected revision 与规范业务字段的完整 canonical request
@@ -74,10 +77,10 @@ revision 与预期 revision，并在同一事务内提交领域写入、revision
 授权，且列出和恢复都必须匹配调用方当前 assignment，不能复用持久化 context handle 或只凭
 operation ID 跨任务重放。
 
-旧 handler、Fabric 和 Host 写入共用一个持久、线性化的准入门。每个写入在任何预检或
-领域修改前原子获取并注册 permit，事务提交或回滚后才释放；安装栅栏与关闭准入在同一
-顺序点完成，然后等待全部已注册 permit 排空。报告终结与清理按 assignment 建立栅栏，
-等待在途事务完成，再核对 Sidecar revision、
+旧 handler、Fabric、Host 以及 Sidecar 的特权 `xsec/attack-path/control` 写入共用一个持久、
+线性化的准入门。每个写入在任何预检或领域修改前原子获取并注册 permit，事务提交或回滚后才
+释放；安装栅栏与关闭准入在同一顺序点完成，然后等待全部已注册 permit 排空（含 Sidecar 控制
+permit）。报告终结与清理按 assignment 建立栅栏，等待在途事务完成，再核对 Sidecar revision、
 节点、子 Agent 和 Host 操作。清理接管报告栅栏时必须携带精确 fence revision，并将其原子
 转换为持久的 cleanup fence；不匹配或未知栅栏拒绝清理。栅栏后的迟到写入显式失败。
 
@@ -85,12 +88,15 @@ operation ID 跨任务重放。
 
 旧 store 切换到 sidecar 时按下列顺序执行：
 
-1. 在共用准入门上原子安装迁移栅栏并关闭新 permit，等待旧 handler、Fabric 和 Host
-   的全部已注册 permit 提交或回滚，确认没有活动写入者；随后再 checkpoint WAL。
+1. 在共用准入门上原子安装迁移栅栏并关闭新 permit，等待旧 handler、Fabric、Host 和 Sidecar
+   控制写的全部已注册 permit 提交或回滚，确认没有活动写入者；随后再 checkpoint WAL。
 2. 分别备份旧库与已有 2.0.1 `PLUGIN_DATA`，再建立候选 `store.sqlite`。
-3. 先比较每个 scope 的 head/revision 历史；两个来源的 head 或 revision 分叉即视为冲突，即使
-   记录 ID 完全不同也停止切换并输出明细。只有 history 一致的 scope 才按记录 ID 合并不冲突
-   数据，并为结果分配严格大于所有导入 head 的新 revision，不能沿用任一来源的旧 CAS token。
+3. 先按 scope 比较历史：仅靠标量 head revision 相等不足以判定一致。对每个双侧都存在的
+   scope，计算两侧内容 digest（规范化记录集）；若 digest 不同，则仅当一方是另一方的已验证
+   严格前缀（或提供等价的 per-scope hash-chained revision log / version vector 证明同一线性
+   历史）时才可合并，否则视为冲突并停止切换、输出明细。仅当 history 按上述规则一致时，才按
+   记录 ID 合并不冲突数据，并为结果分配严格大于所有导入 head 的新 revision，不能沿用任一
+   来源的旧 CAS token。
 4. 用真实 sidecar 核对数据、关联、数量和 revision。
 5. 先写入 `prepared` generation，它包含 artifact SHA、数据库位置、capability revision、Tool
    Registry 摘要和 live projection 摘要，候选仍不可见。提交前 checkpoint 候选 SQLite/WAL，
