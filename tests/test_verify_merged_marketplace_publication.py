@@ -428,6 +428,65 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
             self.assertEqual(result["kind"], "beta")
             self.assertEqual(result["promotions"][0]["source"]["sha"], source_sha)
 
+    def prepare_mixed_no_pointer_beta(
+        self, root: Path,
+    ) -> tuple[dict[str, object], dict[str, object], str, dict[str, object], dict[str, object]]:
+        _, stable, beta = self.make_repository(root, registered=True)
+        recheck_id = "com.example.recheck"
+        recheck_stable = release("1.0.0", "recheck-stable")
+        recheck_beta = release("1.1.0", "recheck-beta")
+        registry_path = root / ".xsec-factory/official-registry.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        registry["plugins"].append({
+            "pluginId": recheck_id,
+            "trustTier": "external",
+            "source": {"repository": "example/plugin", "path": f"plugins/{recheck_id}", "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"}},
+            "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+            "category": "Security",
+            "status": "active",
+        })
+        write_json(registry_path, registry)
+        self.write_release(root, [stable, beta], beta=beta["releaseId"], stable=stable["releaseId"])
+        write_json(root / ".agents/plugins/marketplace.json", {"plugins": [
+            {"source": {"path": f"./{snapshot_path(PLUGIN_ID)}"}},
+            {"source": {"path": f"./{snapshot_path(recheck_id)}"}},
+        ]})
+        write_json(root / snapshot_path(recheck_id) / ".xsec-market/releases.json", {
+            "schemaVersion": 2, "pluginId": recheck_id, "releases": [recheck_stable, recheck_beta],
+            "channels": {"beta": {"releaseId": recheck_beta["releaseId"]}, "stable": {"releaseId": recheck_stable["releaseId"]}},
+        })
+        for plugin_id in (PLUGIN_ID, recheck_id):
+            path = root / snapshot_path(plugin_id) / ".xsec-market/releases.json.sig.jws.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("baseline release signature\n", encoding="utf-8")
+        self.write_beta_evidence(root, recheck_id, recheck_beta, "b" * 40)
+        self.write_inflight_beta_status(root, beta, beta_sha="a" * 40, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=stable["releaseId"])
+        self.write_inflight_beta_status(root, recheck_beta, plugin_id=recheck_id, beta_sha="b" * 40, main_gate_sha="c" * 40, state="waiting_for_beta", stable_release_id=recheck_stable["releaseId"])
+        return stable, beta, recheck_id, recheck_stable, recheck_beta
+
+    def test_classifies_source_only_beta_beside_no_pointer_smoke(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-mixed-no-pointer-beta-") as directory:
+            root = Path(directory)
+            stable, beta, recheck_id, recheck_stable, recheck_beta = self.prepare_mixed_no_pointer_beta(root)
+            before = self.commit(root, "source beta and recheck await publication")
+
+            self.write_beta_evidence(root, PLUGIN_ID, beta, "d" * 40)
+            self.write_inflight_beta_status(root, beta, beta_sha="d" * 40, main_gate_sha="e" * 40, state="waiting_for_smoke", stable_release_id=stable["releaseId"])
+            self.write_inflight_beta_status(root, recheck_beta, plugin_id=recheck_id, beta_sha="b" * 40, main_gate_sha="d" * 40, state="waiting_for_smoke", stable_release_id=recheck_stable["releaseId"])
+            (root / ".agents/plugins/marketplace.json.sig.jws.json").write_text("refreshed index signature\n", encoding="utf-8")
+            for plugin_id in (PLUGIN_ID, recheck_id):
+                (root / snapshot_path(plugin_id) / ".xsec-market/releases.json.sig.jws.json").write_text("refreshed release signature\n", encoding="utf-8")
+                (root / f".xsec-factory/official-publication-proofs/{plugin_id}.json").write_text("refreshed evidence signature\n", encoding="utf-8")
+            after = self.commit(root, "source-only beta beside main gate recheck")
+
+            result = verifier.classify_merged_change(root, before, after)
+
+            self.assertEqual(result["kind"], "beta")
+            promotions = {record["plugin_id"]: record for record in result["promotions"]}
+            self.assertEqual(set(promotions), {PLUGIN_ID, recheck_id})
+            self.assertEqual(promotions[PLUGIN_ID]["source"]["sha"], "d" * 40)
+            self.assertEqual(promotions[recheck_id]["main_source"]["sha"], "d" * 40)
+
     def test_classifies_source_only_first_party_beta_beside_a_release_batch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-mixed-batch-source-only-beta-") as directory:
             root = Path(directory)

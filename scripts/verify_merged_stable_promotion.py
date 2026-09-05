@@ -816,9 +816,18 @@ def source_only_batch_promotions(
     *,
     paths: list[str],
     source_only_ids: set[str],
+    allow_unsigned_official_status_plugin_id: str | None = None,
 ) -> list[dict[str, object]]:
     return [
-        verify_source_only_beta(root, before, after, source_only_candidate_paths(paths, plugin_id))["promotions"][0]
+        verify_source_only_beta(
+            root,
+            before,
+            after,
+            source_only_candidate_paths(paths, plugin_id),
+            allow_unsigned_official_status_plugin_id=(
+                plugin_id if plugin_id == allow_unsigned_official_status_plugin_id else None
+            ),
+        )["promotions"][0]
         for plugin_id in sorted(source_only_ids)
     ]
 
@@ -830,11 +839,54 @@ def beta_smoke_batch_promotions(
     *,
     paths: list[str],
     beta_smoke_ids: set[str],
+    allow_unsigned_official_status_plugin_id: str | None = None,
 ) -> list[dict[str, object]]:
     return [
-        verify_beta_smoke_ready(root, before, after, beta_smoke_candidate_paths(paths, plugin_id))["promotions"][0]
+        verify_beta_smoke_ready(
+            root,
+            before,
+            after,
+            beta_smoke_candidate_paths(paths, plugin_id),
+            allow_unsigned_official_status_plugin_id=(
+                plugin_id if plugin_id == allow_unsigned_official_status_plugin_id else None
+            ),
+        )["promotions"][0]
         for plugin_id in sorted(beta_smoke_ids)
     ]
+
+
+def verify_mixed_no_pointer_beta_batch(
+    root: Path,
+    before: str,
+    after: str,
+    paths: list[str],
+    *,
+    allow_unsigned_official_status_plugin_id: str | None,
+) -> dict[str, object]:
+    """Authenticate a source-only Beta beside one or more main-gate rechecks."""
+
+    source_only_ids = source_only_publication_ids(paths, set())
+    status_ids = {match.group(1) for path in paths if (match := STATUS_PATH_PATTERN.fullmatch(path))}
+    beta_smoke_ids = status_ids - source_only_ids
+    if len(source_only_ids) != 1 or not beta_smoke_ids:
+        fail("mixed no-pointer Beta batch must contain one source-only Beta and a smoke recheck")
+    source_paths = set()
+    smoke_paths = set()
+    for plugin_id in source_only_ids:
+        source_paths.update(source_only_candidate_paths(paths, plugin_id))
+    for plugin_id in beta_smoke_ids:
+        smoke_paths.update(beta_smoke_candidate_paths(paths, plugin_id))
+    if set(paths) != source_paths | smoke_paths:
+        fail("mixed no-pointer Beta batch changed an unauthorized path")
+    promotions = source_only_batch_promotions(
+        root, before, after, paths=paths, source_only_ids=source_only_ids,
+        allow_unsigned_official_status_plugin_id=allow_unsigned_official_status_plugin_id,
+    )
+    promotions.extend(beta_smoke_batch_promotions(
+        root, before, after, paths=paths, beta_smoke_ids=beta_smoke_ids,
+        allow_unsigned_official_status_plugin_id=allow_unsigned_official_status_plugin_id,
+    ))
+    return {"kind": "beta", "promotions": promotions}
 
 
 def verify_merged_publication(root: Path, before: str, after: str, channel: str) -> dict[str, object]:
@@ -1316,6 +1368,20 @@ def classify_merged_change(
             # main-gate smoke recheck, or a Stable completion.
             if git_succeeds(root, ["cat-file", "-e", f"{after}:{REGISTRY_PATH}"]):
                 try:
+                    source_only_ids = source_only_publication_ids(paths, set())
+                    status_ids = {
+                        match.group(1)
+                        for path in paths
+                        if (match := STATUS_PATH_PATTERN.fullmatch(path))
+                    }
+                    if source_only_ids and status_ids - source_only_ids:
+                        return verify_mixed_no_pointer_beta_batch(
+                            root,
+                            before,
+                            after,
+                            paths,
+                            allow_unsigned_official_status_plugin_id=allow_unsigned_official_status_plugin_id,
+                        )
                     return verify_source_only_beta(
                         root,
                         before,
