@@ -57,8 +57,12 @@ agentTools、存储和真实测试。
   停止切换、revision 核对、失败和重启恢复；验证共用线性化准入门的延迟写入无法
   越过已排空栅栏，并验证 `prepared` 崩溃回到上一个 generation、`committed` 崩溃幂等完成切换，
   以及发布前失败会隔离候选、恢复旧 lease 并安全解除栅栏；不能解除时持久化 `blocked` 和恢复入口。
+  双库即使记录 ID 不同也要拒绝 scope head/revision 分叉；合并结果使用严格更新的 revision。通过
+  SQLite/WAL checkpoint、逐组件校验和、文件与目录 `fsync`、同文件系统原子 rename 和 durable
+  generation 提交验证断电顺序；重启发现已提交引用损坏时进入 `blocked`，不能激活该 generation。
 - 控制权限：验证 context handle 的 audience/action/assignment/lease/session/operation/revision 绑定、
-  短时过期、单次 nonce，以及每次调用的签名与撤销/quarantine 重验；覆盖写入已提交但
+  canonical scope/resource、授权 epoch、短时过期、单次 nonce，以及每次调用的签名与
+  撤销/quarantine 重验；撤销完成要与新写入在同一准入门/事务线性化。覆盖写入已提交但
   响应丢失后先重验凭据与撤销状态、再以已消费 nonce 回放同 operation/digest outcome，
   以及新写入的 nonce 在事务内单次消费和同 ID 不同 digest 被拒绝。
 - 能力统计：同一 artifact/capability/role/来源投影键的契约分歧必须阻断门禁；滚动更新

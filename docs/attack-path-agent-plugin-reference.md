@@ -55,11 +55,14 @@ Fabric 只接受 Bearer task capability，并在调用边界重建 opaque contex
 
 节点绑定、完成、释放和 scope 清理由隐藏的 `xsec/attack-path/control` 处理。该请求不进入
 Agent Tool 清单，只接受 Host 签发的短时受限 context handle。handle 必须签名绑定
-Sidecar/control audience、单一 action、assignment、lease generation、session、operation ID、
-预期 revision、到期时间和 nonce；写操作 nonce 只能成功消费一次。Sidecar 在每次调用时
+Sidecar/control audience、单一 action、assignment、canonical scope/resource ID、lease generation、
+session、operation ID、预期 revision、授权 epoch、到期时间和 nonce；请求中的 scope/resource
+必须与签名 claim 完全相同，不能由调用方替换。写操作 nonce 只能成功消费一次。Sidecar 在每次调用时
 先校验签名、audience、action、scope、到期和当前撤销/quarantine 状态，再查询该
 operation 已提交的 outcome；已提交的同请求可在 nonce 已消费时完成鉴权回放。只有新写入
-才在同一事务内校验 nonce 未使用并消费一次。Host 先持久化
+才在同一事务/线性化点内重验授权 epoch 和撤销状态、校验 nonce 未使用并消费一次，再提交领域
+写入。撤销或 quarantine 必须原子推进授权 epoch、关闭同一准入门并等待已注册写事务完成后才
+报告成功；旧 epoch 的 handle 随即失效。Host 先持久化
 操作 ID、同一 scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer
 token、`context handle` 和 Secret。Host 为每个新控制请求生成全局唯一 operation ID。Sidecar
 按 scope 持久化 operation ID、action、expected revision 与规范业务字段的完整 canonical request
@@ -85,15 +88,20 @@ operation ID 跨任务重放。
 1. 在共用准入门上原子安装迁移栅栏并关闭新 permit，等待旧 handler、Fabric 和 Host
    的全部已注册 permit 提交或回滚，确认没有活动写入者；随后再 checkpoint WAL。
 2. 分别备份旧库与已有 2.0.1 `PLUGIN_DATA`，再建立候选 `store.sqlite`。
-3. 按 scope 与记录 ID 合并不冲突数据；任何冲突停止切换并输出明细。
+3. 先比较每个 scope 的 head/revision 历史；两个来源的 head 或 revision 分叉即视为冲突，即使
+   记录 ID 完全不同也停止切换并输出明细。只有 history 一致的 scope 才按记录 ID 合并不冲突
+   数据，并为结果分配严格大于所有导入 head 的新 revision，不能沿用任一来源的旧 CAS token。
 4. 用真实 sidecar 核对数据、关联、数量和 revision。
 5. 先写入 `prepared` generation，它包含 artifact SHA、数据库位置、capability revision、Tool
-   Registry 摘要和 live projection 摘要，候选仍不可见。全部核对通过后在写入栅栏内原子将该
-   generation 标记为 `committed`；这条 generation 记录是数据库、artifact、Tool Registry 和会话投影
-   的唯一权威选择源，消费者不维护独立可写指针。
+   Registry 摘要和 live projection 摘要，候选仍不可见。提交前 checkpoint 候选 SQLite/WAL，
+   对数据库、registry 和 projection 元数据逐项计算校验和并 `fsync` 文件；用同文件系统原子
+   rename 发布其 generation 目录，再 `fsync` 父目录。全部引用的字节和校验和持久后，才在写入
+   栅栏内以 durable 数据库事务将 generation 标记为 `committed` 并同步该记录；这条 generation
+   记录是数据库、artifact、Tool Registry 和会话投影的唯一权威选择源，消费者不维护独立可写指针。
 6. 进程重启时先按 generation 记录幂等对齐所有消费者：`prepared` 一律回滚并继续使用
-   上一个 `committed` generation；`committed` 一律完成切换，不回退到旧指针。栅栏保持到提交持久
-   且本地消费者对齐；不兼容升级等待旧 backend lease 释放。
+   上一个 `committed` generation；对 `committed` 先逐项验证引用存在、校验和与完整 SQLite，再
+   完成切换且不回退到旧指针。不可验证的 `committed` generation 不得激活，进入持久化 `blocked`
+   恢复路径。栅栏保持到提交持久且本地消费者对齐；不兼容升级等待旧 backend lease 释放。
 7. 第 2 至第 5 步或发布新权威前失败时执行幂等 abort/recovery：保留最后一个 `committed`
    generation，将候选库标记为隔离并恢复旧 backend lease；确认没有活动写入者、消费者均重新
    对齐旧权威后才解除迁移栅栏。不能安全解除时持久化 `blocked` 状态、原因和显式恢复入口，
