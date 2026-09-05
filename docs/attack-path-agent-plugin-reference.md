@@ -54,9 +54,12 @@ Fabric 只接受 Bearer task capability，并在调用边界重建 opaque contex
 作为权威结果。
 
 节点绑定、完成、释放和 scope 清理由隐藏的 `xsec/attack-path/control` 处理。该请求不进入
-Agent Tool 清单，只接受 Host 签发的受限 context handle。Host 先持久化操作 ID、预期
-revision、请求与状态；Sidecar 按操作 ID 幂等写入，Host 确认结果后再提交调度状态。重启后
-未决操作保持可见，并由用户显式恢复。
+Agent Tool 清单，只接受 Host 签发的受限 context handle。Host 先持久化操作 ID、同一
+scope 上的预期 revision，以及非敏感业务字段与状态；明确排除 Bearer token、`context
+handle` 和 Secret。Sidecar 必须把操作 ID 绑定到同一 scope，并在单个原子事务中用
+compare-and-set 同时校验当前 revision 与预期 revision 后执行幂等写入；revision 过期时
+显式失败。Host 确认结果后再提交调度状态。重启后未决操作保持可见，并由用户显式恢复；
+恢复时必须重新建立并验证授权，不得复用已持久化的 `context handle`。
 
 报告终结与清理按 assignment 建立写入栅栏，等待在途事务完成，再核对 Sidecar revision、
 节点、子 Agent 和 Host 操作。栅栏后的迟到写入显式失败。
@@ -65,11 +68,14 @@ revision、请求与状态；Sidecar 按操作 ID 幂等写入，Host 确认结�
 
 旧 store 切换到 sidecar 时按下列顺序执行：
 
-1. 对旧 handler、Fabric 和 Host 写入建立迁移栅栏并 checkpoint WAL。
+1. 对旧 handler、Fabric 和 Host 写入建立迁移栅栏：停止新写入，等待所有已获准事务提交或
+   回滚，确认没有活动写入者；随后再 checkpoint WAL。
 2. 分别备份旧库与已有 2.0.1 `PLUGIN_DATA`，再建立候选 `store.sqlite`。
 3. 按 scope 与记录 ID 合并不冲突数据；任何冲突停止切换并输出明细。
 4. 用真实 sidecar 核对数据、关联、数量和 revision。
-5. 在一条持久化提交记录中发布 artifact SHA、数据库位置和 capability revision。
+5. 在写入栅栏内、以一条持久化提交记录原子发布 artifact SHA、数据库位置、capability
+   revision，以及新的 Tool Registry 与其它 live capability projection 指针；栅栏保持到
+   该提交持久化完成。
 6. 任意步骤失败时保持最后一次已提交权威不变；不兼容升级等待旧 backend lease 释放。
 
 历史会话经 compatibility projection 继续使用 `xsec_tree_*`；新会话只看到

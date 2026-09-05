@@ -39,10 +39,12 @@ agentTools、存储和真实测试。
 - 安装：纯 portable 包、有效/缺失/无效 XSec extension、无效 Skill、无效 MCP 文档和
   单 server 失败。
 - 运行：`initialize`、`tools/list`、`tools/call`、Tool allowlist、任务隔离、更新产生的
-  capability revision、unknown/incomplete 统计、最终合并 Tool 集合的 wire-name 冲突和审批；
-  Skill 重名还要覆盖全部实际启用来源。
-- 生命周期：持久化 artifact/`PLUGIN_DATA` 引用、A→B→C 会话冻结、历史恢复重新鉴权、普通
-  更新、组件停用、quarantine、lease 回收和 `PLUGIN_DATA` 跨升级。
+  capability revision、unknown/incomplete 统计（含必需会话未连接/失败/契约冲突时门禁失败）、
+  每个受支持 OMP 版本的最终合并 Tool 集合 wire-name 冲突和审批；Skill 重名还要覆盖全部
+  实际启用来源。受限 probe 环境必须证明失败探测不能触及活动 artifact/数据/指针。
+- 生命周期：持久化 artifact/`PLUGIN_DATA` 引用、A→B→C 会话冻结、历史恢复重新鉴权（含撤销
+  成员资格/策略变更/quarantine 后拒绝或降权）、普通更新、组件停用、quarantine、lease
+  回收和 `PLUGIN_DATA` 跨升级。
 - 数据：Host/Sidecar 操作幂等、在途写入栅栏、真实数据库候选迁移、双库无冲突合并、冲突
   停止切换、revision 核对、失败和重启恢复。
 - 交付：对应平台的不可变 archive、签名、Factory Beta smoke 和 Stable 指针提升。

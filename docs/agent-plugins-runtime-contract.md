@@ -34,8 +34,9 @@ project、session、role、token 或 secret 写进 manifest、Skill、`mcp.json`
 
 Desktop 会话快照持久保存 artifact SHA、`PLUGIN_DATA` 映射、Skill roots、Tool 契约、
 allowlist、角色和 capability revision。活动 lease、保留历史与回滚指针共同保护这些
-artifact；恢复时先核对快照归属和精确 artifact，再签发新凭据。Bearer token 与 context
-handle 不进入快照。
+artifact；恢复时先核对快照归属和精确 artifact，再对照当前 project/session 成员资格、Host
+策略、插件 quarantine/disablement 与已撤销授权做重新鉴权。只有当前策略仍允许时才签发新
+凭据；否则拒绝恢复或以最小权限拒绝过期投影。Bearer token 与 context handle 不进入快照。
 
 ## schemaVersion 2
 
@@ -110,9 +111,13 @@ runner 编译、签名、发布或推广 release。
    `releaseId`，不重建或替换 artifact。
 
 安装只执行静态验证。启用和更新必须针对候选 artifact 完成真实 `initialize`、
-`tools/list`、binding 与名称冲突预检；数据升级使用真实数据库副本。overlay revision 只用于
-组件编辑并发控制，capability revision 标识一次发布的运行时投影。最终 Tool 合集的 wire
-name 必须按固定 OMP 版本的实际命名函数检查，覆盖插件、独立、产品、Host 与 OMP 内置来源。
+`tools/list`、binding 与名称冲突预检；数据升级使用真实数据库副本。这些探测必须在受限
+probe 环境中执行：不得使用生产凭据，只使用隔离可丢弃的数据副本，并施加明确的文件/
+进程/网络限制；失败的探测不得修改活动 artifact、活动数据或活动指针。overlay revision
+只用于组件编辑并发控制，capability revision 标识一次发布的运行时投影。最终 Tool 合集的
+wire name 必须对每个受支持的嵌入式 OMP 版本（当前为 16.4.8 与 18.0.9）分别按该版本的
+实际命名函数检查，覆盖插件、独立、产品、Host 与 OMP 内置来源，并持久化/验收各版本的
+结果 registry。
 
 ## 发布与运行时验收
 
@@ -122,7 +127,8 @@ Beta 前的本地/CI 门禁至少包括：真实 archive 验证、独立 OMP 18.
 
 Desktop 的只读 `_xsec/session/capabilities` 回读必须能逐项核对最终启用 Tool 的来源、
 schema 与 annotations。未连接、失败或不同活动会话返回冲突契约时，当前统计为
-`unknown/incomplete`；历史数量不得进入当前合计。
+`unknown/incomplete`；历史数量不得进入当前合计。必需会话出现上述任一失败条件时，Beta
+与 Stable 门禁必须失败，不得被成功会话汇总掩盖。
 
 Desktop Beta smoke 必须证明安装的 Factory artifact，而不是源码目录或临时 binary。它
 至少核验：平台/架构选择、签名和 SHA-256、sidecar 可执行路径、`PLUGIN_DATA` 跨更新
