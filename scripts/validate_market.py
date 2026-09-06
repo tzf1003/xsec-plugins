@@ -93,6 +93,10 @@ TRAFFIC_FRONTEND_METHOD_CONTRACT = {
     "xsec.traffic.passive-rules.toggle": ("pluginData.write", "plugin"),
     "xsec.traffic.passive-rules.delete": ("pluginData.write", "plugin"),
 }
+TRAFFIC_PAYLOAD_FRONTEND_METHOD_CONTRACT = {
+    **TRAFFIC_FRONTEND_METHOD_CONTRACT,
+    "xsec.traffic.payload.open": ("workspace.session.read", "session"),
+}
 APPROVALS_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 APPROVALS_WORKSPACE_TOOL_ACTIVATION_EVENT = "onWorkspaceTool:approvals"
 APPROVALS_WORKSPACE_TOOL_CONTRIBUTION = {
@@ -116,6 +120,7 @@ OFFICIAL_FRONTEND_PLUGIN_API_RANGE = "^1.2.0"
 WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE = "^1.3.0"
 WORKSPACE_COMPOSER_PLUGIN_API_RANGE = "^1.4.0"
 BROWSER_SURFACE_PLUGIN_API_RANGE = "^1.4.0"
+TRAFFIC_PAYLOAD_PLUGIN_API_RANGE = "^1.5.0"
 BROWSER_SURFACE_METHOD_PREFIX = "xsec.browser.surface."
 BROWSER_PRESENTATION_METHOD = "xsec.browser.presentation.set"
 OFFICIAL_FRONTEND_MIN_BYTES = 1_000
@@ -1560,15 +1565,32 @@ def validate_traffic_frontend(manifest: dict[str, object], source: str, label: s
 
     frontend_api = manifest["extensions"]["com.xsec.desktop"].get("frontendApi")
     methods = frontend_api.get("methods") if isinstance(frontend_api, dict) else None
-    if not isinstance(methods, dict) or set(methods) != set(TRAFFIC_FRONTEND_METHOD_CONTRACT):
+    contract = traffic_frontend_method_contract(methods)
+    if contract is None:
         fail(f"{label} must declare the reviewed Traffic RPC surface")
-    for method, (capability, binding) in TRAFFIC_FRONTEND_METHOD_CONTRACT.items():
+    for method, (capability, binding) in contract.items():
         descriptor = methods.get(method)
         if not isinstance(descriptor, dict) or descriptor.get("capability") != capability or descriptor.get("binding") != binding:
             fail(f"{label} must bind the reviewed Traffic RPC contract ({method})")
     requested = traffic_frontend_rpc_methods(javascript_contract_tokens(source, label), label)
     if requested != set(methods):
         fail(f"{label} must use exactly the declared Traffic RPC surface")
+
+
+def traffic_frontend_method_contract(
+    methods: object,
+) -> dict[str, tuple[str, str]] | None:
+    """Select the immutable Traffic RPC contract matching one manifest."""
+
+    if not isinstance(methods, dict):
+        return None
+    for contract in (
+        TRAFFIC_FRONTEND_METHOD_CONTRACT,
+        TRAFFIC_PAYLOAD_FRONTEND_METHOD_CONTRACT,
+    ):
+        if set(methods) == set(contract):
+            return contract
+    return None
 
 
 def traffic_frontend_rpc_methods(
@@ -2706,8 +2728,9 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
         WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE,
         WORKSPACE_COMPOSER_PLUGIN_API_RANGE,
         BROWSER_SURFACE_PLUGIN_API_RANGE,
+        TRAFFIC_PAYLOAD_PLUGIN_API_RANGE,
     }:
-        fail(f"{label} must require plugin API 1.2")
+        fail(f"{label} must require plugin API 1.2 or a later supported version")
     frontend_api = desktop.get("frontendApi")
     if not isinstance(frontend_api, dict) or frontend_api.get("version") != 2 or frontend_api.get("module") != "single-esm":
         fail(f"{label} must declare frontend API v2 single-esm")
@@ -2716,11 +2739,14 @@ def validate_official_frontend(manifest: dict[str, object], source: str, label: 
         fail(f"{label} must declare at least one host RPC method")
     composer_methods = frontend_methods_with_capability(methods, "workspace.composer.write")
     browser_surface_methods = frontend_methods_require_browser_surface_api(methods)
-    if browser_surface_methods and engines.get("pluginApi") != BROWSER_SURFACE_PLUGIN_API_RANGE:
+    payload_stream_open = "xsec.traffic.payload.open" in methods
+    if payload_stream_open and engines.get("pluginApi") != TRAFFIC_PAYLOAD_PLUGIN_API_RANGE:
+        fail(f"{label} must require plugin API 1.5 for Traffic payload streams")
+    if not payload_stream_open and browser_surface_methods and engines.get("pluginApi") != BROWSER_SURFACE_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.4 for browser surface methods")
-    if composer_methods and engines.get("pluginApi") != WORKSPACE_COMPOSER_PLUGIN_API_RANGE:
+    if not payload_stream_open and composer_methods and engines.get("pluginApi") != WORKSPACE_COMPOSER_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.4 for workspace Composer writes")
-    if "xsec.workspace.tool.open" in methods and not composer_methods and not browser_surface_methods and engines.get("pluginApi") != WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE:
+    if "xsec.workspace.tool.open" in methods and not payload_stream_open and not composer_methods and not browser_surface_methods and engines.get("pluginApi") != WORKSPACE_TOOL_NAVIGATION_PLUGIN_API_RANGE:
         fail(f"{label} must require plugin API 1.3 for workspace tool navigation")
     lowered = source.lower()
     for marker in FORBIDDEN_OFFICIAL_FRONTEND_MARKERS:
