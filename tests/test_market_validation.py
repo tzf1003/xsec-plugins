@@ -55,6 +55,11 @@ def traffic_payload_release_contract() -> tuple[dict[str, object], str]:
         "capability": "workspace.session.read",
         "binding": "session",
     }
+    source = source.replace(
+        "function getTraffic(host,flowId){return",
+        "function getTraffic(host,flowId){openTrafficPayload(host,flowId);return",
+        1,
+    )
     source += '\nfunction openTrafficPayload(host){return host.request("xsec.traffic.payload.open",{})}\n'
     return manifest, source
 
@@ -344,6 +349,14 @@ class MarketplaceValidationTests(unittest.TestCase):
         manifest, source = traffic_payload_release_contract()
         manifest["extensions"]["com.xsec.desktop"]["engines"]["pluginApi"] = "^1.4.0"
         with self.assertRaisesRegex(MarketplaceValidationError, "plugin API 1.5"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 2.1.0")
+
+    def test_traffic_payload_contract_rejects_an_uncalled_helper(self) -> None:
+        """Reject a payload RPC helper that no plugin lifecycle can reach."""
+
+        manifest, source = traffic_payload_release_contract()
+        source = source.replace("openTrafficPayload(host,flowId);", "", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "lifecycle-reachable"):
             validate_market.validate_official_frontend(manifest, source, "Traffic 2.1.0")
 
     def test_traffic_contract_rejects_undeclared_rpc_mutation(self) -> None:

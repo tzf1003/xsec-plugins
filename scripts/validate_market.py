@@ -123,6 +123,7 @@ BROWSER_SURFACE_PLUGIN_API_RANGE = "^1.4.0"
 TRAFFIC_PAYLOAD_PLUGIN_API_RANGE = "^1.5.0"
 BROWSER_SURFACE_METHOD_PREFIX = "xsec.browser.surface."
 BROWSER_PRESENTATION_METHOD = "xsec.browser.presentation.set"
+TRAFFIC_RENDER_HELPERS = frozenset({"u2", "h", "jsx", "jsxs", "createElement"})
 OFFICIAL_FRONTEND_MIN_BYTES = 1_000
 OFFICIAL_PLUGIN_SETTINGS_CONTRACT: dict[str, dict[str, object]] = {
     "com.xsec.asset-discovery": {
@@ -1608,6 +1609,7 @@ def traffic_frontend_rpc_methods(
     calls = frontend_host_request_calls(dense, label)
     if not calls:
         fail(f"{label} does not call the declared Traffic RPC surface")
+    reachable = traffic_reachable_function_names(tokens)
     proof = (frontend_rpc_bindings(dense), frontend_binding_counts(dense))
     blocks = frontend_named_function_blocks(tokens)
     source_indices = [index for index, token in enumerate(tokens) if token[0] != "newline"]
@@ -1615,7 +1617,9 @@ def traffic_frontend_rpc_methods(
     for receiver, argument, _ in calls:
         source_index = source_indices[receiver]
         owner = frontend_function_owner(blocks, source_index)
-        if owner is None or (
+        if owner not in reachable:
+            fail(f"{label} cannot prove the Traffic lifecycle-reachable host broker contract")
+        if (
             host_is_reassigned_before(tokens, source_index, blocks[owner][0])
             or frontend_destructuring_writes_host(tokens, blocks[owner][0], source_index)
         ):
@@ -1625,6 +1629,109 @@ def traffic_frontend_rpc_methods(
             fail(f"{label} contains an unresolved Traffic RPC request argument")
         requested.update(methods)
     return requested
+
+
+def traffic_reachable_function_names(tokens: list[tuple[str, str]]) -> set[str]:
+    """Trace named Traffic helpers from lifecycle-rendered components."""
+
+    blocks = frontend_named_function_blocks(tokens)
+    reachable = traffic_lifecycle_component_roots(tokens, blocks=blocks)
+    pending = list(reachable)
+    while pending:
+        name = pending.pop()
+        span = blocks[name]
+        children = set(frontend_direct_helper_calls(tokens, blocks, span))
+        children.update(traffic_component_references(tokens, blocks=blocks, span=span))
+        for child in children - reachable:
+            reachable.add(child)
+            pending.append(child)
+    return reachable
+
+
+def traffic_lifecycle_component_roots(
+    tokens: list[tuple[str, str]], *, blocks: dict[str, tuple[int, int]]
+) -> set[str]:
+    """Return components rendered by an activation lifecycle callback."""
+
+    roots: set[str] = set()
+    for activation, lifecycle_blocks in traffic_activate_lifecycle_blocks(tokens):
+        arrows = traffic_arrow_bindings(tokens, span=activation)
+        for lifecycle in lifecycle_blocks:
+            roots.update(traffic_component_references(tokens, blocks=blocks, span=lifecycle))
+            calls = traffic_called_names(tokens, span=lifecycle)
+            for arrow in calls & set(arrows):
+                roots.update(traffic_component_references(tokens, blocks=blocks, span=arrows[arrow]))
+    return roots
+
+
+def traffic_activate_lifecycle_blocks(
+    tokens: list[tuple[str, str]],
+) -> list[tuple[tuple[int, int], tuple[tuple[int, int], ...]]]:
+    """Return activation bodies that expose the complete plugin lifecycle."""
+
+    results: list[tuple[tuple[int, int], tuple[tuple[int, int], ...]]] = []
+    for index in range(len(tokens) - 4):
+        if tokens[index:index + 3] != [
+            ("identifier", "function"), ("identifier", "activate"), ("punctuation", "(")
+        ]:
+            continue
+        parameters = matching_parenthesis(tokens, index + 2)
+        opening = parameters + 1 if parameters is not None else len(tokens)
+        if opening >= len(tokens) or tokens[opening] != ("punctuation", "{"):
+            continue
+        closing = matching_brace(tokens, opening)
+        if closing is None:
+            continue
+        lifecycle = frontend_lifecycle_method_blocks(tokens, (opening + 1, closing))
+        if set(lifecycle) == set(APPROVALS_FRONTEND_LIFECYCLE_METHODS):
+            results.append(((opening + 1, closing), tuple(lifecycle.values())))
+    return results
+
+
+def traffic_arrow_bindings(
+    tokens: list[tuple[str, str]], *, span: tuple[int, int]
+) -> dict[str, tuple[int, int]]:
+    """Index named arrow bodies declared by one activation implementation."""
+
+    arrows: dict[str, tuple[int, int]] = {}
+    for index in range(span[0], span[1] - 1):
+        if tokens[index:index + 2] != [("punctuation", "="), ("punctuation", ">")]:
+            continue
+        name = frontend_arrow_binding(tokens, index)
+        body = frontend_arrow_body(tokens, index, span[1])
+        if name is not None and body is not None:
+            arrows[name] = body
+    return arrows
+
+
+def traffic_called_names(
+    tokens: list[tuple[str, str]], *, span: tuple[int, int]
+) -> set[str]:
+    """Return direct function calls made from one token span."""
+
+    return {
+        tokens[index][1]
+        for index in range(span[0], span[1] - 1)
+        if tokens[index][0] == "identifier"
+        and tokens[index + 1] == ("punctuation", "(")
+        and (index == 0 or tokens[index - 1] != ("punctuation", "."))
+    }
+
+
+def traffic_component_references(
+    tokens: list[tuple[str, str]], *, blocks: dict[str, tuple[int, int]], span: tuple[int, int]
+) -> set[str]:
+    """Return reviewed named components passed to the renderer."""
+
+    return {
+        tokens[index][1]
+        for index in range(span[0] + 2, span[1] + 1)
+        if tokens[index][0] == "identifier"
+        and tokens[index][1] in blocks
+        and tokens[index - 1] == ("punctuation", "(")
+        and tokens[index - 2][0] == "identifier"
+        and tokens[index - 2][1] in TRAFFIC_RENDER_HELPERS
+    }
 
 
 def frontend_string_constants(tokens: list[tuple[str, str]]) -> dict[str, str]:
