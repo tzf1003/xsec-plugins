@@ -4,23 +4,23 @@
   "trustTier": "first-party",
   "source": {
     "repository": "tzf1003/xsec-plugin-conversation-tree",
-    "path": "plugins/com.xsec.workspace.conversation-tree",
+    "path": ".",
     "refs": {
       "beta": "refs/heads/beta",
       "stable": "refs/heads/main"
     },
-    "betaSha": "32054920d12bfb24ed44fae7ea1c397093db4403",
+    "betaSha": "d77a0fded72cb8d9aa1f620020fd414b5fdbbe12",
     "stableSha": null,
-    "mainGateSha": "d6f86b5fbb5719474fcd7587e49f5aa5d8c15bfc"
+    "mainGateSha": "c4a6f2794c1eb88712ac93b4efbbc0dfff523307"
   },
   "release": {
-    "betaReleaseId": "sha256-90c4495f2f133cc6407fcc5140bb39f393fd19c79aefdd32e42deda8b34111b6",
+    "betaReleaseId": "sha256-9d91155891862c412e0e45fe5ae1e45649814f33529e1fff9536a3ddeadd3577",
     "stableReleaseId": "sha256-6cfa9a148b0bce414c4744acb5069873484aca9618f587d4d197b83187cd1da0"
   },
   "publication": {
     "state": "waiting_for_smoke",
-    "deliveryId": "batch-34037445556.1",
-    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/34037445556",
+    "deliveryId": "batch-34050449875.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/34050449875",
     "smokeRunUrl": null,
     "marketplaceRevision": null
   }

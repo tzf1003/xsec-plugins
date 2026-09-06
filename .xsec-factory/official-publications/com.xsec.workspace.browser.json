@@ -76,6 +76,21 @@
         "url": "artifacts/com.xsec.workspace.browser-1.3.6-sha256-af0e2fb8dd6b7f47-any-any.xsec-plugin"
       },
       "publisher": "github-actions[bot]"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-cdde48bf064f7de72228f5d3d7d481ebaf81795cba79bc368a64413ec3602548",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-browser",
+        "path": ".",
+        "ref": "refs/heads/beta",
+        "sha": "6081e60de2ed86ca64d365612a85a6da9b8705c6"
+      },
+      "artifact": {
+        "sha256": "d4f10a25fb9f67922c8dde51e98e2582009207dc8032d1f45b497299cff84c9f",
+        "url": "artifacts/com.xsec.workspace.browser-1.3.7-sha256-d4f10a25fb9f6792-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
     }
   ],
   "smokeOutcomes": [
