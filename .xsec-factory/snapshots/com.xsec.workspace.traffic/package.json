@@ -1,0 +1,20 @@
+{
+  "name": "@xsec/plugin-traffic",
+  "version": "2.1.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "verify": "pnpm check && pnpm build && pnpm test"
+  },
+  "dependencies": {
+    "preact": "10.27.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "typescript": "5.9.2"
+  },
+  "packageManager": "pnpm@10.34.5"
+}

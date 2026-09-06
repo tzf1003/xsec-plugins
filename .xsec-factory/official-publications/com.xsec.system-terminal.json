@@ -61,6 +61,21 @@
         "url": "artifacts/com.xsec.system-terminal-1.2.6-sha256-9e14a728aaaee8ac-any-any.xsec-plugin"
       },
       "publisher": "github-actions[bot]"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-80829860e41b4b9963bb4e73bc14d1ce66c44ff7279391f6dc10c5e31f534b07",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-system-terminal",
+        "path": ".",
+        "ref": "refs/heads/beta",
+        "sha": "442e7b8e053cada1029b252b73c28a3c2c62de50"
+      },
+      "artifact": {
+        "sha256": "2c3daea4e0fb914884b2465fdba16077140bb55b5b117b9e9cddeb387045d29a",
+        "url": "artifacts/com.xsec.system-terminal-1.2.7-sha256-2c3daea4e0fb9148-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
     }
   ],
   "smokeOutcomes": [

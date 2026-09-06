@@ -4,24 +4,24 @@
   "trustTier": "first-party",
   "source": {
     "repository": "tzf1003/xsec-plugin-attack-path",
-    "path": "plugins/com.xsec.attack-path",
+    "path": ".",
     "refs": {
       "beta": "refs/heads/beta",
       "stable": "refs/heads/main"
     },
-    "betaSha": "949311fea0154cc6f23cb8f3e04978f1f3d7a59a",
-    "stableSha": "367586fc9d51b1d53cb1d92d1a3437b9af4b5970",
-    "mainGateSha": "367586fc9d51b1d53cb1d92d1a3437b9af4b5970"
+    "betaSha": "83390311aa76cf223137acd6c1bf43eb7d1e015f",
+    "stableSha": null,
+    "mainGateSha": "daf51841537f2243d37b6181cfa87b1edc1824d9"
   },
   "release": {
-    "betaReleaseId": "sha256-fe141aa837a5ceda58a0b587c02abf54cd3ed93ad0d36b6de688f628cc55a2a9",
+    "betaReleaseId": "sha256-39626672438e6d4ab8757905361f16e775d15eb46b674430c4459736782e984c",
     "stableReleaseId": "sha256-fe141aa837a5ceda58a0b587c02abf54cd3ed93ad0d36b6de688f628cc55a2a9"
   },
   "publication": {
-    "state": "published",
-    "deliveryId": "34012117636.1",
-    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/34011413816",
-    "smokeRunUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/34011850674",
-    "marketplaceRevision": "ab5753c1bfa65cead216dde56800b3df46f89958"
+    "state": "waiting_for_smoke",
+    "deliveryId": "batch-34049433851.1",
+    "factoryRunUrl": "https://github.com/tzf1003/xsec-plugins/actions/runs/34049433851",
+    "smokeRunUrl": null,
+    "marketplaceRevision": null
   }
 }

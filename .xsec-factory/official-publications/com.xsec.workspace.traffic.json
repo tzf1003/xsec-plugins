@@ -211,6 +211,21 @@
         "url": "artifacts/com.xsec.workspace.traffic-2.0.1-sha256-fa5925dac27a9ca9-any-any.xsec-plugin"
       },
       "publisher": "xsec-marketplace-bot"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-f916d0e6d61990ce58decf78240dd04e4598bb429858a8f02d7f00e398ccfc4a",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-traffic",
+        "path": ".",
+        "ref": "refs/heads/beta",
+        "sha": "6587676fce0b2eb72c10487653b8b52649e202fd"
+      },
+      "artifact": {
+        "sha256": "725ced14022cf6256a60250ae550c5753caf449b5cc68b3e4407f1422a2b46d7",
+        "url": "artifacts/com.xsec.workspace.traffic-2.1.1-sha256-725ced14022cf625-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
     }
   ],
   "smokeOutcomes": [
