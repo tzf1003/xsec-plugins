@@ -192,12 +192,13 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
 
             result = materializer.materialize_repository(factory, PLUGIN_ID, output)
 
-            stable_manifest = json.loads(git(output, "show", f"main:plugins/{PLUGIN_ID}/plugin.json"))
-            beta_manifest = json.loads(git(output, "show", f"beta:plugins/{PLUGIN_ID}/plugin.json"))
+            stable_manifest = json.loads(git(output, "show", "main:plugin.json"))
+            beta_manifest = json.loads(git(output, "show", "beta:plugin.json"))
             self.assertEqual(stable_manifest["version"], "1.0.0")
             self.assertEqual(beta_manifest["version"], "1.1.0")
             self.assertEqual(git(output, "show", "main:README.md").splitlines()[0], f"# {PLUGIN_ID}")
-            self.assertIn("plugins/com.xsec.workspace.sub-agent/plugin.json", git(output, "ls-tree", "-r", "--name-only", "beta"))
+            self.assertIn("plugin.json", git(output, "ls-tree", "-r", "--name-only", "beta"))
+            self.assertNotIn(f"plugins/{PLUGIN_ID}/plugin.json", git(output, "ls-tree", "-r", "--name-only", "beta"))
             history = git(output, "log", "--format=%s", "--all")
             self.assertIn("feat: retain plugin source history", history)
             self.assertIn("test: preserve pre-migration plugin history", history)
@@ -231,7 +232,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             repository.mkdir()
             materializer.replace_plugin_tree(repository, NATIVE_PLUGIN_ID, artifact, record)
 
-            source_plugin = repository / "plugins" / NATIVE_PLUGIN_ID
+            source_plugin = repository
             self.assertTrue((source_plugin / "plugin.json").is_file())
             self.assertFalse((source_plugin / native_sidecars.ATTACK_PATH_RECIPE.archive_path).exists())
 
@@ -310,7 +311,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
             git(output, "config", "user.name", "Tree Guard")
             git(output, "config", "user.email", "tree-guard@example.invalid")
             git(output, "checkout", "--quiet", "main")
-            (output / "plugins" / PLUGIN_ID / "frontend.js").write_text("tampered\n", encoding="utf-8")
+            (output / "frontend.js").write_text("tampered\n", encoding="utf-8")
             git(output, "add", "--all")
             git(output, "commit", "--quiet", "-m", "tamper")
 
@@ -804,7 +805,7 @@ class FirstPartySourceMaterializerTests(unittest.TestCase):
                 materializer.filter_index_paths(PLUGIN_ID)
             finally:
                 os.chdir(previous)
-            self.assertEqual(git(root, "ls-files"), f"plugins/{PLUGIN_ID}/frontend.js")
+            self.assertEqual(git(root, "ls-files"), "frontend.js")
 
     def test_rejects_dirty_or_non_main_factory_input_before_reading_release_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-materializer-trusted-main-") as directory:

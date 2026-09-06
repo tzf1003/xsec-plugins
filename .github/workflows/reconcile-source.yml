@@ -204,7 +204,7 @@ jobs:
                 | .publication as $publication
                 | if .pluginId != $plugin_id
                     or $source.repository != $repository
-                    or $source.path != ("plugins/" + $plugin_id)
+                    or $source.path != "."
                     or $source.refs != {beta:"refs/heads/beta",stable:"refs/heads/main"}
                     or ($source.betaSha | type) != "string"
                     or $source.stableSha != null
@@ -215,7 +215,7 @@ jobs:
                   elif [ $evidence[0].events[]
                     | select(.channel == "beta" and .releaseId == $release_id
                       and .source.repository == $repository
-                      and .source.path == ("plugins/" + $plugin_id)
+                      and .source.path == "."
                       and .source.ref == "refs/heads/beta"
                       and .source.sha == $source.betaSha)
                   ] | length != 1 then error("candidate lacks exact Beta provenance")
@@ -463,7 +463,7 @@ jobs:
                 .source as $source | .release as $release | .publication as $publication
                 | if .pluginId != $plugin_id
                     or $source.repository != $repository
-                    or $source.path != ("plugins/" + $plugin_id)
+                    or $source.path != "."
                     or $source.refs != {beta:"refs/heads/beta",stable:"refs/heads/main"}
                     or $source.betaSha != $beta_sha
                     or $source.stableSha != null

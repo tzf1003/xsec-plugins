@@ -290,6 +290,28 @@ FIRST_PARTY_APPROVED_SOURCES = {
     "com.xsec.workspace.sub-agent": "tzf1003/xsec-plugin-sub-agent",
     "com.xsec.workspace.traffic": "tzf1003/xsec-plugin-traffic",
 }
+# A split source repository is a plugin package, not a monorepo. These are
+# the packages that completed the one-time ``plugins/<id>`` -> repository-root
+# migration. Project Workspace is deliberately absent: it is retired from
+# Marketplace discovery and remains a historical Factory record only.
+FIRST_PARTY_ROOT_PACKAGE_IDS = frozenset(
+    {
+        "com.xsec.asset-discovery",
+        "com.xsec.attack-path",
+        "com.xsec.system-terminal",
+        "com.xsec.workspace.approvals",
+        "com.xsec.workspace.browser",
+        "com.xsec.workspace.conversation-tree",
+        "com.xsec.workspace.files",
+        "com.xsec.workspace.project-outcomes",
+        "com.xsec.workspace.sub-agent",
+        "com.xsec.workspace.traffic",
+    }
+)
+LEGACY_FIRST_PARTY_SOURCE_PATHS = {
+    plugin_id: PurePosixPath("plugins") / plugin_id for plugin_id in FIRST_PARTY_ROOT_PACKAGE_IDS
+}
+ROOT_PACKAGE_LAYOUT_RELATIVE_PATH = Path(".xsec-factory/root-package-layout.json")
 TRUST_TIERS = frozenset({"external", "first-party"})
 PUBLICATION_STATES = frozenset(
     {"waiting_for_beta", "building_beta", "waiting_for_smoke", "promoting_stable", "published", "failed"}
@@ -504,7 +526,39 @@ class Registration:
         fail("publication channel must be beta or stable")
 
 
-def parse_registration(value: object, index: int) -> Registration:
+def expected_first_party_source_path(plugin_id: str) -> PurePosixPath:
+    if plugin_id in FIRST_PARTY_ROOT_PACKAGE_IDS:
+        return PurePosixPath(".")
+    return PurePosixPath("plugins") / plugin_id
+
+
+def root_package_layout_is_finalized(root: Path) -> bool:
+    """Return whether the protected Factory transition has completed."""
+
+    return (root / ROOT_PACKAGE_LAYOUT_RELATIVE_PATH).is_file()
+
+
+def is_historical_first_party_source_path(registration: Registration, value: object) -> bool:
+    """Allow immutable pre-root-layout evidence, never new source input."""
+
+    return (
+        registration.trust_tier == "first-party"
+        and registration.plugin_id in FIRST_PARTY_ROOT_PACKAGE_IDS
+        and registration.source_path == PurePosixPath(".")
+        and value == LEGACY_FIRST_PARTY_SOURCE_PATHS[registration.plugin_id].as_posix()
+    )
+
+
+def source_path_matches_history(registration: Registration, value: object) -> bool:
+    return value == registration.source_path.as_posix() or is_historical_first_party_source_path(registration, value)
+
+
+def parse_registration(
+    value: object,
+    index: int,
+    *,
+    allow_legacy_first_party_layout: bool = False,
+) -> Registration:
     label = f"official Factory registry plugin at index {index}"
     entry = require_object(value, label)
     require_exact_keys(entry, {"pluginId", "trustTier", "source", "policy", "category", "status"}, label)
@@ -537,8 +591,12 @@ def parse_registration(value: object, index: int) -> Registration:
         expected_repository = FIRST_PARTY_APPROVED_SOURCES[plugin_id]
         if repository != expected_repository:
             fail(f"{label}.source.repository does not match the approved first-party source")
-        if source_path != PurePosixPath("plugins") / plugin_id:
-            fail(f"{label}.source.path must be plugins/{plugin_id} for a first-party plugin")
+        expected_path = expected_first_party_source_path(plugin_id)
+        legacy_path = LEGACY_FIRST_PARTY_SOURCE_PATHS.get(plugin_id)
+        if source_path != expected_path and not (
+            allow_legacy_first_party_layout and source_path == legacy_path
+        ):
+            fail(f"{label}.source.path must be {expected_path.as_posix()} for a first-party plugin")
         if policy.get("installation") not in {"INSTALLED_BY_DEFAULT", "AVAILABLE"}:
             fail(f"{label}.policy.installation must be INSTALLED_BY_DEFAULT or AVAILABLE")
     if policy.get("authentication") != "ON_INSTALL":
@@ -568,7 +626,12 @@ def parse_registration(value: object, index: int) -> Registration:
     )
 
 
-def load_registry(root: Path, *, allow_legacy_v1: bool = False) -> tuple[Registration, ...]:
+def load_registry(
+    root: Path,
+    *,
+    allow_legacy_v1: bool = False,
+    allow_legacy_first_party_layout: bool | None = None,
+) -> tuple[Registration, ...]:
     """Load current Registry v2, optionally reading a trusted v1 baseline.
 
     The protected source gate compares a proposed v2 migration with the
@@ -581,6 +644,8 @@ def load_registry(root: Path, *, allow_legacy_v1: bool = False) -> tuple[Registr
     path = root / REGISTRY_RELATIVE_PATH
     if is_link(path.parent):
         fail("official external registry directory must not be a symbolic link")
+    if allow_legacy_first_party_layout is None:
+        allow_legacy_first_party_layout = not root_package_layout_is_finalized(root)
     document = read_json(path, "official Factory registry")
     require_exact_keys(document, {"schemaVersion", "plugins"}, "official Factory registry")
     schema_version = document.get("schemaVersion")
@@ -598,11 +663,18 @@ def load_registry(root: Path, *, allow_legacy_v1: bool = False) -> tuple[Registr
             require_exact_keys(entry, {"pluginId", "source", "policy", "category", "status"}, legacy_label)
             v2_entry = dict(entry)
             v2_entry["trustTier"] = "external"
-            return parse_registration(v2_entry, index)
+            return parse_registration(
+                v2_entry,
+                index,
+                allow_legacy_first_party_layout=allow_legacy_first_party_layout,
+            )
 
         registrations = tuple(legacy_entry(item, index) for index, item in enumerate(raw_plugins))
     else:
-        registrations = tuple(parse_registration(item, index) for index, item in enumerate(raw_plugins))
+        registrations = tuple(
+            parse_registration(item, index, allow_legacy_first_party_layout=allow_legacy_first_party_layout)
+            for index, item in enumerate(raw_plugins)
+        )
     identifiers = [item.plugin_id for item in registrations]
     if len(identifiers) != len(set(identifiers)):
         fail("official Factory registry contains duplicate plugin IDs")
@@ -1889,7 +1961,7 @@ def validate_adoption(
     require_exact_keys(refs, {"beta", "stable"}, "first-party adoption proof source.refs")
     if (
         source.get("repository") != registration.repository
-        or source.get("path") != registration.source_path.as_posix()
+        or not source_path_matches_history(registration, source.get("path"))
         or refs.get("beta") != registration.beta_ref
         or refs.get("stable") != registration.stable_ref
     ):
@@ -2236,7 +2308,7 @@ def complete_smoke_status(
     require_exact_keys(refs, {"beta", "stable"}, "completed smoke status source.refs")
     if (
         source.get("repository") != registration.repository
-        or source.get("path") != registration.source_path.as_posix()
+        or not source_path_matches_history(registration, source.get("path"))
         or refs.get("beta") != registration.beta_ref
         or refs.get("stable") != registration.stable_ref
     ):
@@ -2329,7 +2401,7 @@ def validate_status(
     )
     refs = require_object(source.get("refs"), "official Factory status source.refs")
     require_exact_keys(refs, {"beta", "stable"}, "official Factory status source.refs")
-    if source.get("repository") != registration.repository or source.get("path") != registration.source_path.as_posix() or refs.get("beta") != registration.beta_ref or refs.get("stable") != registration.stable_ref:
+    if source.get("repository") != registration.repository or not source_path_matches_history(registration, source.get("path")) or refs.get("beta") != registration.beta_ref or refs.get("stable") != registration.stable_ref:
         fail("official Factory status source does not match the official registry")
     beta_sha = optional_sha(source.get("betaSha"), "official Factory status betaSha")
     stable_sha = optional_sha(source.get("stableSha"), "official Factory status stableSha")
@@ -2478,6 +2550,7 @@ def validate_evidence(
     beta_seen: set[str] = set()
     stable_seen: set[str] = set()
     event_keys: set[tuple[str, str, str]] = set()
+    current_layout_seen = False
     for index, raw_event in enumerate(events):
         label = f"official external publication evidence event {index}"
         event = require_object(raw_event, label)
@@ -2488,11 +2561,15 @@ def validate_evidence(
             fail(f"{label} references an invalid release or channel")
         source = require_object(event.get("source"), f"{label}.source")
         require_exact_keys(source, {"repository", "path", "ref", "sha"}, f"{label}.source")
-        if (
-            source.get("repository") != registration.repository
-            or source.get("path") != registration.source_path.as_posix()
-            or source.get("ref") != registration.ref_for(str(channel))
-        ):
+        source_path = source.get("path")
+        if source.get("repository") != registration.repository or source.get("ref") != registration.ref_for(str(channel)):
+            fail(f"{label} source does not match the official registry")
+        if source_path == registration.source_path.as_posix():
+            current_layout_seen = True
+        elif is_historical_first_party_source_path(registration, source_path):
+            if current_layout_seen:
+                fail(f"{label} reintroduces a retired first-party source layout")
+        else:
             fail(f"{label} source does not match the official registry")
         source_sha = safe_sha(source.get("sha"), f"{label}.source.sha")
         artifact = require_object(event.get("artifact"), f"{label}.artifact")
@@ -3120,7 +3197,11 @@ def validate_trusted_baseline_continuity(
         # remains subject to the strict append-only checks below.
         return
 
-    baseline_registrations = load_registry(baseline, allow_legacy_v1=True)
+    baseline_registrations = load_registry(
+        baseline,
+        allow_legacy_v1=True,
+        allow_legacy_first_party_layout=True,
+    )
     baseline_histories = published_release_history(
         baseline,
         baseline_registrations,
@@ -3140,10 +3221,16 @@ def validate_trusted_baseline_continuity(
                 "retain it with status=disabled"
             )
         baseline_registration = baseline_by_id[plugin_id]
+        layout_transition = (
+            registration.trust_tier == "first-party"
+            and registration.plugin_id in FIRST_PARTY_ROOT_PACKAGE_IDS
+            and baseline_registration.source_path == LEGACY_FIRST_PARTY_SOURCE_PATHS[registration.plugin_id]
+            and registration.source_path == PurePosixPath(".")
+        )
         if (
             registration.trust_tier != baseline_registration.trust_tier
             or registration.repository != baseline_registration.repository
-            or registration.source_path != baseline_registration.source_path
+            or not layout_transition and registration.source_path != baseline_registration.source_path
             or registration.beta_ref != baseline_registration.beta_ref
             or registration.stable_ref != baseline_registration.stable_ref
         ):
@@ -3446,6 +3533,23 @@ def validate_first_party_subprojects(
             fail(f"Factory subproject source is invalid for {plugin_id}")
 
 
+def validate_root_package_layout_marker(root: Path, registrations: tuple[Registration, ...]) -> None:
+    """Require the one-time root-package marker to name every migrated source."""
+
+    marker_path = root / ROOT_PACKAGE_LAYOUT_RELATIVE_PATH
+    if not marker_path.exists() and not is_link(marker_path):
+        return
+    marker = read_json(marker_path, "Factory root package layout marker")
+    require_exact_keys(marker, {"schemaVersion", "pluginIds"}, "Factory root package layout marker")
+    identifiers = marker.get("pluginIds")
+    expected = sorted(FIRST_PARTY_ROOT_PACKAGE_IDS)
+    if marker.get("schemaVersion") != 1 or identifiers != expected:
+        fail("Factory root package layout marker is invalid")
+    by_id = {registration.plugin_id: registration for registration in registrations}
+    if any(by_id.get(plugin_id) is None or by_id[plugin_id].source_path != PurePosixPath(".") for plugin_id in expected):
+        fail("Factory root package layout marker does not match the registered sources")
+
+
 def validate_registry_and_snapshots(
     root: Path,
     *,
@@ -3462,6 +3566,7 @@ def validate_registry_and_snapshots(
     """
 
     registrations = load_registry(root)
+    validate_root_package_layout_marker(root, registrations)
     validate_trusted_baseline_continuity(root, registrations, baseline_root)
     validate_first_party_subprojects(root, registrations)
     registered_ids = {registration.plugin_id for registration in registrations}

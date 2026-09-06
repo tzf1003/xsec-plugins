@@ -38,8 +38,23 @@ GITLINK_PATH_PATTERN = re.compile(rf"^plugins/({PLUGIN_ID_PATTERN})$")
 MARKETPLACE_INDEX = ".agents/plugins/marketplace.json"
 MARKETPLACE_SIDECAR = ".agents/plugins/marketplace.json.sig.jws.json"
 REGISTRY_PATH = ".xsec-factory/official-registry.json"
+ROOT_PACKAGE_LAYOUT_MARKER = ".xsec-factory/root-package-layout.json"
 PROJECT_WORKSPACE_PLUGIN_ID = "com.xsec.project-workspace"
 ATTACK_PATH_PLUGIN_ID = "com.xsec.attack-path"
+FIRST_PARTY_ROOT_PACKAGE_IDS = frozenset(
+    {
+        "com.xsec.asset-discovery",
+        "com.xsec.attack-path",
+        "com.xsec.system-terminal",
+        "com.xsec.workspace.approvals",
+        "com.xsec.workspace.browser",
+        "com.xsec.workspace.conversation-tree",
+        "com.xsec.workspace.files",
+        "com.xsec.workspace.project-outcomes",
+        "com.xsec.workspace.sub-agent",
+        "com.xsec.workspace.traffic",
+    }
+)
 DEFAULT_POLICY = {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"}
 AVAILABLE_POLICY = {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}
 SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
@@ -558,6 +573,61 @@ def gitlink_revision(root: Path, revision: str, plugin_id: str) -> str | None:
     return source_sha
 
 
+def root_layout_registry_after(before_registry: dict[str, object]) -> dict[str, object]:
+    """Return the only Registry delta allowed by the root-package migration."""
+
+    candidate = json.loads(json.dumps(before_registry))
+    entries = candidate.get("plugins")
+    if not isinstance(entries, list):
+        fail("baseline Factory registry has no plugin list")
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("pluginId") not in FIRST_PARTY_ROOT_PACKAGE_IDS:
+            continue
+        source = entry.get("source")
+        if not isinstance(source, dict) or source.get("path") != f"plugins/{entry['pluginId']}":
+            fail("baseline Factory registry lacks a legacy root-package source")
+        source["path"] = "."
+        seen.add(str(entry["pluginId"]))
+    if seen != FIRST_PARTY_ROOT_PACKAGE_IDS:
+        fail("baseline Factory registry does not contain every root-package source")
+    return candidate
+
+
+def verify_first_party_root_layout_transition(root: Path, before: str, after: str) -> dict[str, object]:
+    """Authenticate the exact one-time first-party source-root migration."""
+
+    require_candidate_revisions(root, before, after)
+    expected_paths = {REGISTRY_PATH, ROOT_PACKAGE_LAYOUT_MARKER} | {f"plugins/{plugin_id}" for plugin_id in FIRST_PARTY_ROOT_PACKAGE_IDS}
+    exact_changed_paths(root, before, after, expected_paths, "first-party root-package transition")
+    marker = json_blob(root, after, ROOT_PACKAGE_LAYOUT_MARKER, "Factory root package layout marker")
+    if marker != {"schemaVersion": 1, "pluginIds": sorted(FIRST_PARTY_ROOT_PACKAGE_IDS)}:
+        fail("Factory root package layout marker is invalid")
+    before_registry = json_blob(root, before, REGISTRY_PATH, "baseline Factory registry")
+    after_registry = json_blob(root, after, REGISTRY_PATH, "candidate Factory registry")
+    if after_registry != root_layout_registry_after(before_registry):
+        fail("first-party root-package transition changed the Registry beyond source paths")
+    sources: list[dict[str, str]] = []
+    for plugin_id in sorted(FIRST_PARTY_ROOT_PACKAGE_IDS):
+        before_source = active_registered_source(root, before, plugin_id=plugin_id)
+        after_source = active_registered_source(root, after, plugin_id=plugin_id)
+        before_sha = gitlink_revision(root, before, plugin_id)
+        after_sha = gitlink_revision(root, after, plugin_id)
+        if before_source is None or after_source is None or before_source["trust_tier"] != "first-party" or after_source["path"] != ".":
+            fail("first-party root-package transition has an invalid registered source")
+        if before_source["repository"] != after_source["repository"] or before_sha is None or after_sha is None or before_sha == after_sha:
+            fail("first-party root-package transition has an invalid Gitlink revision")
+        sources.append({"repository": after_source["repository"], "ref": "refs/heads/main", "sha": after_sha})
+    return {"kind": "first-party-root-layout", "sources": sources}
+
+
+def first_party_source_paths(plugin_id: str) -> frozenset[str]:
+    legacy_path = f"plugins/{plugin_id}"
+    if plugin_id in FIRST_PARTY_ROOT_PACKAGE_IDS:
+        return frozenset({".", legacy_path})
+    return frozenset({legacy_path})
+
+
 def require_first_party_gitlink(
     root: Path,
     before: str,
@@ -572,7 +642,7 @@ def require_first_party_gitlink(
     if identity is None or identity["trust_tier"] != "first-party":
         return None
     path = f"plugins/{plugin_id}"
-    if identity["path"] != path:
+    if identity["path"] not in first_party_source_paths(plugin_id):
         fail("first-party publication has an invalid source path")
     before_sha = gitlink_revision(root, before, plugin_id)
     after_sha = gitlink_revision(root, after, plugin_id)
@@ -1329,6 +1399,8 @@ def classify_merged_change(
         return {"kind": "none"}
     has_release = any(RELEASE_PATH_PATTERN.fullmatch(path) for path in paths)
     if not has_release:
+        if ROOT_PACKAGE_LAYOUT_MARKER in paths:
+            return verify_first_party_root_layout_transition(root, before, after)
         if REGISTRY_PATH in paths or MARKETPLACE_INDEX in paths:
             return verify_default_set_transition(root, before, after)
         # First-party adoption is a two-PR transition: protected main first
@@ -1437,6 +1509,7 @@ def main() -> int:
     parser.add_argument("--verify-first-party-adoption-candidate", action="store_true")
     parser.add_argument("--verify-retained-sidecar-refresh-candidate", action="store_true")
     parser.add_argument("--verify-default-set-transition-candidate", action="store_true")
+    parser.add_argument("--verify-first-party-root-layout-transition", action="store_true")
     args = parser.parse_args()
     modes = sum(
         (
@@ -1445,6 +1518,7 @@ def main() -> int:
             args.verify_first_party_adoption_candidate,
             args.verify_retained_sidecar_refresh_candidate,
             args.verify_default_set_transition_candidate,
+            args.verify_first_party_root_layout_transition,
         )
     )
     if modes != 1:
@@ -1466,6 +1540,8 @@ def main() -> int:
             result = verify_first_party_adoption_candidate(root, args.before, args.after)
         elif args.verify_retained_sidecar_refresh_candidate:
             result = verify_retained_sidecar_refresh_candidate(root, args.before, args.after)
+        elif args.verify_first_party_root_layout_transition:
+            result = verify_first_party_root_layout_transition(root, args.before, args.after)
         else:
             result = verify_default_set_transition(root, args.before, args.after)
         print(json.dumps(result, separators=(",", ":"), sort_keys=True))

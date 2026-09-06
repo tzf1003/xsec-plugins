@@ -39,6 +39,14 @@ Factory 将可编辑源码放在 `xsec-plugins/plugins/<id>/` 的独立 Git 子�
 发布快照、不可变 artifact、release history 和可审计来源证据只放在
 `.xsec-factory/snapshots/<id>/`。开发应在子项目中完成，不能编辑快照来替代源码提交。
 
+子项目在 Factory 内的挂载路径不等于源码仓库的包路径。已拆分的第一方插件仓库必须让
+Git 根目录就是插件包根目录：根目录直接包含 `plugin.json`、
+`.codex-plugin/plugin.json`、`com.xsec.desktop/` 及可选的 `mcp.json`、`skills/`。
+对应 Registry 的 `source.path` 固定为 `"."`；CI 会拒绝
+`plugins/<plugin-id>/plugin.json` 这类重复内层包。历史 adoption、发布 provenance 和
+状态文件中原有的内层路径保持原字节和既有签名，仅作为只读的历史前缀；后续 Beta/Stable
+记录只能使用根路径，不能回退到旧布局。
+
 ### 工厂布局迁移
 
 将旧 Factory 从直接插件目录迁移为 Git 子项目时，先把每个不可变快照移入
