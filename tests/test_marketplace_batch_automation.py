@@ -221,7 +221,11 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
 
     def test_shared_preflight_preserves_each_source_repositories_real_ci_contract(self) -> None:
         workflow = SOURCE_PREFLIGHT.read_text(encoding="utf-8")
-        self.assertIn("Validate the registered source manifest, release identity, and whitespace", workflow)
+        self.assertIn("Validate the source package manifest, release identity, and whitespace", workflow)
+        self.assertIn('root_manifest="plugin.json"', workflow)
+        self.assertIn('legacy_manifest="plugins/${PLUGIN_ID}/plugin.json"', workflow)
+        self.assertIn("Source contains both root and nested plugin packages.", workflow)
+        self.assertIn('[ -f "$codex_manifest" ]', workflow)
         self.assertIn("git diff --check HEAD^", workflow)
         self.assertNotIn("pnpm install", workflow)
         self.assertNotIn("pnpm test", workflow)
