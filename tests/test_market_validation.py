@@ -1569,7 +1569,9 @@ class MarketplaceValidationTests(unittest.TestCase):
             desktop = manifest["extensions"]["com.xsec.desktop"]
             methods = desktop["frontendApi"]["methods"]
             expected_plugin_api = (
-                "^1.4.0"
+                validate_market.TRAFFIC_PAYLOAD_PLUGIN_API_RANGE
+                if "xsec.traffic.payload.open" in methods
+                else "^1.4.0"
                 if validate_market.frontend_methods_with_capability(methods, "workspace.composer.write")
                 or validate_market.frontend_methods_require_browser_surface_api(methods)
                 else "^1.3.0"
