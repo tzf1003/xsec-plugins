@@ -14,13 +14,14 @@ Agent Plugins v1 的 portable artifact、schema v2、嵌入式 Fabric 和平台 
 `.xsec-factory/official-registry.json` 的根对象严格为：
 
 ```json
-{"schemaVersion":2,"plugins":[{"pluginId":"...","trustTier":"first-party|external","source":{"repository":"owner/repository","path":"plugins/<id>","refs":{"beta":"refs/heads/beta","stable":"refs/heads/main"}},"policy":{"installation":"...","authentication":"ON_INSTALL"},"category":"Security","status":"active|disabled|pending-adoption"}]}
+{"schemaVersion":2,"plugins":[{"pluginId":"...","trustTier":"first-party|external","source":{"repository":"owner/repository","path":"<package-root>","refs":{"beta":"refs/heads/beta","stable":"refs/heads/main"}},"policy":{"installation":"...","authentication":"ON_INSTALL"},"category":"Security","status":"active|disabled|pending-adoption"}]}
 ```
 
 `external` 继续使用既有的安全边界：不能使用 `com.xsec.*`，只能
 `AVAILABLE`，且不能声明 Desktop 保留的路由、工具或高权限能力。
 
-`first-party` 是封闭 allowlist，只接受以下精确仓库、`plugins/<plugin-id>` 源码路径和
+`first-party` 是封闭 allowlist。除已经禁用、仅为审计保留的
+`com.xsec.project-workspace` 外，它只接受以下精确仓库、仓库根目录（`path: "."`）源码包和
 `INSTALLED_BY_DEFAULT`：
 
 | 插件 ID | 仓库 |
@@ -106,14 +107,13 @@ artifact 的记录 SHA-256、ZIP 路径、双 manifest 和 entrypoint，然后�
 artifact 建立 `beta` 与 `main` 的精确源码树。生成的仓库固定为：
 
 ```text
-README.md
-.github/workflows/ci.yml
-plugins/<plugin-id>/
+plugin.json
+.codex-plugin/plugin.json
+com.xsec.desktop/
 ```
 
 历史通过 `git fast-export`/`fast-import` 从 Factory `main` 中仅保留
-`.xsec-factory/snapshots/<plugin-id>`，再重写为源码仓库的
-`plugins/<plugin-id>`，并在每个历史 commit 的 index 中移除 `.xsec-market`、
+`.xsec-factory/snapshots/<plugin-id>`，再重写为源码仓库根目录，并在每个历史 commit 的 index 中移除 `.xsec-market`、
 `.xsec-plugin` 和 `.sig.jws.json`。生成后会删除 filter 的 original refs、过期 reflog
 并执行 GC；两条最终分支再次断言没有 Marketplace metadata、artifact 或 signature。
 候选 Git 仓库用私有空 `--template` 初始化，持久及逐命令强制 `core.hooksPath` 指向 null device，

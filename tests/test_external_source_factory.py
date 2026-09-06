@@ -198,7 +198,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                 plugin_id=plugin_id,
                 trust_tier="first-party",
                 repository=repository,
-                source_path=PurePosixPath(path),
+                source_path=PurePosixPath("."),
                 beta_ref="refs/heads/beta",
                 stable_ref="refs/heads/main",
                 installation="INSTALLED_BY_DEFAULT",
@@ -306,7 +306,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             "trustTier": "first-party",
             "source": {
                 "repository": repository,
-                "path": f"plugins/{plugin_id}",
+                "path": ".",
                 "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
             },
             "policy": {"installation": installation, "authentication": "ON_INSTALL"},
@@ -667,7 +667,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             source_root = workspace / "source-main"
             shutil.copytree(
                 snapshot_dir(root, plugin_id),
-                source_root / "plugins" / plugin_id,
+                source_root,
                 ignore=shutil.ignore_patterns(".xsec-market"),
             )
 
@@ -682,7 +682,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             write_publication_proof(root, plugin_id)
             release_before = factory.release_path(root, plugin_id).read_bytes()
             evidence_before = factory.publication_path(root, plugin_id).read_bytes()
-            (source_root / "plugins" / plugin_id / "frontend.js").write_text(
+            (source_root / "frontend.js").write_text(
                 "export function activate() { return 'main-behind-beta'; }\n",
                 encoding="utf-8",
             )
@@ -1541,11 +1541,43 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.make_factory(root, self.first_party_entry(installation="AVAILABLE"))
             self.assertEqual(factory.load_registry(root)[0].installation, "AVAILABLE")
 
+            entry = self.first_party_entry()
+            entry["source"]["path"] = "plugins/com.xsec.workspace.sub-agent"
+            self.make_factory(root, entry)
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, r"must be \. for a first-party plugin"):
+                factory.load_registry(root)
+            self.assertEqual(
+                factory.load_registry(root, allow_legacy_first_party_layout=True)[0].source_path,
+                PurePosixPath("plugins/com.xsec.workspace.sub-agent"),
+            )
+
             entry = self.registry_entry()
             entry["status"] = "pending-adoption"
             self.make_factory(root, entry)
             with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "invalid for its trust tier"):
                 factory.load_registry(root)
+
+    def test_root_layout_transition_keeps_signed_legacy_adoption_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-first-party-root-layout-") as directory:
+            workspace = Path(directory)
+            root = workspace / "current"
+            self.make_first_party_adoption(root)
+            plugin_id = "com.xsec.workspace.sub-agent"
+            adoption_path = factory.adoption_path(root, plugin_id)
+            adoption = json.loads(adoption_path.read_text(encoding="utf-8"))
+            adoption["source"]["path"] = f"plugins/{plugin_id}"
+            write_json(adoption_path, adoption)
+            document = publisher.official_adoption_provenance_document(root, plugin_id)
+            write_historical_sidecar(document, publisher.sidecar_path_for(document))
+
+            baseline = workspace / "baseline"
+            shutil.copytree(root, baseline)
+            baseline_registry_path = baseline / ".xsec-factory" / "official-registry.json"
+            baseline_registry = json.loads(baseline_registry_path.read_text(encoding="utf-8"))
+            baseline_registry["plugins"][0]["source"]["path"] = f"plugins/{plugin_id}"
+            write_json(baseline_registry_path, baseline_registry)
+
+            factory.validate_registry_and_snapshots(root, baseline_root=baseline)
 
     def test_signed_first_party_adoption_binds_history_source_heads_and_channel_pointers(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-first-party-adoption-") as directory:
@@ -2125,12 +2157,12 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             old_release_id = self.make_first_party_adoption(root)
             plugin_id = "com.xsec.workspace.sub-agent"
             source = root / "source"
-            shutil.copytree(snapshot_dir(root, plugin_id), source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
-            source_manifest = source / "plugins" / plugin_id / "plugin.json"
+            shutil.copytree(snapshot_dir(root, plugin_id), source, ignore=shutil.ignore_patterns(".xsec-market"))
+            source_manifest = source / "plugin.json"
             manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
             manifest["version"] = "1.0.1"
             write_json(source_manifest, manifest)
-            (source / "plugins" / plugin_id / "frontend.js").write_text("export function activate() { return 'next'; }\n", encoding="utf-8")
+            (source / "frontend.js").write_text("export function activate() { return 'next'; }\n", encoding="utf-8")
 
             factory.stage_beta(root, plugin_id, source)
             snapshot = snapshot_dir(root, plugin_id)
@@ -2188,7 +2220,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             source = root / "source"
             shutil.copytree(
                 snapshot_dir(root, plugin_id),
-                source / "plugins" / plugin_id,
+                source,
                 ignore=shutil.ignore_patterns(".xsec-market"),
             )
             factory.stage_beta(root, plugin_id, source)
@@ -2238,7 +2270,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             source = root / "source"
             shutil.copytree(
                 snapshot_dir(root, plugin_id),
-                source / "plugins" / plugin_id,
+                source,
                 ignore=shutil.ignore_patterns(".xsec-market"),
             )
             factory.stage_beta(root, plugin_id, source)
@@ -2261,12 +2293,12 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.make_first_party_adoption(root)
             plugin_id = "com.xsec.workspace.sub-agent"
             source = root / "source"
-            shutil.copytree(snapshot_dir(root, plugin_id), source / "plugins" / plugin_id, ignore=shutil.ignore_patterns(".xsec-market"))
-            manifest_path = source / "plugins" / plugin_id / "plugin.json"
+            shutil.copytree(snapshot_dir(root, plugin_id), source, ignore=shutil.ignore_patterns(".xsec-market"))
+            manifest_path = source / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["version"] = "1.0.1"
             write_json(manifest_path, manifest)
-            (source / "plugins" / plugin_id / "frontend.js").write_text(
+            (source / "frontend.js").write_text(
                 "export function activate() { return 'post-adoption'; }\n",
                 encoding="utf-8",
             )
@@ -2369,6 +2401,9 @@ class ExternalSourceFactoryTests(unittest.TestCase):
         self.assertIn("prepare-reconcile-source", source_workflow)
         self.assertIn("ls-remote", source_workflow)
         self.assertIn("Source delivery is stale", source_workflow)
+        self.assertIn('or $source.path != "."', source_workflow)
+        self.assertIn('and .source.path == "."', source_workflow)
+        self.assertNotIn('(\"plugins/\" + $plugin_id)', source_workflow)
         self.assertIn("publish.yml", source_workflow)
         # A registered-main recheck must not strand an already accepted Beta
         # behind its now-stale generated PR. The Dispatcher may close only a

@@ -40,6 +40,20 @@ MARKETPLACE_SIDECAR = ".agents/plugins/marketplace.json.sig.jws.json"
 REGISTRY_PATH = ".xsec-factory/official-registry.json"
 PROJECT_WORKSPACE_PLUGIN_ID = "com.xsec.project-workspace"
 ATTACK_PATH_PLUGIN_ID = "com.xsec.attack-path"
+FIRST_PARTY_ROOT_PACKAGE_IDS = frozenset(
+    {
+        "com.xsec.asset-discovery",
+        "com.xsec.attack-path",
+        "com.xsec.system-terminal",
+        "com.xsec.workspace.approvals",
+        "com.xsec.workspace.browser",
+        "com.xsec.workspace.conversation-tree",
+        "com.xsec.workspace.files",
+        "com.xsec.workspace.project-outcomes",
+        "com.xsec.workspace.sub-agent",
+        "com.xsec.workspace.traffic",
+    }
+)
 DEFAULT_POLICY = {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"}
 AVAILABLE_POLICY = {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}
 SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
@@ -558,6 +572,10 @@ def gitlink_revision(root: Path, revision: str, plugin_id: str) -> str | None:
     return source_sha
 
 
+def first_party_source_path(plugin_id: str) -> str:
+    return "." if plugin_id in FIRST_PARTY_ROOT_PACKAGE_IDS else f"plugins/{plugin_id}"
+
+
 def require_first_party_gitlink(
     root: Path,
     before: str,
@@ -572,7 +590,7 @@ def require_first_party_gitlink(
     if identity is None or identity["trust_tier"] != "first-party":
         return None
     path = f"plugins/{plugin_id}"
-    if identity["path"] != path:
+    if identity["path"] != first_party_source_path(plugin_id):
         fail("first-party publication has an invalid source path")
     before_sha = gitlink_revision(root, before, plugin_id)
     after_sha = gitlink_revision(root, after, plugin_id)
