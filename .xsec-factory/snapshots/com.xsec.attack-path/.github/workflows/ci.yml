@@ -1,0 +1,30 @@
+name: Plugin source validation
+
+on:
+  push:
+    branches: [main, beta]
+  pull_request:
+    branches: [main, beta]
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require the dual plugin manifests
+        run: |
+          test -f plugin.json
+          test -f .codex-plugin/plugin.json
+      - name: Validate the schema v2 portable contract
+        run: node scripts/verify-portable-contract.mjs
+      - name: Verify refresh retry lifecycle
+        run: node --test scripts/verify-refresh-retry.mjs
+
+  source-preflight:
+    needs: manifest
+    uses: tzf1003/xsec-plugins/.github/workflows/first-party-source-preflight.yml@main
+    with:
+      plugin_id: com.xsec.attack-path
