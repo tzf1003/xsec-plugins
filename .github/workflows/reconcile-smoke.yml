@@ -118,18 +118,32 @@ jobs:
           wait_for_dispatched_publish_run() {
             known_run_ids="$1"
             deadline="$((SECONDS + 900))"
-            observed=false
             while :; do
-              runs="$(gh run list --workflow publish.yml --branch main --event workflow_dispatch --limit 100 --json databaseId,status)"
-              if printf '%s' "$runs" | jq -e --arg known "|${known_run_ids}|" '
-                any(.[]; .databaseId as $database_id | ($known | contains("|" + ($database_id | tostring) + "|") | not))
-              ' >/dev/null; then
-                observed=true
+              runs="$(gh run list --workflow publish.yml --branch main --event workflow_dispatch --limit 100 --json databaseId,status,conclusion)"
+              dispatched_run="$(printf '%s' "$runs" | jq -c --arg known "|${known_run_ids}|" '
+                [ .[] | select(.databaseId as $database_id | ($known | contains("|" + ($database_id | tostring) + "|") | not)) ]
+                | if length == 0 then empty
+                  elif length == 1 then .[0]
+                  else error("Marketplace publication dispatch is ambiguous")
+                  end
+              ')"
+              if [ -n "$dispatched_run" ]; then
+                status="$(printf '%s' "$dispatched_run" | jq -er .status)"
+                if [ "$status" = "completed" ]; then
+                  conclusion="$(printf '%s' "$dispatched_run" | jq -er .conclusion)"
+                  [ "$conclusion" = "success" ] || {
+                    echo "The dispatched Marketplace publication did not complete successfully." >&2
+                    exit 1
+                  }
+                  return
+                fi
+                [ "$status" = "queued" ] || [ "$status" = "in_progress" ] || {
+                  echo "The dispatched Marketplace publication has an invalid status: ${status}." >&2
+                  exit 1
+                }
               fi
-              queued_runs="$(printf '%s' "$runs" | jq '[.[] | select(.status == "queued")] | length')"
-              [ "$observed" = "true" ] && [ "$queued_runs" = "0" ] && return
               [ "$SECONDS" -lt "$deadline" ] || {
-                echo "Timed out waiting for the dispatched Marketplace publication run to leave the queue." >&2
+                echo "Timed out waiting for the dispatched Marketplace publication run to complete." >&2
                 exit 1
               }
               sleep 5
