@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "pluginIds": [
+    "com.xsec.asset-discovery",
+    "com.xsec.attack-path",
+    "com.xsec.system-terminal",
+    "com.xsec.workspace.approvals",
+    "com.xsec.workspace.browser",
+    "com.xsec.workspace.conversation-tree",
+    "com.xsec.workspace.files",
+    "com.xsec.workspace.project-outcomes",
+    "com.xsec.workspace.sub-agent",
+    "com.xsec.workspace.traffic"
+  ]
+}
