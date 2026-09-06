@@ -388,7 +388,6 @@
           "repository": "tzf1003/xSecDesktop",
           "revision": "75a0dd118036c2b674d9a21dbb97a4321b51380a"
         },
-        "targetMatrixVersion": 2,
         "targets": [
           {
             "rustTarget": "aarch64-apple-darwin",
@@ -414,7 +413,8 @@
             "arch": "x86_64",
             "sha256": "f7fcddf010541f38f7c5a604d28fcb4cfee559b166a25aa5423e8a956fef0784"
           }
-        ]
+        ],
+        "targetMatrixVersion": 2
       }
     }
   ],
@@ -423,7 +423,7 @@
       "releaseId": "sha256-f46819e6d7368ecb9d4ce23a16ccaa77f9445f139741ff2b11fefe0c2b4f537b"
     },
     "stable": {
-      "releaseId": "sha256-fe141aa837a5ceda58a0b587c02abf54cd3ed93ad0d36b6de688f628cc55a2a9"
+      "releaseId": "sha256-f46819e6d7368ecb9d4ce23a16ccaa77f9445f139741ff2b11fefe0c2b4f537b"
     }
   }
 }
