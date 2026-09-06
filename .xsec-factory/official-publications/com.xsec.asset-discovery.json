@@ -196,6 +196,21 @@
         "url": "artifacts/com.xsec.asset-discovery-2.1.2-sha256-b4d783fdd06ca7f5-macos-aarch64.xsec-plugin"
       },
       "publisher": "xsec-marketplace-bot"
+    },
+    {
+      "channel": "stable",
+      "releaseId": "sha256-246c27c6cb85ad4ba0748101c3f393d34d8f70783bd1f49a937acac247e1767d",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-asset-discovery",
+        "path": ".",
+        "ref": "refs/heads/main",
+        "sha": "5225f7503a8baf0900d79fefc1297d289732d1ea"
+      },
+      "artifact": {
+        "sha256": "b4d783fdd06ca7f5d54ea39cb7932dfd7c71c885bc9383b3bd5b7fce7c415dd3",
+        "url": "artifacts/com.xsec.asset-discovery-2.1.2-sha256-b4d783fdd06ca7f5-macos-aarch64.xsec-plugin"
+      },
+      "publisher": "github-actions[bot]"
     }
   ],
   "smokeOutcomes": [
@@ -245,6 +260,18 @@
       "smoke": {
         "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/34011850674",
         "marketplaceRevision": "ab5753c1bfa65cead216dde56800b3df46f89958"
+      }
+    },
+    {
+      "betaReleaseId": "sha256-246c27c6cb85ad4ba0748101c3f393d34d8f70783bd1f49a937acac247e1767d",
+      "stableReleaseId": "sha256-246c27c6cb85ad4ba0748101c3f393d34d8f70783bd1f49a937acac247e1767d",
+      "source": {
+        "betaSha": "ad1904f31568a52bb6d714f8920b988cd0453467",
+        "stableSha": "5225f7503a8baf0900d79fefc1297d289732d1ea"
+      },
+      "smoke": {
+        "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/34050941373",
+        "marketplaceRevision": "1745a526c4c58d6067f7820fbbc23542d099523d"
       }
     }
   ]
