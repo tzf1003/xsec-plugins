@@ -49,7 +49,7 @@ jobs:
             [.[][] | select(
               .head.repo.full_name == $repository
               and .base.sha == $main_sha
-              and (.head.ref | test("^xsec-marketplace/(publish-|batch-|default-set-|external-beta-|external-stable-|promote-stable-|stage-first-party-adoption-|adopt-first-party-|refresh-retained-sidecar-|layout-signatures-)"))
+              and (.head.ref | test("^xsec-marketplace/(publish-|batch-|default-set-|external-beta-|external-stable-|promote-stable-|stage-first-party-adoption-|adopt-first-party-|refresh-retained-sidecar-|layout-signatures-|root-package-layout-)"))
             )]
           ')"
           ready_matches='[]'
@@ -79,7 +79,7 @@ jobs:
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
           [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Generated PR head revision is invalid." >&2; exit 1; }
           case "$head_branch" in
-            xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
+            xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*|xsec-marketplace/root-package-layout-*) ;;
             *) echo "Validated PR is not an automatically finalizable Factory branch." >&2; exit 1 ;;
           esac
           echo "pull_number=$pull_number" >> "$GITHUB_OUTPUT"

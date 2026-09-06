@@ -181,6 +181,11 @@ jobs:
             }
             python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
             sources='[]'
+          elif [[ "$HEAD_REF" == xsec-marketplace/root-package-layout-* ]]; then
+            result="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" \
+              --before "$BEFORE" --after "$AFTER" --verify-first-party-root-layout-transition)"
+            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
+            sources="$(printf '%s' "$result" | jq -ce '.sources')"
           elif [[ "$HEAD_REF" == xsec-marketplace/refresh-retained-sidecar-* ]]; then
             # A sidecar repair is a privileged Factory candidate even though
             # it does not move a channel pointer. It must remain pending until

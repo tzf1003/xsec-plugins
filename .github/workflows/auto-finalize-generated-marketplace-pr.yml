@@ -47,7 +47,7 @@ jobs:
           head_branch="$(printf '%s' "$matches" | jq -er '.[0].head.ref')"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated PR number is invalid." >&2; exit 1; }
           case "$head_branch" in
-            xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*) ;;
+            xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/default-set-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*|xsec-marketplace/stage-first-party-adoption-*|xsec-marketplace/adopt-first-party-*|xsec-marketplace/refresh-retained-sidecar-*|xsec-marketplace/layout-signatures-*|xsec-marketplace/root-package-layout-*) ;;
             *) echo "eligible=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
           check_runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100")"
