@@ -8,36 +8,41 @@ implementation.
 
 ## Restored behavior
 
-The plugin renders the cached `workspace.session.conversation_tree` projection
-without issuing an RPC during mount or context updates. It restores the
-deterministic branch graph, active-path display, Agent visibility filter,
-search dimming, canvas pan/zoom, node inspector and exact branch navigation.
-If no projection is cached, recovering the full tree requires the user to
-select **加载完整对话树**.
+Desktop publishes the session snapshot on the dedicated
+`xsec.conversation-tree.snapshot` binary stream. The plugin reassembles the
+latest revision and uses it for the deterministic branch graph, active-path
+display, Agent visibility filter, search dimming, canvas pan/zoom, node
+inspector and exact branch navigation. Desktop republishes the current
+snapshot after the frontend module becomes ready. The **加载完整对话树** action
+uses the same host-bound data flow and installs its result only for the
+still-active session.
 
 When Desktop marks the tool context as hidden or sends malformed context, the
 plugin revokes navigation authority, stops in-flight UI state and disables the
 surface until a valid visible context is published.
 
-Navigation is fail-closed. The plugin only sends
-`xsec.conversation-tree.navigate` when the current context includes the
-authoritative `treeHash`, the session is quiescent and synchronized, no
-interaction is pending, and the Provider declares navigation support. A tree
-returned by `xsec.conversation-tree.read` remains browseable, but navigation
-stays disabled until Desktop publishes a context projection with its hash.
+Navigation is fail-closed. The plugin sends
+`xsec.conversation-tree.navigate` only when the current streamed snapshot
+contains the authoritative `treeHash`, the session is quiescent and
+synchronized, no interaction is pending, and the Provider declares navigation
+support. A newly selected branch remains browseable while Desktop publishes
+the next authoritative snapshot.
 
 ## Host boundary
 
 The current Desktop frontend API exposes only:
 
+- host-published `xsec.conversation-tree.snapshot` data packets for the
+  currently bound session
 - `xsec.conversation-tree.read`
 - `xsec.conversation-tree.navigate` with exact target semantics
 
+Desktop selects the session binding before it mounts the iframe, then provides
+the compact display context and scoped snapshot stream independently.
 Consequently this plugin cannot open a different project session, request a
 live-only refresh, edit a user message, or create an Agent continuation intent.
 Those behaviors require new explicit host APIs; the frontend does not emulate
-them. When the 64 KiB sandbox context limit removes session data, any already
-loaded tree stays browseable and navigation remains disabled.
+them.
 
 ## Source and release checks
 
