@@ -19,6 +19,10 @@ jobs:
           test -f plugin.json
           test -f .codex-plugin/plugin.json
 
+      - name: Validate the schema v2 Host contract
+        run: |
+          node -e 'const fs=require("node:fs"); const root=JSON.parse(fs.readFileSync("plugin.json")); const catalog=JSON.parse(fs.readFileSync(".codex-plugin/plugin.json")); const ext=root.extensions?.["com.xsec.desktop"]; const required=["xsec.subagents.get","xsec.subagents.list","xsec.workspace.tool.open"]; if(root.version!=="2.0.0"||catalog.name!==root.name||catalog.version!==root.version||ext?.schemaVersion!==2||ext.contributes?.agentTools!==undefined||JSON.stringify(Object.keys(ext.frontendApi?.methods??{}).sort())!==JSON.stringify(required))process.exit(1);'
+
   source-preflight:
     needs: manifest
     uses: tzf1003/xsec-plugins/.github/workflows/first-party-source-preflight.yml@main

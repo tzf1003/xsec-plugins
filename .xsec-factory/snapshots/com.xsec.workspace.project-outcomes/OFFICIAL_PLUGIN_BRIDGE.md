@@ -7,3 +7,5 @@ This package owns the signed plugin manifest, permissions and release lifecycle.
 项目成果当前没有账户级持久化配置，因此不创建空的插件设置页。成果筛选、详情、
 引用和来源跳转是当前项目操作，保留在主界面；当前安装包的 manifest 也不声明
 设置贡献点。
+
+The root manifest uses Agent Plugins v1 with a `com.xsec.desktop` schema v2 extension. Project Outcomes remains a Host package: project results, reports, evidence, references and navigation stay under Desktop project and session validation. The artifact declares no portable MCP server, Skill or `agentTools`.
