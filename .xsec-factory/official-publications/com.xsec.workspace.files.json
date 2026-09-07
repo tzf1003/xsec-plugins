@@ -136,6 +136,21 @@
         "url": "artifacts/com.xsec.workspace.files-2.0.0-sha256-3cbbfd92b2c2ce01-any-any.xsec-plugin"
       },
       "publisher": "xsec-marketplace-bot"
+    },
+    {
+      "channel": "stable",
+      "releaseId": "sha256-99fcc6b964c698ec6635672bb0cfea4e4c745c7f19d121ecd680cd6739fd9ad9",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-files",
+        "path": ".",
+        "ref": "refs/heads/main",
+        "sha": "0b54fb28f415bca5b9c9774341df60f00535f8ac"
+      },
+      "artifact": {
+        "sha256": "3cbbfd92b2c2ce017542d3119b3a39c0095a8b2ee91735211847f3e93a4a9344",
+        "url": "artifacts/com.xsec.workspace.files-2.0.0-sha256-3cbbfd92b2c2ce01-any-any.xsec-plugin"
+      },
+      "publisher": "github-actions[bot]"
     }
   ],
   "smokeOutcomes": [
@@ -173,6 +188,18 @@
       "smoke": {
         "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/34050941373",
         "marketplaceRevision": "1745a526c4c58d6067f7820fbbc23542d099523d"
+      }
+    },
+    {
+      "betaReleaseId": "sha256-99fcc6b964c698ec6635672bb0cfea4e4c745c7f19d121ecd680cd6739fd9ad9",
+      "stableReleaseId": "sha256-99fcc6b964c698ec6635672bb0cfea4e4c745c7f19d121ecd680cd6739fd9ad9",
+      "source": {
+        "betaSha": "f9815dd13530a6c09d3b712ddb5f24196407c531",
+        "stableSha": "0b54fb28f415bca5b9c9774341df60f00535f8ac"
+      },
+      "smoke": {
+        "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/34123210440",
+        "marketplaceRevision": "688a52a25582706bc4c4a90fffe20fccafb2ed16"
       }
     }
   ]
