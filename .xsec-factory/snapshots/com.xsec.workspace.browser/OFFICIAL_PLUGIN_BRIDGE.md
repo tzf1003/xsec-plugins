@@ -5,3 +5,5 @@ This package owns the signed plugin manifest, permissions and release lifecycle.
 The browser workspace tool receives a private, capability-bound surface bridge: the host validates the project/session/page at open time, associates one native Chrome surface with one iframe, and forwards JPEG frames on that iframe's private data stream. Surface input, frame acknowledgements, close, and Desktop-level focus presentation must match that handle. The package frontend is the workspace renderer.
 
 The manifest also owns the browser settings page and its `pluginData` RPC grants, so installing the package restores both the workspace browser and its custom Chrome-path setting.
+
+The root manifest uses Agent Plugins v1 with a `com.xsec.desktop` schema v2 extension. This is a Host package: it declares no `agentTools`, `mcp.json`, or portable Skill. Browser sessions, authenticated identity, downloads, proxy control, evidence, and native Chrome surfaces stay behind Desktop capability and session validation; a portable artifact must not receive that control plane.

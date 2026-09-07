@@ -21,4 +21,4 @@ directly.
 
 Run `pnpm install` followed by `pnpm run check` before publishing. The check
 bundles the frontend, verifies the manifest RPC contract and keeps the checked-in
-frontend artifact current. Version `1.3.4` requires Desktop Plugin API `1.4.0`.
+frontend artifact current. Version `2.0.0` requires Desktop Plugin API `1.4.0`.
