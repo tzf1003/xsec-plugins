@@ -14,6 +14,25 @@ WORKFLOW = ROOT / ".github" / "workflows" / "reconcile-source.yml"
 
 
 class ReconcileSourceWorkflowTests(unittest.TestCase):
+    def test_smoke_publisher_accepts_github_active_run_states(self) -> None:
+        source = (WORKFLOW.parent / "reconcile-smoke.yml").read_text(encoding="utf-8")
+        start = source.index('case "$status" in')
+        end = source.index("esac", start) + len("esac")
+        script = source[start:end]
+        for status in ("queued", "in_progress", "requested", "waiting", "pending"):
+            with self.subTest(status=status):
+                result = subprocess.run(
+                    ["bash", "-c", 'status="$1"\n' + script, "status-check", status],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run(
+            ["bash", "-c", 'status="$1"\n' + script, "status-check", "unknown"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid status: unknown", result.stderr)
+
     def test_smoke_candidate_selection_uses_only_changed_statuses(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
 
