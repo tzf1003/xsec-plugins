@@ -137,10 +137,13 @@ jobs:
                   }
                   return
                 fi
-                [ "$status" = "queued" ] || [ "$status" = "in_progress" ] || {
-                  echo "The dispatched Marketplace publication has an invalid status: ${status}." >&2
-                  exit 1
-                }
+                case "$status" in
+                  queued|in_progress|requested|waiting|pending) ;;
+                  *)
+                    echo "The dispatched Marketplace publication has an invalid status: ${status}." >&2
+                    exit 1
+                    ;;
+                esac
               fi
               [ "$SECONDS" -lt "$deadline" ] || {
                 echo "Timed out waiting for the dispatched Marketplace publication run to complete." >&2
