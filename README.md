@@ -40,6 +40,9 @@ without a version bump cannot overwrite an existing package.
 
 The detailed developer and Agent operating rules are in the Chinese
 [plugin development and release lifecycle](docs/plugin-development-release-lifecycle.md).
+Before attaching the Factory's source projects to the Desktop developer workbench,
+follow [local plugin development preparation](docs/local-plugin-development.md) to build
+the native MCP entrypoints used by asset discovery and attack path.
 The authoritative UI, sandbox RPC, security, and lifecycle rules for plugin
 configuration are in the Chinese [plugin settings specification](docs/plugin-settings.md).
 In particular, a marketplace publication canonically recomputes `releaseId`;
