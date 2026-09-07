@@ -55,3 +55,9 @@ same name and version.
 The plugin has no account-level persistent configuration. Range filters,
 search and viewport state belong to the current tool instance, so no empty
 settings page is contributed.
+
+The root manifest uses Agent Plugins v1 with a `com.xsec.desktop` schema v2
+extension. Conversation Tree is a Host package: its two frontend methods read
+and navigate the Desktop-owned session tree. The artifact carries no portable
+MCP server or Skill because session graphs, navigation authority and their
+audit trail remain under Desktop session validation.

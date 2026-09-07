@@ -12,7 +12,9 @@ const expectedMethods = [
   "xsec.workspace.composer.path.add",
 ];
 
-if (manifest.version !== "1.3.4") throw new Error("项目文件插件版本必须为 1.3.4");
+if (manifest.version !== "2.0.0") throw new Error("项目文件插件版本必须为 2.0.0");
+if (extension.schemaVersion !== 2) throw new Error("项目文件插件必须使用 schemaVersion 2");
+if (extension.contributes?.agentTools !== undefined) throw new Error("项目文件插件不得声明 agentTools");
 if (codexManifest.name !== manifest.name || codexManifest.version !== manifest.version) {
   throw new Error("Codex 插件元数据必须与发布清单保持一致");
 }

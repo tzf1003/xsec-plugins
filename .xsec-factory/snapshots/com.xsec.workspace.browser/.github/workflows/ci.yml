@@ -19,6 +19,26 @@ jobs:
           test -f plugin.json
           test -f .codex-plugin/plugin.json
 
+      - name: Validate the schema v2 Host contract
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const root = JSON.parse(fs.readFileSync("plugin.json", "utf8"));
+          const catalog = JSON.parse(fs.readFileSync(".codex-plugin/plugin.json", "utf8"));
+          const extension = root.extensions?.["com.xsec.desktop"];
+          const expectedMethods = [
+            "xsec.browser.sessions.list", "xsec.browser.pages.list", "xsec.browser.page.create",
+            "xsec.browser.page.close", "xsec.browser.page.navigate", "xsec.browser.page.action",
+            "xsec.browser.surface.open", "xsec.browser.surface.ready", "xsec.browser.surface.input",
+            "xsec.browser.surface.acknowledge", "xsec.browser.surface.close", "xsec.browser.presentation.set",
+            "xsec.browser.settings.get", "xsec.browser.settings.set"
+          ];
+          if (root.name !== "com.xsec.workspace.browser" || root.version !== "2.0.0") process.exit(1);
+          if (catalog.name !== root.name || catalog.version !== root.version) process.exit(1);
+          if (!extension || extension.schemaVersion !== 2 || extension.contributes?.agentTools !== undefined) process.exit(1);
+          if (JSON.stringify(Object.keys(extension.frontendApi?.methods ?? {}).sort()) !== JSON.stringify(expectedMethods.sort())) process.exit(1);
+          NODE
+
   source-preflight:
     needs: manifest
     uses: tzf1003/xsec-plugins/.github/workflows/first-party-source-preflight.yml@main

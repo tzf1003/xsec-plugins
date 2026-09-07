@@ -91,6 +91,21 @@
         "url": "artifacts/com.xsec.workspace.project-outcomes-1.2.6-sha256-dca2d81b2b6aab18-any-any.xsec-plugin"
       },
       "publisher": "github-actions[bot]"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-d8a80a973d9b61982c8ad8cff9ea9b2457d2429216a55a318cd3c4fc17994225",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-project-outcomes",
+        "path": ".",
+        "ref": "refs/heads/beta",
+        "sha": "b595f35fdf9626f3e881b154f9f888b5cc3d2c9c"
+      },
+      "artifact": {
+        "sha256": "7a65cedec442b07058b9723434701590e987bb6ad443480c05a8d45d3bf6de8f",
+        "url": "artifacts/com.xsec.workspace.project-outcomes-2.0.0-sha256-7a65cedec442b070-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
     }
   ],
   "smokeOutcomes": [
