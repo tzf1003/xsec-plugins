@@ -14,9 +14,14 @@ only when it represents a concrete next step or confirmed observation. Use
 conclusion. Read a single node with `attack_path_node_get` before an update
 when the current state matters.
 
+`kind` is an open classification string. State-like fields such as `status`,
+`testValue`, and `severity` use the finite values advertised by `tools/list`.
+
 Use `attack_path_finding_add` only for a supported security finding. Provide a
 stable fingerprint, concise title, and structured supporting data. Inspect the
 current finding set with `attack_path_findings_list` before adding a duplicate.
+Delete an obsolete finding with `attack_path_finding_delete`; only the parent
+Agent may delete findings.
 
 In xSec, task identity and permissions are supplied by the MCP Fabric. Do not
 add assignment, project, session, role, authorization, or context fields to a
