@@ -66,7 +66,8 @@ test("retained manifests express the attack-path to subagent plugin relationship
   const attackExtension = attackPath.extensions["com.xsec.desktop"];
   const subagentExtension = subagent.extensions["com.xsec.desktop"];
 
-  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], "^1.2.3");
+  const expectedSubagentRange = attackPath.version === "2.0.5" ? "^1.2.3" : "^2.0.0";
+  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], expectedSubagentRange);
   assert.equal(attackExtension.engines.pluginApi, "^1.3.0");
   assert.equal(subagentExtension.engines.pluginApi, "^1.3.0");
   assert.ok(attackExtension.permissions["workspace.tool.open"]);
