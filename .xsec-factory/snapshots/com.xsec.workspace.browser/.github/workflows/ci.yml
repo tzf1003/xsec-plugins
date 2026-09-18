@@ -36,7 +36,7 @@ jobs:
             "xsec.browser.surface.acknowledge", "xsec.browser.surface.close", "xsec.browser.presentation.set",
             "xsec.browser.settings.get", "xsec.browser.settings.set"
           ];
-          if (root.name !== "com.xsec.workspace.browser" || root.version !== "2.0.0") process.exit(1);
+          if (root.name !== "com.xsec.workspace.browser" || root.version !== "2.0.1") process.exit(1);
           if (catalog.name !== root.name || catalog.version !== root.version) process.exit(1);
           if (!extension || extension.schemaVersion !== 2 || extension.contributes?.agentTools !== undefined) process.exit(1);
           if (JSON.stringify(Object.keys(extension.frontendApi?.methods ?? {}).sort()) !== JSON.stringify(expectedMethods.sort())) process.exit(1);
