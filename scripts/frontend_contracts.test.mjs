@@ -65,9 +65,12 @@ test("retained manifests express the attack-path to subagent plugin relationship
   const subagent = await manifest("com.xsec.workspace.sub-agent");
   const attackExtension = attackPath.extensions["com.xsec.desktop"];
   const subagentExtension = subagent.extensions["com.xsec.desktop"];
+  const requiredSubAgent = attackExtension.dependencies.required["com.xsec.workspace.sub-agent"];
+  const hasFindingDelete = Boolean(attackExtension.contributes.agentTools?.["attack-path-finding-delete"]);
 
-  const expectedSubagentRange = attackPath.version === "2.0.5" ? "^1.2.3" : "^2.0.0";
-  assert.equal(attackExtension.dependencies.required["com.xsec.workspace.sub-agent"], expectedSubagentRange);
+  // Batches that ship parent-only finding-delete require sub-agent ^2.0.0; older
+  // retained snapshots stay on ^1.2.3 until that Marketplace sync lands on main.
+  assert.equal(requiredSubAgent, hasFindingDelete ? "^2.0.0" : "^1.2.3");
   assert.equal(attackExtension.engines.pluginApi, "^1.3.0");
   assert.equal(subagentExtension.engines.pluginApi, "^1.3.0");
   assert.ok(attackExtension.permissions["workspace.tool.open"]);
