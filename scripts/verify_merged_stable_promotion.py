@@ -1487,6 +1487,14 @@ def classify_merged_change(
                             )
             return {"kind": "maintenance"}
         return {"kind": "none"}
+    if not git_succeeds(root, ["cat-file", "-e", f"{after}:{MARKETPLACE_SIDECAR}"]):
+        from verify_version_publication import verify_version_publication
+
+        try:
+            return verify_version_publication(root, before, after)
+        except ValueError as error:
+            raise PromotionVerificationError(str(error)) from error
+
     candidates: list[dict[str, object]] = []
     errors: list[str] = []
     for channel in ("beta", "stable"):
