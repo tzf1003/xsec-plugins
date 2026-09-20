@@ -14,6 +14,10 @@ only when it represents a concrete next step or confirmed observation. Use
 conclusion. Read a single node with `attack_path_node_get` before an update
 when the current state matters.
 
+Pass the top-level `revision` returned by `attack_path_node_get` or
+`attack_path_list` as `expectedRevision` for update/delete; do not use a
+node's `updatedAt` timestamp.
+
 `kind` is an open classification string. State-like fields such as `status`,
 `testValue`, and `severity` use the finite values advertised by `tools/list`.
 
