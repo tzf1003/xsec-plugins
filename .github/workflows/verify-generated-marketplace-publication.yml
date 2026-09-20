@@ -40,6 +40,11 @@ jobs:
             echo "This PR does not change a generated Marketplace release surface."
             exit 0
           fi
+          marketplace_paths="$(git diff --name-only "$BEFORE" "$AFTER" -- .agents/plugins .xsec-factory plugins .gitmodules)"
+          if [ "$marketplace_paths" = ".xsec-factory/official-registry.json" ]; then
+            echo "Registry metadata is validated by the required source gate."
+            exit 0
+          fi
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
           if [ "$kind" != "beta" ] && [ "$kind" != "stable" ] && [ "$kind" != "stable-maintenance" ] && [ "$kind" != "beta-smoke-ready" ]; then
@@ -59,6 +64,11 @@ jobs:
           fi
           if git diff --quiet "$BEFORE" "$AFTER" -- .agents/plugins .xsec-factory plugins .gitmodules; then
             echo "This PR does not change a generated Marketplace release surface."
+            exit 0
+          fi
+          marketplace_paths="$(git diff --name-only "$BEFORE" "$AFTER" -- .agents/plugins .xsec-factory plugins .gitmodules)"
+          if [ "$marketplace_paths" = ".xsec-factory/official-registry.json" ]; then
+            echo "Registry metadata has no generated release source to recheck."
             exit 0
           fi
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
