@@ -198,6 +198,24 @@
       },
       "category": "Security",
       "status": "active"
+    },
+    {
+      "pluginId": "io.xsec.project-files",
+      "trustTier": "external",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-project-files",
+        "path": ".",
+        "refs": {
+          "beta": "refs/heads/beta",
+          "stable": "refs/heads/main"
+        }
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security",
+      "status": "active"
     }
   ]
 }

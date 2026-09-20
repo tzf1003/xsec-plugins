@@ -196,11 +196,11 @@ jobs:
               | select(.status == "active" and .pluginId != "com.xsec.project-workspace")
               | {plugin_id:.pluginId, repository:.source.repository, beta_ref:.source.refs.beta, stable_ref:.source.refs.stable}
             ]
-            | if length == 10
+            | if length == 11
                 and all(.[]; (.plugin_id | type == "string") and (.repository | type == "string")
                   and .beta_ref == "refs/heads/beta" and .stable_ref == "refs/heads/main")
               then sort_by(.plugin_id)
-              else error("Factory must have exactly ten active first-party plugin sources") end
+              else error("Factory must have exactly eleven active plugin sources") end
           ' .xsec-factory/official-registry.json)"
           owners="$(printf '%s' "$batch" | jq -cer '[.[].repository | split("/")[0]] | unique | if length == 1 then .[0] else error("a Marketplace batch cannot span source owners") end')"
           repositories="$(printf '%s' "$batch" | jq -cer '[.[].repository | split("/")[1]] | unique | join(",")')"
