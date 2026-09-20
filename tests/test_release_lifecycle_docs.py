@@ -247,7 +247,6 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
     def test_pending_generated_pr_scan_is_paginated_before_every_kms_call(self) -> None:
         workflows = (
             PUBLISH_WORKFLOW,
-            ROOT / ".github" / "workflows" / "promote-stable.yml",
             REFRESH_SIDECAR_WORKFLOW,
             ADOPTION_WORKFLOW,
         )
@@ -260,7 +259,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
                 self.assertIn('select(.head.repo.full_name == $repository)', workflow)
                 self.assertNotIn('.[] | .head.ref | select(startswith("xsec-marketplace/"))', workflow)
                 self.assertNotIn('gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open', workflow)
-                if workflow_path in (PUBLISH_WORKFLOW, ROOT / ".github" / "workflows" / "promote-stable.yml"):
+                if workflow_path == PUBLISH_WORKFLOW:
                     self.assertIn('.head.ref | startswith("xsec-marketplace/")', workflow)
                     self.assertIn('--paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${number}/files?per_page=100"', workflow)
                     self.assertIn('Cannot completely inspect generated Factory PR', workflow)

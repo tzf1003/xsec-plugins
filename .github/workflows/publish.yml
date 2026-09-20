@@ -1,4 +1,4 @@
-name: Publish immutable marketplace beta release
+name: Publish immutable marketplace version
 
 on:
   push:
@@ -11,14 +11,8 @@ on:
         default: release
         type: choice
         options: [release, align_desktop_defaults]
-      channel:
-        description: Beta publishes an approved external beta SHA; Stable promotes an identical existing Beta release.
-        required: false
-        default: beta
-        type: choice
-        options: [beta, stable]
       plugin_id:
-        description: Optional registered external plugin ID. Leave empty for the existing built-in Beta publisher.
+        description: Optional registered external plugin ID. Leave empty for the built-in publisher.
         required: false
         type: string
       source_sha:
@@ -27,22 +21,6 @@ on:
         type: string
       native_sidecars_source_sha:
         description: Exact lowercase 40-character xSecDesktop main SHA used to build the reviewed native MCP sidecars.
-        required: false
-        type: string
-      release_id:
-        description: Existing external Beta releaseId. Required only for an external Stable promotion.
-        required: false
-        type: string
-      expected_beta_sha:
-        description: Exact Beta source SHA bound to a successful Desktop smoke callback. Required with smoke-gated external Stable promotion.
-        required: false
-        type: string
-      smoke_run_url:
-        description: Exact Desktop smoke Actions URL. Accepted only for a smoke-gated external Stable promotion.
-        required: false
-        type: string
-      smoke_marketplace_revision:
-        description: Exact Factory revision that Desktop smoke verified. Accepted only for a smoke-gated external Stable promotion.
         required: false
         type: string
       reconcile_delivery_key:
@@ -61,9 +39,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # All KMS mutations share one queue. A candidate leaves this queue after its
-  # immutable documents are created, so an unrelated plugin can be reviewed
-  # and published without waiting for that review to finish.
+  # Serialize immutable release-index updates.
   group: xsec-marketplace-publish-main
   cancel-in-progress: false
 
@@ -80,14 +56,14 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           MAINTENANCE: ${{ inputs.maintenance }}
-          CHANNEL: ${{ inputs.channel }}
+          CHANNEL: beta
           PLUGIN_ID: ${{ inputs.plugin_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           NATIVE_SIDECARS_SOURCE_SHA: ${{ inputs.native_sidecars_source_sha }}
-          RELEASE_ID: ${{ inputs.release_id }}
-          EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
-          SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
-          SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
+          RELEASE_ID: ""
+          EXPECTED_BETA_SHA: ""
+          SMOKE_RUN_URL: ""
+          SMOKE_MARKETPLACE_REVISION: ""
           RECONCILE_DELIVERY_KEY: ${{ inputs.reconcile_delivery_key }}
           RECONCILE_DISPATCH_NONCE: ${{ inputs.reconcile_dispatch_nonce }}
         run: |
@@ -235,7 +211,6 @@ jobs:
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
           if [ "$kind" = "beta" ] || [ "$kind" = "stable" ] || [ "$kind" = "beta-smoke-ready" ]; then
-            python scripts/kms_marketplace_publisher.py --root . --verify-active-marketplace-signatures >/dev/null
             echo "generated=true" >> "$GITHUB_OUTPUT"
           elif [ "$kind" = "maintenance" ] || [ "$kind" = "stable-maintenance" ]; then
             echo "generated=true" >> "$GITHUB_OUTPUT"
@@ -245,7 +220,7 @@ jobs:
   build-native-sidecars:
     needs: [enforce-publish-ref, classify-generated-main-change]
     if: >-
-      ${{ needs.enforce-publish-ref.result == 'success' && needs.classify-generated-main-change.outputs.generated != 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.maintenance != 'align_desktop_defaults' && (inputs.plugin_id == '' || inputs.channel == 'beta') }}
+      ${{ needs.enforce-publish-ref.result == 'success' && needs.classify-generated-main-change.outputs.generated != 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.maintenance != 'align_desktop_defaults' }}
     runs-on: ${{ matrix.runner }}
     environment: production
     timeout-minutes: 45
@@ -396,10 +371,10 @@ jobs:
           PLUGIN_ID: ${{ inputs.plugin_id }}
           MAINTENANCE: ${{ needs.enforce-publish-ref.outputs.maintenance }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-          RELEASE_ID: ${{ inputs.release_id }}
-          EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
-          SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
-          SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
+          RELEASE_ID: ""
+          EXPECTED_BETA_SHA: ""
+          SMOKE_RUN_URL: ""
+          SMOKE_MARKETPLACE_REVISION: ""
         run: |
           set -euo pipefail
           if [ -n "$PLUGIN_ID" ] && ! [[ "$PLUGIN_ID" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]]; then
@@ -514,18 +489,13 @@ jobs:
             echo "external=true" >> "$GITHUB_OUTPUT"
             echo "maintenance=false" >> "$GITHUB_OUTPUT"
             echo "channel=$channel" >> "$GITHUB_OUTPUT"
-            if [ "$channel" = "beta" ]; then
-              echo "commit_title=chore: publish external marketplace beta release" >> "$GITHUB_OUTPUT"
-              echo "branch_prefix=external-beta" >> "$GITHUB_OUTPUT"
-            else
-              echo "commit_title=chore: promote external marketplace stable release" >> "$GITHUB_OUTPUT"
-              echo "branch_prefix=external-stable" >> "$GITHUB_OUTPUT"
-            fi
+            echo "commit_title=chore: publish external marketplace version" >> "$GITHUB_OUTPUT"
+            echo "branch_prefix=external-version" >> "$GITHUB_OUTPUT"
           else
             echo "external=false" >> "$GITHUB_OUTPUT"
             echo "maintenance=false" >> "$GITHUB_OUTPUT"
             echo "channel=beta" >> "$GITHUB_OUTPUT"
-            echo "commit_title=chore: publish marketplace beta release" >> "$GITHUB_OUTPUT"
+            echo "commit_title=chore: publish marketplace version" >> "$GITHUB_OUTPUT"
             echo "branch_prefix=publish" >> "$GITHUB_OUTPUT"
           fi
       - name: Apply the reviewed Desktop default-set transition
@@ -702,8 +672,8 @@ jobs:
         if: ${{ steps.request.outputs.external == 'true' && steps.request.outputs.channel == 'stable' }}
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
-          RELEASE_ID: ${{ inputs.release_id }}
-          EXPECTED_BETA_SHA: ${{ inputs.expected_beta_sha }}
+          RELEASE_ID: ""
+          EXPECTED_BETA_SHA: ""
         run: |
           set -euo pipefail
           args=(--plugin-id "$PLUGIN_ID" --source-root .xsec-factory-source --release-id "$RELEASE_ID")
@@ -726,7 +696,7 @@ jobs:
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ""
           PUBLISHER: ${{ github.actor }}
         run: |
           python scripts/external_source_factory.py record-stable \
@@ -837,11 +807,11 @@ jobs:
         env:
           PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}
           SOURCE_SHA: ${{ steps.external-request.outputs.source_sha }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ""
           DELIVERY_ID: ${{ github.run_id }}.${{ github.run_attempt }}
           FACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SMOKE_RUN_URL: ${{ inputs.smoke_run_url }}
-          SMOKE_MARKETPLACE_REVISION: ${{ inputs.smoke_marketplace_revision }}
+          SMOKE_RUN_URL: ""
+          SMOKE_MARKETPLACE_REVISION: ""
         run: |
           set -euo pipefail
           if [ -n "$SMOKE_RUN_URL" ]; then
@@ -855,26 +825,7 @@ jobs:
               --stable-sha "$SOURCE_SHA" --state promoting_stable --delivery-id "$DELIVERY_ID" \
               --factory-run-url "$FACTORY_RUN_URL"
           fi
-      - name: Remove KMS sidecars made stale by an immutable Factory update
-        # A Stable promotion changes a retained releases.json without running
-        # build_market --clean. Its previous KMS sidecar therefore cannot be
-        # validated in the short pre-KMS staging window. Delete only a sidecar
-        # whose own document has an unstaged Factory change; the next protected
-        # step replaces it through Cloud KMS and the generated PR is strict.
-        run: |
-          set -euo pipefail
-          documents=(.agents/plugins/marketplace.json .xsec-factory/snapshots/*/.xsec-market/releases.json)
-          for document in "${documents[@]}"; do
-            [ -f "$document" ] || continue
-            git diff --quiet -- "$document" && continue
-            sidecar="${document}.sig.jws.json"
-            [ ! -L "$sidecar" ] || {
-              echo "Refusing to remove a symbolic-link Marketplace KMS sidecar: $sidecar" >&2
-              exit 1
-            }
-            rm -f -- "$sidecar"
-          done
-      - name: Skip a no-op Factory publication without KMS or dispatch
+      - name: Skip a no-op Factory publication
         id: publication-decision
         env:
           EXTERNAL: ${{ steps.request.outputs.external }}
@@ -908,32 +859,7 @@ jobs:
             python scripts/external_source_factory.py validate
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
           elif [ "$EXTERNAL" != "true" ]; then
-            # build_market --clean removes the prior active KMS sidecars
-            # before it decides whether it needs to append a release.  Ignore
-            # no other change: only tracked *deletions* of the exact active
-            # sidecar shapes may be restored for the no-op proof below.
-            sidecar_paths=()
-            only_cleaned_sidecars=true
-            while IFS=$'\t' read -r change path; do
-              [ "$change" = "D" ] || { only_cleaned_sidecars=false; break; }
-              case "$path" in
-                .agents/plugins/marketplace.json.sig.jws.json|.xsec-factory/snapshots/*/.xsec-market/releases.json.sig.jws.json)
-                  sidecar_paths+=("$path")
-                  ;;
-                *)
-                  only_cleaned_sidecars=false
-                  break
-                  ;;
-              esac
-            done < <(git diff --name-status -- .agents/plugins .xsec-factory)
-            if "$only_cleaned_sidecars"; then
-              # Restore only the verified expected cleanup.  A source change,
-              # release-index advance, Factory evidence change, replacement,
-              # or untracked output takes the publication path and will be
-              # freshly signed instead.
-              if [ "${#sidecar_paths[@]}" -gt 0 ]; then
-                git restore --source=HEAD --worktree -- "${sidecar_paths[@]}"
-              fi
+            if test -z "$(git status --porcelain --untracked-files=all -- .agents/plugins .xsec-factory)"; then
               python scripts/external_source_factory.py validate
               git diff --exit-code
               test -z "$(git status --porcelain --untracked-files=all)" || {
@@ -953,31 +879,10 @@ jobs:
         run: python scripts/validate_market.py source --source-root . --built-root .
       - name: Validate official external Factory registry, snapshots and provenance
         if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
-        # The just-recorded source evidence is intentionally unsigned until
-        # the next protected step obtains its KMS provenance sidecar. Every
-        # ordinary source gate stays strict; only this production staging
-        # window may opt out, and its generated PR is revalidated strictly
-        # before it can merge.
         run: >-
           python scripts/external_source_factory.py validate
           --allow-unsigned-publication-proofs
           --allow-unsigned-active-release-sidecars
-      - name: Request KMS sidecars through the production Cloud broker
-        if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
-        env:
-          # The Cloud broker allowlists this controlled publish.yml workflow
-          # for immutable Marketplace documents only. Mutable official status
-          # is deliberately excluded: reconcile-source authenticates the
-          # exact generated candidate and is the sole status KMS caller.
-          # Every sidecar still binds the Factory main SHA, never
-          # an external source SHA.
-          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
-        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status
-      - name: Gate the KMS sidecar protocol before publishing
-        if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
-        env:
-          XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}
-        run: python scripts/kms_marketplace_publisher.py --root . --exclude-official-status --validate-only
       - name: Publish generated metadata through a protected pull request
         id: publish
         if: ${{ steps.publication-decision.outputs.should_publish == 'true' }}
@@ -991,15 +896,12 @@ jobs:
           # source gate completes.
           GH_TOKEN: ${{ secrets.XSEC_MARKETPLACE_PUBLISH_TOKEN }}
           EXTERNAL: ${{ steps.request.outputs.external }}
-          CHANNEL: ${{ steps.request.outputs.channel }}
           MAINTENANCE: ${{ steps.request.outputs.maintenance }}
           COMMIT_TITLE: ${{ steps.request.outputs.commit_title }}
           BRANCH_PREFIX: ${{ steps.request.outputs.branch_prefix }}
         run: |
           set -euo pipefail
-          # Stage Factory provenance and the already-indexed first-party
-          # Gitlink as well as the index/release sidecars. A KMS sidecar binds
-          # exact bytes and must never be left untracked.
+          # Stage Factory provenance and the already-indexed first-party Gitlink.
           git add -A .agents/plugins .xsec-factory
           if git diff --cached --quiet; then
             echo "marketplace_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -1017,23 +919,21 @@ jobs:
           git switch -c "$branch"
           git push --set-upstream origin "$branch"
           if [ "$MAINTENANCE" = "true" ]; then
-            body="Generated by the controlled workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It removes the project workspace package from Marketplace discovery, retains its immutable Factory history, and refreshes the complete active KMS sidecar batch. The finalizer revalidates the exact default-set delta and never treats it as a plugin release."
-          elif [ "$EXTERNAL" = "true" ] && [ "$CHANNEL" = "stable" ]; then
-            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It proved external main deterministically rebuilds the selected Beta release and changes only channels.stable.releaseId plus Factory provenance. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory run the source gate. This workflow never merges the PR."
+            body="Generated by controlled workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. The finalizer revalidates the exact default-set delta."
           elif [ "$EXTERNAL" = "true" ]; then
-            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It snapshots one reachable external beta commit, appends immutable releases as needed, advances beta only, and records Factory provenance. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory run the source gate. This workflow never merges the PR."
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It publishes one immutable plugin version and records Factory provenance. The source gate and finalizer remain required."
           else
-            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. This appends immutable releases as needed and advances beta only. Its official status proof is pending protected source reconciliation; only after that exact proof is attached will the Factory run the source gate. This workflow never merges the PR."
+            body="Generated by protected workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. It appends immutable plugin versions and requires the source gate and finalizer."
           fi
           pull_url="$(gh pr create --base main --head "$branch" --title "$COMMIT_TITLE" --body "$body")"
           pull_number="${pull_url##*/}"
           [[ "$pull_number" =~ ^[1-9][0-9]*$ ]] || { echo "Generated Factory PR number is invalid." >&2; exit 1; }
           {
-            echo "## Marketplace publication PR awaiting status authentication"
+            echo "## Marketplace publication PR awaiting final validation"
             echo
             echo "${pull_url}"
             echo
-            echo "The source reconciler must first authenticate and sign the exact status proof. It will then run the source gate; no merge or Desktop smoke dispatch occurs here."
+            echo "The source gate and finalizer must validate this exact revision before merge."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "published=false" >> "$GITHUB_OUTPUT"
           echo "pending_status_authentication=true" >> "$GITHUB_OUTPUT"

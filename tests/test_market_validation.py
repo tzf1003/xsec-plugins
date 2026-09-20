@@ -1508,9 +1508,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertFalse(promote_release.promote_stable(root, "com.example.test", str(beta_id)))
 
     def test_stable_promotion_workflow_detects_snapshot_metadata_changes(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")
-
-        self.assertIn("git diff --quiet -- .xsec-factory/snapshots", workflow)
+        self.assertFalse((ROOT / ".github" / "workflows" / "promote-stable.yml").exists())
 
     def test_stable_promotion_rejects_an_unknown_release_id(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-stable-promotion-invalid-") as directory:
