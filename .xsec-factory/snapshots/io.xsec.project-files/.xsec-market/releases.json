@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "pluginId": "io.xsec.project-files",
+  "releases": [
+    {
+      "releaseId": "sha256-d16302ad04edef6c2363445007efd6fbbc9c0224718aba8e88cefeba83fcc684",
+      "version": "1.0.0",
+      "engines": {
+        "xsec": ">=0.1.0",
+        "pluginApi": "^1.4.0"
+      },
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "artifacts/io.xsec.project-files-1.0.0-sha256-8dad7b6f51286bf2-any-any.xsec-plugin",
+          "sha256": "8dad7b6f51286bf2cee70400abd7cc12bbeab4d443afae1aadc14cc0efb66898"
+        }
+      ]
+    }
+  ],
+  "channels": {
+    "beta": {
+      "releaseId": "sha256-d16302ad04edef6c2363445007efd6fbbc9c0224718aba8e88cefeba83fcc684"
+    },
+    "stable": null
+  }
+}

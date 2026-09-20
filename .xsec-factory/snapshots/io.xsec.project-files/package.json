@@ -1,0 +1,9 @@
+{
+  "name": "io.xsec.project-files",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check com.xsec.desktop/frontend/index.js && node scripts/verify-manifest.mjs"
+  }
+}

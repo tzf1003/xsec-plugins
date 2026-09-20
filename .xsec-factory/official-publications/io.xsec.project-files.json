@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "io.xsec.project-files",
+  "events": [
+    {
+      "channel": "beta",
+      "releaseId": "sha256-d16302ad04edef6c2363445007efd6fbbc9c0224718aba8e88cefeba83fcc684",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-project-files",
+        "path": ".",
+        "ref": "refs/heads/beta",
+        "sha": "8b5c0cefd4ae45bee632263766ac43762b234602"
+      },
+      "artifact": {
+        "sha256": "8dad7b6f51286bf2cee70400abd7cc12bbeab4d443afae1aadc14cc0efb66898",
+        "url": "artifacts/io.xsec.project-files-1.0.0-sha256-8dad7b6f51286bf2-any-any.xsec-plugin"
+      },
+      "publisher": "tzf1003"
+    }
+  ]
+}
