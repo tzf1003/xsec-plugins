@@ -20,14 +20,14 @@ SOURCE_PREFLIGHT = ROOT / ".github" / "workflows" / "first-party-source-prefligh
 
 
 class MarketplaceBatchAutomationTests(unittest.TestCase):
-    def test_default_set_maintenance_is_automatic_and_source_batch_stays_ten_plugins(self) -> None:
+    def test_default_set_maintenance_is_automatic_and_source_batch_stays_eleven_plugins(self) -> None:
         registry = json.loads((ROOT / ".xsec-factory" / "official-registry.json").read_text(encoding="utf-8"))
         marketplace = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
         statuses = {entry["pluginId"]: entry["status"] for entry in registry["plugins"]}
         active = [plugin_id for plugin_id, status in statuses.items() if status == "active"]
         market_ids = {entry["name"] for entry in marketplace["plugins"]}
 
-        self.assertEqual(len(active), 10)
+        self.assertEqual(len(active), 11)
         self.assertEqual(statuses["com.xsec.project-workspace"], "disabled")
         self.assertNotIn("com.xsec.project-workspace", market_ids)
         publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
@@ -50,7 +50,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, workflow)
         for rule in (
-            "length == 10",
+            "length == 11",
             "xsec-marketplace-publish-main",
             "permission-contents: read",
             "resolve-native-sidecar-source",
