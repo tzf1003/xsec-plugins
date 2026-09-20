@@ -932,7 +932,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                     with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "reserved official Desktop surface"):
                         factory.stage_beta(root, PLUGIN_ID, source)
 
-    def test_external_source_cannot_turn_official_marketplace_trust_into_high_privileges(self) -> None:
+    def test_external_source_uses_shared_desktop_permission_confirmation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-external-capability-") as directory:
             root = Path(directory)
             source = self.make_source(root / "source")
@@ -940,7 +940,7 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             manifest_path = source / "package" / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             desktop = manifest["extensions"]["com.xsec.desktop"]
-            desktop["permissions"] = {"workspace.project.read": {}, "network.request": {}}
+            desktop["permissions"] = {"filesystem.workspace.read": {}, "workspace.composer.write": {}}
             write_json(manifest_path, manifest)
             factory.stage_beta(root, PLUGIN_ID, source)
 
@@ -951,9 +951,9 @@ class ExternalSourceFactoryTests(unittest.TestCase):
             self.make_factory(root, self.registry_entry())
             manifest_path = source / "package" / "plugin.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["extensions"]["com.xsec.desktop"]["permissions"] = {"process.spawn": {}}
+            manifest["extensions"]["com.xsec.desktop"]["permissions"] = {"": {}}
             write_json(manifest_path, manifest)
-            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "not permitted for an automatic official Factory grant"):
+            with self.assertRaisesRegex(factory.ExternalSourceFactoryError, "permission keys must be non-empty strings"):
                 factory.stage_beta(root, PLUGIN_ID, source)
 
     def test_disabled_registry_entry_cannot_be_prepared_or_staged(self) -> None:
