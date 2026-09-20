@@ -449,9 +449,11 @@ class MarketplaceValidationTests(unittest.TestCase):
         """The temporary output retains active entries and their default policy."""
 
         expected_defaults = set(validate_market.active_default_official_plugin_ids(ROOT))
+        registry = json.loads((ROOT / marketplace_contract.REGISTRY_RELATIVE_PATH).read_text())
         expected_entries = {
-            plugin_id
-            for plugin_id, _ in marketplace_contract.active_official_plugin_policies(ROOT)
+            entry["pluginId"] for entry in registry["plugins"]
+            if entry["status"] == "active"
+            and (snapshot_dir(ROOT, entry["pluginId"]) / "plugin.json").is_file()
         }
         with tempfile.TemporaryDirectory(prefix="xsec-market-active-default-set-") as directory:
             output = Path(directory) / "marketplace"

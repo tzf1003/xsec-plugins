@@ -47,7 +47,7 @@ jobs:
           fi
           result="$(python scripts/verify_merged_stable_promotion.py --root . --before "$BEFORE" --after "$AFTER" --classify)"
           kind="$(printf '%s' "$result" | jq -er .kind)"
-          if [ "$kind" != "beta" ] && [ "$kind" != "stable" ] && [ "$kind" != "stable-maintenance" ] && [ "$kind" != "beta-smoke-ready" ]; then
+          if [ "$kind" != "version" ] && [ "$kind" != "beta" ] && [ "$kind" != "stable" ] && [ "$kind" != "stable-maintenance" ] && [ "$kind" != "beta-smoke-ready" ]; then
             echo "This is not a generated Marketplace release transition; source freshness is not applicable."
             exit 0
           fi
