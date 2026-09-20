@@ -989,6 +989,18 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
 
             self.assertEqual(verifier.classify_merged_change(root, before, after), {"kind": "maintenance"})
 
+    def test_classifies_release_sidecar_removal_as_maintenance(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-release-sidecar-removal-") as directory:
+            root = Path(directory)
+            before, _, _ = self.make_repository(root)
+            release_sidecar = root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json"
+            release_sidecar.write_text("retired signature\n", encoding="utf-8")
+            before = self.commit(root, "retain release signature")
+            release_sidecar.unlink()
+            after = self.commit(root, "remove release signature")
+
+            self.assertEqual(verifier.classify_merged_change(root, before, after), {"kind": "maintenance"})
+
     def test_registered_no_pointer_stable_completion_carries_the_current_main_source(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-registered-completion-") as directory:
             root = Path(directory)

@@ -1415,6 +1415,12 @@ def classify_merged_change(
         # release, and it does not represent a Desktop smoke publication.
         if MARKETPLACE_SIDECAR in paths and all(is_publish_kms_sidecar(path) for path in paths):
             return {"kind": "maintenance"}
+        if all(RELEASE_SIDECAR_PATTERN.fullmatch(path) for path in paths) and all(
+            git_succeeds(root, ["cat-file", "-e", f"{before}:{path}"])
+            and not git_succeeds(root, ["cat-file", "-e", f"{after}:{path}"])
+            for path in paths
+        ):
+            return {"kind": "maintenance"}
         # A no-pointer external Stable completion can append signed provenance
         # and update its observable status after an already selected release.
         # It must not loop into the built-in beta publisher merely because a
