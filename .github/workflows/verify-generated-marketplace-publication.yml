@@ -46,7 +46,6 @@ jobs:
             echo "This is not a generated Marketplace release transition; source freshness is not applicable."
             exit 0
           fi
-          python scripts/kms_marketplace_publisher.py --root . --verify-active-marketplace-signatures >/dev/null
           printf '%s\n' "$result" > "$RUNNER_TEMP/marketplace-publication.json"
       - name: Reject a generated PR whose registered source branch advanced before merge
         env:

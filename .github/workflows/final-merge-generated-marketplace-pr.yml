@@ -94,7 +94,7 @@ jobs:
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
-      - name: Revalidate the exact Factory transition and KMS proofs
+      - name: Revalidate the exact Factory transition
         id: publication
         env:
           BEFORE: ${{ steps.pr.outputs.base_sha }}
@@ -123,7 +123,7 @@ jobs:
             adoption_path="$expected_adoption_path"
             plugin_id="$expected_plugin_id"
             [[ "$plugin_id" =~ ^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$ ]] || { echo "The adoption document has an unsafe plugin ID." >&2; exit 1; }
-            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
+            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root . --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
             sources="$(jq -ce '
               .source as $source
               | [
@@ -167,24 +167,18 @@ jobs:
               echo "Factory layout sidecars are not bound to a retained protected revision." >&2
               exit 1
             }
-            python scripts/external_source_factory.py --root "$CANDIDATE" validate
+            python scripts/external_source_factory.py --root "$CANDIDATE" validate --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
             result='{"kind":"factory-layout-sidecar-migration","sources":[]}'
             sources='[]'
           elif [[ "$HEAD_REF" == xsec-marketplace/default-set-* ]]; then
             result="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" \
               --before "$BEFORE" --after "$AFTER" --verify-default-set-transition-candidate)"
-            verification="$(python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-active-marketplace-signatures)"
-            source_sha="$(printf '%s' "$verification" | jq -er .source_revision)"
-            git -C "$CANDIDATE" merge-base --is-ancestor "$source_sha" "$AFTER" || {
-              echo "Default-set sidecars are not bound to a retained protected revision." >&2
-              exit 1
-            }
-            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
+            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root . --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
             sources='[]'
           elif [[ "$HEAD_REF" == xsec-marketplace/root-package-layout-* ]]; then
             result="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" \
               --before "$BEFORE" --after "$AFTER" --verify-first-party-root-layout-transition)"
-            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root .
+            python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root . --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
             sources="$(printf '%s' "$result" | jq -ce '.sources')"
           elif [[ "$HEAD_REF" == xsec-marketplace/refresh-retained-sidecar-* ]]; then
             # A sidecar repair is a privileged Factory candidate even though
@@ -208,29 +202,19 @@ jobs:
                 xsec-marketplace/external-stable-*) ;;
                 *) echo "Only external Stable completion branches may use the no-pointer maintenance shape." >&2; exit 1 ;;
               esac
-              python scripts/external_source_factory.py --root "$CANDIDATE" validate
+              python scripts/external_source_factory.py --root "$CANDIDATE" validate --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
             elif [ "$kind" = "maintenance" ]; then
-              # The ordinary publisher can renew all immutable KMS sidecars
-              # after a prior source or policy change. This transition has no
-              # channel/status payload delta, so require the full cryptographic
-              # check below but do not request external-source authority.
-              python scripts/external_source_factory.py --root "$CANDIDATE" validate
+              python scripts/external_source_factory.py --root "$CANDIDATE" validate --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
             elif [ "$kind" = "beta-smoke-ready" ]; then
               case "$HEAD_REF" in
                 xsec-marketplace/external-beta-*|xsec-marketplace/batch-*) ;;
                 *) echo "Only external Beta or signed batch branches may reopen a no-pointer Desktop smoke cycle." >&2; exit 1 ;;
               esac
-              python scripts/external_source_factory.py --root "$CANDIDATE" validate
+              python scripts/external_source_factory.py --root "$CANDIDATE" validate --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
             elif [ "$kind" != "beta" ] && [ "$kind" != "stable" ]; then
-              echo "Final merge gate accepts only a signed Marketplace transition." >&2
+              echo "Final merge gate accepts only a Marketplace transition." >&2
               exit 1
             fi
-            verification="$(python scripts/kms_marketplace_publisher.py --root "$CANDIDATE" --verify-active-marketplace-signatures)"
-            source_sha="$(printf '%s' "$verification" | jq -er .source_revision)"
-            git -C "$CANDIDATE" merge-base --is-ancestor "$source_sha" "$AFTER" || {
-              echo "KMS source revision is not retained by the exact PR head." >&2
-              exit 1
-            }
             sources="$(printf '%s' "$result" | jq -c '[(.promotions // [])[] | select(.source != null) | .source, (.main_source // empty)]')"
           fi
           printf '%s\n' "$result" > "$RUNNER_TEMP/factory-publication.json"

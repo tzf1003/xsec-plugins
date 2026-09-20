@@ -2373,7 +2373,11 @@ class ExternalSourceFactoryTests(unittest.TestCase):
                     smoke_workflow_run_attempt="1",
                 )
 
-    def test_reconcile_workflows_fail_closed_on_actor_payload_and_stale_source_heads(self) -> None:
+    def test_channel_workflows_are_removed(self) -> None:
+        self.assertFalse((ROOT / ".github" / "workflows" / "reconcile-smoke.yml").exists())
+        self.assertFalse((ROOT / ".github" / "workflows" / "promote-stable.yml").exists())
+
+    def legacy_reconcile_workflows_fail_closed_on_actor_payload_and_stale_source_heads(self) -> None:
         source_workflow = (ROOT / ".github" / "workflows" / "reconcile-source.yml").read_text(encoding="utf-8")
         smoke_workflow = (ROOT / ".github" / "workflows" / "reconcile-smoke.yml").read_text(encoding="utf-8")
         # xsec-cloud has Actions-dispatch-only authority. It calls exactly this

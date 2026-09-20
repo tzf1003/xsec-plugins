@@ -361,14 +361,14 @@ jobs:
             beta_sha="$(git -c credential.helper= -c http.followRedirects=false ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "$SOURCE_BETA_REF" | awk 'NR == 1 { print $1 }')"
             [ -n "$beta_sha" ] || { echo "Cannot resolve registered source beta for ${PLUGIN_ID}." >&2; exit 1; }
             gh workflow run publish.yml --ref main \
-              -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$beta_sha" \
+              -f plugin_id="$PLUGIN_ID" -f source_sha="$beta_sha" \
               -f native_sidecars_source_sha="$NATIVE_SIDECARS_SOURCE_SHA" \
               -f reconcile_delivery_key="$DELIVERY_KEY" \
               -f reconcile_dispatch_nonce="${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
             exit 0
           fi
           gh workflow run publish.yml --ref main \
-            -f channel=beta -f plugin_id="$PLUGIN_ID" -f source_sha="$SOURCE_SHA" \
+            -f plugin_id="$PLUGIN_ID" -f source_sha="$SOURCE_SHA" \
             -f native_sidecars_source_sha="$NATIVE_SIDECARS_SOURCE_SHA" \
             -f reconcile_delivery_key="$DELIVERY_KEY" \
             -f reconcile_dispatch_nonce="${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"

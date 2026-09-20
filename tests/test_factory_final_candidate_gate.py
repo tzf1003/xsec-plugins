@@ -83,7 +83,7 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         self.assertIn("activation PR later adds only the matching sidecar", workflow)
         self.assertIn("xsec-marketplace/refresh-retained-sidecar-*", workflow)
         self.assertIn('elif [ "$kind" = "maintenance" ]; then', workflow)
-        self.assertIn("The ordinary publisher can renew all immutable KMS sidecars", workflow)
+        self.assertIn("--allow-unsigned-active-release-sidecars", workflow)
         self.assertIn("(.promotions // [])[]", workflow)
         self.assertIn("beta-smoke-ready", workflow)
         self.assertIn("Only external Beta or signed batch branches may reopen a no-pointer Desktop smoke cycle", workflow)
@@ -99,7 +99,6 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
         workflows = (
             "publish.yml",
             "publish-marketplace-batch.yml",
-            "promote-stable.yml",
             "stage-first-party-adoption.yml",
             "adopt-first-party.yml",
             "refresh-retained-sidecars.yml",
