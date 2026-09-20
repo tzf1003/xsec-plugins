@@ -192,12 +192,18 @@ jobs:
             sources='[]'
           else
             case "$HEAD_REF" in
-              xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*) ;;
+              xsec-marketplace/publish-*|xsec-marketplace/batch-*|xsec-marketplace/external-version-*|xsec-marketplace/external-beta-*|xsec-marketplace/external-stable-*|xsec-marketplace/promote-stable-*) ;;
               *) echo "Final gate accepts only an exact pending layout migration or a protected Factory publication branch." >&2; exit 1 ;;
             esac
             result="$(python scripts/verify_merged_stable_promotion.py --root "$CANDIDATE" --before "$BEFORE" --after "$AFTER" --classify)"
             kind="$(printf '%s' "$result" | jq -er .kind)"
-            if [ "$kind" = "stable-maintenance" ]; then
+            if [[ "$HEAD_REF" == xsec-marketplace/external-version-* ]] && [ "$kind" != "version" ]; then
+              echo "Version publication branches require an immutable version delta." >&2
+              exit 1
+            fi
+            if [ "$kind" = "version" ]; then
+              python scripts/external_source_factory.py --root "$CANDIDATE" validate --baseline-root . --allow-unsigned-publication-proofs --allow-unsigned-active-release-sidecars
+            elif [ "$kind" = "stable-maintenance" ]; then
               case "$HEAD_REF" in
                 xsec-marketplace/external-stable-*) ;;
                 *) echo "Only external Stable completion branches may use the no-pointer maintenance shape." >&2; exit 1 ;;
