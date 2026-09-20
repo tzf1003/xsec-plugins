@@ -75,6 +75,14 @@ class FactoryFinalCandidateGateWorkflowTests(unittest.TestCase):
             with self.subTest(required_rule=required_rule):
                 self.assertIn(required_rule, workflow)
 
+    def test_registry_metadata_uses_the_source_gate_without_release_finalization(self) -> None:
+        arm = ARM_WORKFLOW.read_text(encoding="utf-8")
+        freshness = (ROOT / ".github" / "workflows" / "verify-generated-marketplace-publication.yml").read_text(encoding="utf-8")
+
+        self.assertIn('registry_only="$(printf', arm)
+        self.assertIn('[ "$registry_only" != "true" ]', arm)
+        self.assertEqual(freshness.count('marketplace_paths" = ".xsec-factory/official-registry.json"'), 2)
+
     def test_final_gate_revalidates_narrow_adoption_and_sidecar_candidates(self) -> None:
         workflow = FINAL_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("xsec-marketplace/stage-first-party-adoption-*", workflow)

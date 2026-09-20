@@ -252,27 +252,6 @@ RESERVED_HOST_CORE_AGENT_TOOLS = frozenset(
         "xsec_page_group_use",
     }
 )
-# OfficialMarketplace packages receive their declared capabilities without the
-# confirmation path used for a normal third-party package. External Factory
-# source approval is therefore intentionally *not* an automatic privilege
-# escalation path. The small set below is enough for a browser-sandboxed,
-# optional workspace integration; a capability outside it needs an explicit
-# Desktop trust-model/API change rather than only a registry/source edit.
-EXTERNAL_FACTORY_ALLOWED_CAPABILITIES = frozenset(
-    {
-        "workspace.project.read",
-        "workspace.session.read",
-        "workspace.tool.open",
-        "pluginData.read",
-        "pluginData.write",
-        "network.request",
-        "notifications.show",
-        "secrets.own.read",
-        "secrets.own.write",
-        "agent.tools.register",
-    }
-)
-
 # The only source identities allowed to retain the Desktop's built-in
 # namespace and automatic-install capability after the split.  This is a
 # static compiler-like allowlist: registry metadata cannot create a new
@@ -1014,8 +993,8 @@ def reject_reserved_external_contributions(desktop: object, plugin_id: str) -> N
                 )
 
 
-def reject_unapproved_external_permissions(desktop: object, plugin_id: str) -> None:
-    """Refuse capabilities that OfficialMarketplace would grant without a prompt."""
+def validate_external_permission_declarations(desktop: object) -> None:
+    """Validate capability names before Desktop applies its shared confirmation policy."""
 
     if not isinstance(desktop, dict):
         fail("external plugin manifest has invalid XSEC Desktop metadata")
@@ -1025,12 +1004,6 @@ def reject_unapproved_external_permissions(desktop: object, plugin_id: str) -> N
     for key in permissions:
         if not isinstance(key, str) or not key:
             fail("external plugin manifest permission keys must be non-empty strings")
-        capability = key.split(":", 1)[0]
-        if capability not in EXTERNAL_FACTORY_ALLOWED_CAPABILITIES:
-            fail(
-                f"external plugin {plugin_id} requests capability {capability}, "
-                "which is not permitted for an automatic official Factory grant"
-            )
 
 
 def source_manifest(source_dir: Path, registration: Registration) -> dict[str, object]:
@@ -1065,7 +1038,7 @@ def source_manifest(source_dir: Path, registration: Registration) -> dict[str, o
     # original restrictive external path.
     if registration.trust_tier == "external":
         reject_reserved_external_contributions(desktop, registration.plugin_id)
-        reject_unapproved_external_permissions(desktop, registration.plugin_id)
+        validate_external_permission_declarations(desktop)
     if not isinstance(entrypoints, dict) or not entrypoints:
         fail("external plugin manifest must declare XSEC Desktop entrypoints")
     for name, raw_path in entrypoints.items():
