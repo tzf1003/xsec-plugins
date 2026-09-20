@@ -747,7 +747,7 @@ jobs:
               retained_source_root="$RUNNER_TEMP/xsec-retained-native-source/$native_plugin"
               retained_root="$RUNNER_TEMP/xsec-retained-native-beta/$native_plugin"
               mkdir -p "$retained_source_root/plugins"
-              cp -R ".xsec-factory/snapshots/$native_plugin" "$retained_source_root/plugins/$native_plugin"
+              cp -R ".xsec-factory/snapshots/$native_plugin/." "$retained_source_root/"
               reconciliation="$(python scripts/external_source_factory.py --json reconcile-retained-native-beta \
                 --plugin-id "$native_plugin" --source-root "$retained_source_root" --destination "$retained_root")"
               [ "$(printf '%s' "$reconciliation" | jq -er .reusable)" = "true" ] || {
