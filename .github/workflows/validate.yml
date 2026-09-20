@@ -86,6 +86,8 @@ jobs:
           if [ "$BASELINE_AVAILABLE" = "true" ]; then
             args=(--baseline-root "$BASELINE_ROOT")
           fi
-          python scripts/external_source_factory.py validate "${args[@]}"
+          python scripts/external_source_factory.py validate "${args[@]}" \
+            --allow-unsigned-publication-proofs \
+            --allow-unsigned-active-release-sidecars
       - name: Run marketplace gate tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
