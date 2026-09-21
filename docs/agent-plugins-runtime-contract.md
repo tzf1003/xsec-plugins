@@ -130,7 +130,7 @@ runner 编译或发布 release。
 sandbox 机制强制壁钟时间、CPU、内存、进程数、输出/日志和可丢弃磁盘配额；超限时 watchdog
 必须终止完整进程树并报告明确错误。失败或终止的 probe 必须销毁其凭据与数据，不能修改
 活动 artifact、生产 `PLUGIN_DATA`、激活指针或 capability revision。上述隔离策略本身是
-Beta/Stable 验收项。
+运行时隔离变更的专项验收项。
 
 overlay revision 只用于组件编辑并发控制，capability revision 标识一次发布的运行时投影。
 最终 Tool 合集的 wire name 必须分别使用受支持 OMP 16.4.8 和 18.0.9 导出的实际命名函数
