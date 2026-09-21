@@ -53,6 +53,32 @@ Registry 路径生成。完整约束见[注册与源码合约](first-party-plugi
 当前手动入口不接受 `channel` 或 `release_id`。部分内部 schema 仍有历史渠道字段，
 不能把它们当成额外的 Stable 晋级步骤。主分支 push 的默认集合维护也不等于发布新插件版本。
 
+## 不可协商边界
+
+| 场景 | 身份 | 可否同内容热更新 | 云端效果 |
+| --- | --- | --- | --- |
+| 本地 Desktop 开发者模式 | `dev_revision`（私有开发快照的修订） | 可以；用于本地热重载 | 不会 |
+| 官方 Marketplace 发布 | 不可变 `releaseId` 和 artifact SHA-256 | 不可以；不同内容必须提高版本 | 仅通过受保护工作流发布 |
+
+`dev_revision` 不是云端版本号，也不是 `releaseId` 的替代品。它只标识当前本地私有
+快照，不得据此声称已上传到 Marketplace 或任何云端 preview。
+
+一个 `plugin.json.version`（SemVer）只能对应一个不可变 release。内容、engine 条件或
+artifact 摘要变化时，必须先提高 `plugin.json.version`。发布器会以
+规范 JSON 重新计算 `releaseId`；不要手工保留、修改或伪造它。
+
+已发布插件只能保留条目并设为 `disabled`，同时保留快照、release history、artifact 与
+provenance。source gate 对照 trusted pre-change Factory revision：因此即使
+同一 PR 同时删除 registry、快照和证据，也不能把已发布插件伪装成从未发布的授权。
+
+外部源码可达性校验的 Git transport 也有独立信任边界：checkout 固定为
+`https://github.com`，拒绝 `insteadOf` 等本地 Git URL 改写，并写入
+verified ref。这只防止临时只读 token 被 Git transport 重定向，绝不表示外部插件
+代码可被执行或信任。
+
+Source App、Finalizer App 与管理员令牌权限分别保管；Finalizer 不复用 Publisher
+凭证。
+
 ## 不可变性、修复与下架
 
 同一 SemVer 不能对应不同 package bytes。`releaseId` 绑定 version、engine 条件与各目标

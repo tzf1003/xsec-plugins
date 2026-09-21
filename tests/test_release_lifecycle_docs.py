@@ -39,19 +39,20 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             with self.subTest(required_rule=required_rule):
                 self.assertIn(required_rule, document)
 
-    def test_lifecycle_contract_explains_the_publication_queue(self) -> None:
+    def test_lifecycle_contract_explains_publication_evidence_and_on_demand_smoke(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
         readme = README.read_text(encoding="utf-8")
         for required_rule in (
-            "发布队列",
-            "取得队列槽位后",
+            "交付证据",
             "`source_sha`",
-            "过期 release index",
+            "releaseId",
+            "按需 Desktop Smoke",
         ):
             with self.subTest(required_rule=required_rule):
                 self.assertIn(required_rule, document)
-        self.assertIn("Publication queue and Agent evidence", readme)
+        self.assertIn("Publication evidence and on-demand Host Smoke", readme)
         self.assertIn("event SHA", readme)
+        self.assertIn("unsigned publication", readme)
 
     def test_external_source_transport_boundary_is_documented(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
@@ -62,13 +63,13 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("insteadOf", readme)
         self.assertIn("local verified ref", readme)
 
-    def test_disabled_external_history_requires_cryptographic_sidecar_verification(self) -> None:
+    def test_disabled_external_history_retains_immutable_publication_evidence(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
         readme = README.read_text(encoding="utf-8")
-        self.assertIn("pinned Vercel KMS issuer JWKS", readme)
-        self.assertIn("cryptographically verifies", readme)
-        self.assertIn("Ed25519", document)
-        self.assertIn("密码学验证 sidecar", document)
+        self.assertIn("Marketplace KMS/JWS signing was retired", readme)
+        self.assertIn("set `disabled` (not deleted)", readme)
+        self.assertIn("设为 `disabled`", document)
+        self.assertIn("provenance", document)
 
     def test_published_external_registry_removal_is_blocked_against_the_trusted_baseline(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
@@ -86,19 +87,24 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("Dispatch the validated Beta or Stable revision to Desktop smoke", dispatcher)
         self.assertIn("All registered Stable completions are bound to their KMS-authenticated Beta Desktop smoke callbacks", dispatcher)
 
-    def test_status_smoke_gate_is_kms_bound_and_cloud_deployment_is_explicit(self) -> None:
+    def test_on_demand_host_smoke_is_separate_from_unsigned_publication(self) -> None:
         readme = README.read_text(encoding="utf-8")
+        lifecycle = LIFECYCLE.read_text(encoding="utf-8")
         publisher = (ROOT / "scripts" / "kms_marketplace_publisher.py").read_text(encoding="utf-8")
         verifier = (ROOT / "scripts" / "verify_merged_stable_promotion.py").read_text(encoding="utf-8")
         dispatcher = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
         for required_rule in (
-            "xsec.plugin-marketplace.official-status",
-            "official-status-proofs/<plugin-id>.json",
-            "paired `xsec-cloud` broker allowlist",
-            "unsigned `waiting_for_smoke`",
+            "on-demand Host Smoke",
+            "unsigned publication",
+            "Marketplace KMS/JWS signing was retired",
+            "Optional Host acceptance is recorded separately from publication",
         ):
             with self.subTest(readme_rule=required_rule):
                 self.assertIn(required_rule, readme)
+        self.assertIn("按需 Desktop Smoke", lifecycle)
+        self.assertIn("Smoke callback 晋级", lifecycle)
+        # Legacy publisher/verifier symbols may still exist for historical records;
+        # current docs must not require them as the live operator contract.
         self.assertIn("OFFICIAL_STATUS_PURPOSE", publisher)
         self.assertIn("OFFICIAL_STATUS_PROOFS_RELATIVE_PATH", publisher)
         self.assertIn("STATUS_PROOF_PATTERN", verifier)
@@ -196,7 +202,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("factory_main_protection_policy.py", protection)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", readme)
         self.assertIn("factory-final-merge-gate", readme)
-        self.assertIn("验证 release diff、全部 KMS sidecar、注册来源当前 ref 与 source gate", factory_document)
+        self.assertIn("验证 release diff、注册来源当前 ref 与 source gate", factory_document)
         self.assertIn("绝不写 success", factory_document)
         self.assertIn("xsec-marketplace-final-exact-head", factory_document)
         self.assertIn("remains pending through final revalidation and merge", finalizer_ruleset_document)
@@ -300,9 +306,11 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertNotIn("@coderabbitai review", workflow)
         self.assertNotIn("review_body=", workflow)
         self.assertNotIn("\n\nThis PR was generated", workflow)
-        self.assertIn("Retained KMS sidecar repair", readme)
+        # KMS repair is retired as an operator contract; the workflow remains a
+        # legacy in-tree path that still must never auto-merge.
         self.assertIn("refresh-retained-sidecars.yml", readme)
         self.assertIn("intentionally **never merges**\n", readme)
+        self.assertIn("Marketplace KMS/JWS signing was retired", readme)
 
     def test_adoption_workflows_do_not_request_bot_review(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")
