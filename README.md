@@ -5,6 +5,12 @@ immutable `.xsec-plugin` artifacts. Plugin development lives in independent sour
 repositories; Factory keeps reviewed registration, package snapshots, release indexes
 and source provenance.
 
+## Plugin updates
+
+For registered plugins connected to the source webhook, push the updated plugin source
+and version to its registered branch. Factory automatically pulls the latest source,
+builds the package and updates the Marketplace. Desktop discovers the published update.
+
 ## Current release contract
 
 Each SemVer identifies one immutable release. Desktop selects the highest compatible

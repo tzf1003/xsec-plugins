@@ -27,18 +27,14 @@ Registry 路径生成。完整约束见[注册与源码合约](first-party-plugi
 
 ## 发布步骤
 
-1. 完成源码审查、版本提升及受影响检查，推送精确提交。`beta → main` 可以作为源码
-   分支审查流程；Marketplace 发布单位是不可变 SemVer。
-2. 确认 Registry 的仓库、路径和状态与待发布源码一致。读取远程实际 SHA，保留来源证据。
-3. 使用 Factory `main` 的受保护发布工作流；配置的第一方 source webhook 也可进入
-   受保护 source batch。通用外部插件按 Registry 使用显式发布入口。
-4. Factory 用只读 Source App 取得指定源码，验证来源、manifest、入口和安全归档路径，
-   确定性打包。普通外部源码不会在发布器中执行任意 npm/pnpm、Git hook 或构建脚本；
-   原生 MCP 使用明确允许的构建 recipe 和固定 Desktop revision。
-5. Factory 写入不可变 artifact、release index 与来源证明，经 source gate、审查和
-   exact-head Finalizer 合并。Source App 与 Finalizer App 的权限分别保管。
-6. 回读已合并 Marketplace revision、插件 version、releaseId、下载 URL 和 SHA-256。
-   Desktop 刷新后按 Host/API/OS/架构选择最高兼容版本，安装时确认权限。
+日常更新流程：插件推送 → Factory 自动拉取最新源码 → 构建并发布 → Desktop 获取更新。
+
+1. 首次发布前完成 Registry 注册并接入 source webhook。
+2. 修改插件、提高版本并完成受影响检查，推送到注册的源码分支。
+3. Factory 收到源码推送事件后自动拉取最新源码，构建插件并更新 Marketplace。
+4. 回读发布结果；Desktop 刷新后选择最高兼容版本，安装时确认权限。
+
+尚未接入 webhook 的插件可使用以下手动入口。
 
 当前 `publish.yml` 手动输入如下，以目标 revision 的 workflow 定义为准：
 
