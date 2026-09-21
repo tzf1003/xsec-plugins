@@ -1,8 +1,9 @@
 # 用户 Marketplace Factory 模板
 
 `factory-template/` 是可由 Desktop 创建/初始化的用户 Marketplace Factory
-目录模板。它不取代本仓库的官方 KMS 发布链，也不共享官方签名、默认安装资格或
-Desktop 的官方信任锚。
+目录模板。当前模板仍保留 Beta/Stable 工作流，本文只描述该模板的实际输入与
+兼容行为；官方 Factory 的现行发布以[生命周期](plugin-development-release-lifecycle.md)为准。
+Desktop 当前选择最高兼容 SemVer，模板渠道指针不能用于限制新 Desktop 可见版本。
 
 每个第三方插件源码留在独立 GitHub 仓库中；Factory 的
 `.xsec-factory/registry.json` 是经过审查的仓库 allowlist。发布工作流只读取
@@ -19,7 +20,8 @@ Desktop 的官方信任锚。
 发现逻辑不必把外部 Git 仓库 URL 当作安装来源。实际 `.xsec-plugin` 是 Factory
 GitHub Release 的不可变 asset，release index 绑定其 SHA-256 和 URL。
 
-发布由 Desktop 的显式 Beta/Stable 操作触发，而非插件仓库的任意 push。工作流先
+模板发布通过自身的手动 workflow dispatch 触发；使用前须核对 Desktop 版本与模板
+输入契约。工作流先
 校验 allowlist、分支可达性和精确 SHA，再以只读 GitHub App token checkout，绝不
 运行来源仓库的 npm/pnpm/postinstall、构建脚本、Git hook 或插件代码。详情、登记表
 schema、GitHub App secret 名称和恢复方式见
@@ -40,5 +42,5 @@ Factory 生成的 metadata、artifact、release index 与 Beta 发布证据可�
 `plugin.json.version` 不得对应不同 package bytes。Stable 推广只移动现有
 `channels.stable.releaseId`，不会重传或覆盖 artifact；但在提交该 pointer 前会
 下载选中的 Beta GitHub Release asset 并校验其 SHA-256 仍与 release record 一致。
-Desktop 对该类市场保持“未信任/需确认”语义，不能因 registry 中的 `policy` 变成
-官方默认安装插件。
+Desktop 安装官方与外部来源的插件均需确认权限；模板 registry 中的 `policy` 不授予
+官方身份或免确认能力。

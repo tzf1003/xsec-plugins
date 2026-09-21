@@ -26,56 +26,35 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             README.read_text(encoding="utf-8"),
         )
 
-    def test_lifecycle_contract_keeps_local_and_cloud_identities_distinct(self) -> None:
+    def test_lifecycle_contract_keeps_releases_immutable(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
-        for required_rule in (
-            "`dev_revision`",
-            "`releaseId`",
-            "一个 `plugin.json.version`（SemVer）只能对应一个不可变 release",
-            "必须先提高 `plugin.json.version`",
-            "上传到 Marketplace 或任何云端 preview",
-            "规范 JSON 重新计算 `releaseId`",
+        for rule in (
+            "同一 SemVer 不能对应不同 package bytes",
+            "`releaseId` 绑定 version、engine 条件与各目标",
+            "内容变化须提高版本",
+            "保留已发布快照、release history",
         ):
-            with self.subTest(required_rule=required_rule):
-                self.assertIn(required_rule, document)
+            with self.subTest(rule=rule):
+                self.assertIn(rule, document)
 
-    def test_lifecycle_contract_explains_the_publication_queue(self) -> None:
+    def test_lifecycle_documents_automatic_source_updates(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
         readme = README.read_text(encoding="utf-8")
-        for required_rule in (
-            "发布队列",
-            "取得队列槽位后",
-            "`source_sha`",
-            "过期 release index",
+        for rule in (
+            "Registry 注册并接入 source webhook",
+            "推送到注册的源码分支",
+            "自动拉取最新源码，构建插件并更新 Marketplace",
+            "尚未接入 webhook 的插件",
         ):
-            with self.subTest(required_rule=required_rule):
-                self.assertIn(required_rule, document)
-        self.assertIn("Publication queue and Agent evidence", readme)
-        self.assertIn("event SHA", readme)
+            with self.subTest(rule=rule):
+                self.assertIn(rule, document)
+        self.assertIn("Factory automatically pulls the latest source", readme)
 
-    def test_external_source_transport_boundary_is_documented(self) -> None:
+    def test_current_signing_contract_is_documented(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
         readme = README.read_text(encoding="utf-8")
-        self.assertIn("Git transport", document)
-        self.assertIn("verified ref", document)
-        self.assertIn("https://github.com", readme)
-        self.assertIn("insteadOf", readme)
-        self.assertIn("local verified ref", readme)
-
-    def test_disabled_external_history_requires_cryptographic_sidecar_verification(self) -> None:
-        document = LIFECYCLE.read_text(encoding="utf-8")
-        readme = README.read_text(encoding="utf-8")
-        self.assertIn("pinned Vercel KMS issuer JWKS", readme)
-        self.assertIn("cryptographically verifies", readme)
-        self.assertIn("Ed25519", document)
-        self.assertIn("密码学验证 sidecar", document)
-
-    def test_published_external_registry_removal_is_blocked_against_the_trusted_baseline(self) -> None:
-        document = LIFECYCLE.read_text(encoding="utf-8")
-        readme = README.read_text(encoding="utf-8")
-        self.assertIn("trusted pre-change\nFactory revision", readme)
-        self.assertIn("同一 PR 同时删除 registry、快照和证据", document)
-        self.assertIn("设为 `disabled`", document)
+        self.assertIn("Marketplace KMS/JWS 发布链已于 2026-09-20 退役", document)
+        self.assertIn("Marketplace KMS/JWS signing was retired on 2026-09-20", readme)
 
     def test_duplicate_beta_delivery_never_dispatches_before_the_reviewed_merge(self) -> None:
         workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
@@ -86,16 +65,17 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("Dispatch the validated Beta or Stable revision to Desktop smoke", dispatcher)
         self.assertIn("All registered Stable completions are bound to their KMS-authenticated Beta Desktop smoke callbacks", dispatcher)
 
-    def test_status_smoke_gate_is_kms_bound_and_cloud_deployment_is_explicit(self) -> None:
+    def test_current_publication_policy_and_legacy_status_verifier_are_documented(self) -> None:
         readme = README.read_text(encoding="utf-8")
         publisher = (ROOT / "scripts" / "kms_marketplace_publisher.py").read_text(encoding="utf-8")
         verifier = (ROOT / "scripts" / "verify_merged_stable_promotion.py").read_text(encoding="utf-8")
         dispatcher = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
         for required_rule in (
-            "xsec.plugin-marketplace.official-status",
-            "official-status-proofs/<plugin-id>.json",
-            "paired `xsec-cloud` broker allowlist",
-            "unsigned `waiting_for_smoke`",
+            "Each SemVer identifies one immutable release",
+            "Official and external\nplugins use the same permission-confirmation model",
+            "Plugins must support Windows, macOS and Linux",
+            "updates and publication do not require cross-platform Desktop Host\nSmoke by default",
+            "Desktop installer/updater and Managed Skill signing",
         ):
             with self.subTest(readme_rule=required_rule):
                 self.assertIn(required_rule, readme)
@@ -194,11 +174,11 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("length == 0", protection)
         self.assertIn("branches/main/protection", protection)
         self.assertIn("factory_main_protection_policy.py", protection)
-        self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", readme)
-        self.assertIn("factory-final-merge-gate", readme)
-        self.assertIn("验证 release diff、全部 KMS sidecar、注册来源当前 ref 与 source gate", factory_document)
+        self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
+        self.assertIn("factory-final-merge-gate", finalizer_ruleset_document)
+        self.assertIn("验证 release diff、注册来源当前 ref 与 source gate", factory_document)
         self.assertIn("绝不写 success", factory_document)
-        self.assertIn("xsec-marketplace-final-exact-head", factory_document)
+        self.assertIn("xsec-marketplace-final-exact-head", finalizer_ruleset_document)
         self.assertIn("remains pending through final revalidation and merge", finalizer_ruleset_document)
         self.assertIn("never\nwrites a success status", finalizer_ruleset_document)
         self.assertNotIn("short-lived exact-head approval", finalizer_ruleset_document)
@@ -300,9 +280,6 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertNotIn("@coderabbitai review", workflow)
         self.assertNotIn("review_body=", workflow)
         self.assertNotIn("\n\nThis PR was generated", workflow)
-        self.assertIn("Retained KMS sidecar repair", readme)
-        self.assertIn("refresh-retained-sidecars.yml", readme)
-        self.assertIn("intentionally **never merges**\n", readme)
 
     def test_adoption_workflows_do_not_request_bot_review(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")

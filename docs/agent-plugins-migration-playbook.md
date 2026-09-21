@@ -32,7 +32,7 @@ agentTools、存储和真实测试。
    permission、可选 `parent`/`sub` 角色和 frontend binding，不复制 Tool schema。
 4. 按需要定义旧 Tool、旧存储和历史会话的有期限 projection。
 5. 增加真实边界验收：SQLite、子进程、loopback MCP、OMP ACP 和 Tauri。
-6. 更新源码 README、Factory 发布输入和平台 artifact 验收；再进入 Beta。
+6. 更新源码 README、Factory 发布输入和平台 artifact 验收；再发布不可变版本。
 
 ## 必须验证的行为
 
@@ -52,7 +52,7 @@ agentTools、存储和真实测试。
 - 候选预检：真实 `initialize` 与 `tools/list` 只在一次性受限 probe 中运行。验收必须证明专用
   非特权身份、只读 artifact 挂载、白名单内的私有可丢弃 `PLUGIN_DATA`、无生产权限的上下文
   与凭据、无继承环境/FD/IPC，以及默认拒绝网络/子进程能力（仅契约明确且已审批的窄例外）。
-  四平台都要实测壁钟时间、CPU、内存、进程数、输出/日志和磁盘配额，以及 watchdog 超限终止完整进程树。
+  原生迁移专项验收按选定 OS/架构实测壁钟时间、CPU、内存、进程数、输出/日志和磁盘配额，以及 watchdog 超限终止完整进程树。
 - 数据：Host/Sidecar 操作幂等、在途写入栅栏、真实数据库候选迁移、双库无冲突合并、冲突
   停止切换、revision 核对、失败和重启恢复；验证共用线性化准入门的延迟写入无法
   越过已排空栅栏，并验证 `prepared` 崩溃回到上一个 generation、`committed` 崩溃幂等完成切换，
@@ -73,7 +73,8 @@ agentTools、存储和真实测试。
   超限 Schema 或动态值的 `tools/list` 验证创建会话显式失败，且快照只保留已审批契约。
   执行 runtime 必须先在无执行凭据、无生产 context 和禁止外联的 contract-discovery 阶段完成
   真实 `initialize`/`tools/list` 比对，通过后才允许 `tools/call` 从受限 broker 获得凭据。
-- 交付：对应平台的不可变 archive、签名、Factory Beta smoke 和 Stable 指针提升。
+- 交付：对应 OS/架构的不可变 archive、SHA-256、来源证明和 Marketplace revision。
+  日常更新默认不运行跨平台 Host Smoke；迁移按影响选择专项验收，记录实际目标。
 
 交付报告必须列出最终矩阵、portable/embedded 数据流、manifest/MCP/Skill/Host binding、
-迁移与兼容窗口、已执行的真实测试，以及尚未满足的外部平台门禁。
+迁移与兼容窗口、已执行的真实测试，以及尚未执行的专项验收目标。

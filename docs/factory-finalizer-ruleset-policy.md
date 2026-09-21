@@ -27,7 +27,7 @@ The optional policy workflow configures `production` for protected branches and
 forbids administrator bypass before it writes the repository Ruleset. The
 release and final-merge paths do not query this branch policy: they require the
 approved `production` Environment, exact Factory `main` revision, source
-proofs, immutable artifacts, and KMS sidecars instead. A missing or different
+proofs and immutable artifact digests instead. A missing or different
 policy stops only this optional administration workflow.
 
 The enforcing workflow first creates or verifies this Ruleset.  Only after the

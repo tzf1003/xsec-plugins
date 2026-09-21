@@ -44,7 +44,7 @@ contract-discovery 阶段完成真实 `initialize`/`tools/list` 并与该摘要�
 值直接使会话创建失败。恢复时必须先核对快照归属、精确 artifact 和数据 generation/schema
 兼容身份；当前数据库没有显式兼容声明时拒绝恢复，不能让旧 sidecar 打开较新的不兼容数据。
 通过数据兼容检查后，再按当前项目/会话成员关系、Host
-授权策略、插件启停状态、签名信任、quarantine 和撤销记录重新鉴权；当前权限不能完整授权
+授权策略、插件启停状态、当前来源信任、quarantine 和撤销记录重新鉴权；当前权限不能完整授权
 冻结投影时必须拒绝恢复，不得按旧 allowlist 签发凭据。Bearer token 与 context
 handle 不进入快照。历史恢复验收必须覆盖成员权限降低、插件停用、信任撤销、quarantine
 以及 artifact、数据 generation 或 schema 归属不匹配。
@@ -65,7 +65,7 @@ handle 不进入快照。历史恢复验收必须覆盖成员权限降低、插�
   的 MCP Tool binding。
 
 组件启停是 Desktop 本地 overlay，键为 plugin/component kind/component id。它不能修改
-签名 artifact；插件总开关只遮罩组件选择，并在重新启用时保留选择。
+不可变 artifact；插件总开关只遮罩组件选择，并在重新启用时保留选择。
 
 ## Factory artifact 要求
 
@@ -105,22 +105,21 @@ python3 scripts/build_market.py --clean --output-root "$FACTORY_OUTPUT" \
 `DESKTOP_MAIN_SHA` 是受保护 Desktop `main` 的当前 40 位提交 SHA，而不是 Factory
 checkout、分支名或可变 tag。受保护 workflow 使用专用只读 GitHub App 取得该精确
 revision，复核 checkout 的 `HEAD` 与 Desktop `main` 一致后才在各目标 runner 编译。该
-App 只读 Desktop 内容，不能发布、签名或修改任一仓库。
+App 只读 Desktop 内容，不能发布或修改任一仓库。
 
 runner 的发布证明必须把 Desktop source revision、每个 Rust target、每个输入二进制的
 SHA-256、以及每个生成 artifact 的 SHA-256 关联到同一次构建。`build_market.py` 会拒绝
 缺失、重复、空文件、符号链接、超出大小上限或不在静态 allowlist 中的输入；它不会代替
-runner 编译、签名、发布或推广 release。
+runner 编译或发布 release。
 
-每个候选 artifact 必须通过以下检查后，才可进入 Beta：
+每个候选 artifact 必须通过以下检查后，才可发布：
 
 1. archive 包含 portable core、可选 frontend 和对应的普通 sidecar 文件；无 symlink、
    路径逃逸或平台不兼容路径。
 2. `mcp.json` 的 stdio command 精确指向 archive 内的 sidecar；`cwd` 只能使用
    `PLUGIN_ROOT` 或 `PLUGIN_DATA`。
 3. `plugin.json`、MCP 文档、Skills、schema v2 binding 和 platform file digest 均有效。
-4. release record 为每个平台保存独立 SHA-256；Stable 只移动已经验证的 Beta
-   `releaseId`，不重建或替换 artifact。
+4. release record 为每个 OS/架构保存独立 SHA-256；同一 SemVer 的 release 与 artifact 保持不可变。
 
 安装只执行静态验证。启用和更新必须针对候选 artifact 完成真实 `initialize`、
 `tools/list`、binding 与名称冲突预检；数据升级使用真实数据库副本。候选预检运行在独立的
@@ -131,7 +130,7 @@ runner 编译、签名、发布或推广 release。
 sandbox 机制强制壁钟时间、CPU、内存、进程数、输出/日志和可丢弃磁盘配额；超限时 watchdog
 必须终止完整进程树并报告明确错误。失败或终止的 probe 必须销毁其凭据与数据，不能修改
 活动 artifact、生产 `PLUGIN_DATA`、激活指针或 capability revision。上述隔离策略本身是
-Beta/Stable 验收项。
+运行时隔离变更的专项验收项。
 
 overlay revision 只用于组件编辑并发控制，capability revision 标识一次发布的运行时投影。
 最终 Tool 合集的 wire name 必须分别使用受支持 OMP 16.4.8 和 18.0.9 导出的实际命名函数
@@ -143,24 +142,20 @@ overlay revision 只用于组件编辑并发控制，capability revision 标识�
 
 ## 发布与运行时验收
 
-Beta 前的本地/CI 门禁至少包括：真实 archive 验证、独立 OMP 18.0.9 `--plugin-dir`、
-嵌入式 OMP 16.4.8 与 18.0.9 ACP 到 Fabric、真实 stdio/loopback MCP 的
-`initialize`、`tools/list` 和 `tools/call`。native sidecar 的验收还必须在对应平台实际运行。
+日常开发、更新和发布默认不运行跨平台 Desktop Host Smoke。平台 artifact 的完整性
+校验照常执行；Windows、macOS、Linux 三平台兼容是持续要求，macOS 覆盖两种架构。
+原生迁移或运行时契约变更按影响选择真实 stdio/loopback MCP、OMP ACP 到 Fabric、
+安装、数据迁移与 session lease 检查，并明确记录实际使用的版本、artifact 与目标。
 
-Desktop 的只读 `_xsec/session/capabilities` 回读必须能逐项核对最终启用 Tool 的来源、
-schema 与 annotations。契约比较键至少包含 artifact SHA、capability revision、角色/投影
-和启用来源集；滚动更新或 parent/sub-Agent 导致的不同键是可并存变体，只有同一键内返回
-不同 Tool 契约才是冲突。回读只使用 capability registry 中的已审批规范契约，不回显未持久的
-运行时 `tools/list` 值。必需会话未连接、失败或同键冲突时，当前统计为
-`unknown/incomplete`；历史数量不得进入当前合计。必需会话出现上述任一失败条件时，Beta
-与 Stable 门禁必须失败，不得被成功会话汇总掩盖。
+Desktop 的只读 `_xsec/session/capabilities` 回读逐项核对最终启用 Tool 的来源、schema
+与 annotations。未连接、失败或会话契约冲突时统计为 `unknown/incomplete`；必需验收
+会话出现这些情况必须报告失败，历史数量不能混入当前合计。
 
-Desktop Beta smoke 必须证明安装的 Factory artifact，而不是源码目录或临时 binary。它
-至少核验：平台/架构选择、签名和 SHA-256、sidecar 可执行路径、`PLUGIN_DATA` 跨更新
-保留，以及会话投影的任务隔离。
+安排 Host Smoke 时，使用实际 Factory artifact，核验平台选择、SHA-256、sidecar 路径、
+`PLUGIN_DATA` 跨更新保留与任务隔离。sandbox frontend 的通用 Smoke 不覆盖 native MCP。
 
-Factory 对每次 Beta 和 Stable 都保留 immutable source provenance、release index、KMS
-sidecar 和 smoke 结果。发布、签名、推广和回滚仍只可由既有受保护工作流执行。
+Factory 保留 immutable source provenance 和 release index。当前发布、修复与下架
+统一见[发布生命周期](plugin-development-release-lifecycle.md)，专项验收结果另行记录。
 
 ## 所有权边界
 

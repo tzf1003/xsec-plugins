@@ -5,6 +5,11 @@ It is deliberately separate from the official `xsec-plugins` marketplace: it
 does **not** contain an XSEC signing key, cannot become an official trusted
 source, and Desktop treats it as a confirmation-driven custom marketplace.
 
+This template retains its Beta/Stable workflow inputs. Current Desktop selects the
+highest compatible SemVer; a template channel pointer does not hide a version from
+that selector. Check the client/template contract before dispatching these workflows.
+The official Factory lifecycle is documented separately in the parent repository.
+
 ## What lives where
 
 - Each plugin stays in its own Git repository. Its `beta` branch is the Beta
@@ -113,7 +118,7 @@ SHA, and requested channel.
 1. Develop locally in Desktop developer mode. Local `dev_revision` snapshots
    are private and never enter this Factory.
 2. Commit and push an exact commit to the plugin repository's `beta` branch.
-   Desktop dispatches **Publish Marketplace Factory beta** with `plugin_id`
+   Manually dispatch **Publish Marketplace Factory beta** with `plugin_id`
    and that 40-character SHA.
 3. The workflow reads the registry before requesting a short-lived GitHub App
    token, checks the SHA is reachable from `beta`, checks out that exact
@@ -121,7 +126,7 @@ SHA, and requested channel.
    scripts, hooks, or plugin code. It uploads an immutable GitHub Release
    asset, appends/selects the Beta release, and commits only generated Factory
    metadata. The temporary source-reader token is removed before packaging.
-4. Install/test the Beta from Desktop. Once the same source is merged or
+4. Install/test the exact immutable release in a compatible Desktop. Once the same source is merged or
    fast-forwarded to the plugin repository's `main`, dispatch
    **Promote Marketplace Factory beta to stable** with its `plugin_id`, exact
    `main` SHA, and the verified `beta_release_id`.
@@ -191,5 +196,6 @@ alias. These controls prevent Git transport redirection; they do not execute
 or otherwise trust the checked-out plugin code.
 
 Desktop still verifies the package SHA-256 and asks the user to trust/install
-custom marketplace content. An unsigned Factory must never be presented as the
-official KMS-signed XSEC marketplace or as a default-install source.
+custom marketplace content. Factory registration does not grant official identity, default-install eligibility
+or runtime permissions. Official and external plugin installation both require
+permission confirmation in current Desktop.
