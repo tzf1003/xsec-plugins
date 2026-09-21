@@ -1,84 +1,17 @@
-# Desktop remote marketplace smoke-test contract (v2)
+# Desktop 按需 Marketplace 验收
 
-This is the repository-side hand-off for the Desktop release workflow. After a
-successful controlled publication, this repository invokes the Desktop workflow
-with a GitHub `repository_dispatch` event. The event name and payload below are
-the exact receiver contract.
+日常插件开发、更新和发布默认不触发或等待跨平台 Desktop Host Smoke。插件持续兼容
+Windows、macOS、Linux；完整目标包括 Windows x64、Linux x64、macOS arm64 与
+macOS x86_64，共三平台、四个 OS/架构组合。
 
-After a signed marketplace commit is merged through the Factory final gate, the
-post-merge Factory dispatcher triggers the Desktop workflow
-with a GitHub `repository_dispatch` event named `xsec_official_marketplace_published`.
-The payload is:
+需要验证 sandbox frontend 包安装生命周期时，在 Desktop `main` 手动运行
+`marketplace-plugin-smoke.yml`，提供已发布的 `marketplace_revision` 和 `plugin_id`。
+完整输入、覆盖范围与报告要求以
+[Desktop Smoke 契约](https://github.com/tzf1003/xSecDesktop/blob/main/docs/plugins/official-marketplace-smoke.md)
+为准。它校验下载、digest、安装、frontend 入口及启停持久化，不启动 WebView，也不覆盖 native MCP。
 
-```json
-{
-  "source_repository": "tzf1003/xsec-plugins",
-  "source_ref": "refs/heads/main",
-  "source_sha": "<40-character Factory-main source SHA>",
-  "marketplace_revision": "<40-character immutable generated-commit SHA>",
-  "channel": "beta"
-}
-```
+Factory 交付以不可变 release、artifact digest、来源证明和已合并 revision 为依据。
+Smoke run 和具体 OS/架构结果单独记录；源码 CI 或未启动的 runner 不能记为 Host 验收成功。
 
-`source_repository` and `source_ref` identify the compiled official publisher.
-`source_sha` is the `main` revision that the publishing job checks
-out after it has acquired the shared publication slot, then builds and
-KMS-signs the documents from. It can therefore be newer than the GitHub event
-that originally queued the job. `marketplace_revision` is the immutable
-merge commit that contains those sidecars. Both must be canonical lowercase
-40-character Git commit SHAs, must be reachable from `xsec-plugins/main`, and
-`source_sha` must be an ancestor of `marketplace_revision`. A receiver must
-reject any different repository/ref, malformed revision, or ancestry failure.
-It constructs the raw GitHub content URL itself; a dispatch payload never
-supplies a URL, a public key, or a plugin list.
-
-`channel` is exactly `beta` or `stable`. Before merge, the Factory
-final gate re-reads the exact PR head/base and registered source heads with the
-separate read-only Source App, then requires the current source gate. The dispatcher
-derives the channel from the validated release-index transition, authenticates all KMS
-sidecars, and revalidates every registered external source head again after
-merge with another exact-repository read-only Source App token. The Finalizer
-App is not used for either cross-repository read. A normal Factory-main publication
-appends immutable release records as needed and dispatches `beta`; the separate
-manual stable-promotion workflow changes only a v2 release index's
-`channels.stable` pointer and dispatches `stable`. Desktop must select the
-matching channel pointer after verifying the release-index sidecar. Its normal
-user update policy remains stable; beta installation/update requires explicit
-user opt-in. For a stable promotion or rollback, Desktop must download the
-already-published artifact whose SHA-256 is in the selected immutable record;
-it must never expect a newly rebuilt package.
-
-The official external-source Factory uses the same dispatch contract. Its
-developer-facing `publish.yml` request contains an external repository SHA as
-auditable Factory provenance, but the **dispatch** `source_sha` above remains
-the `xsec-plugins/main` revision that KMS signed. Desktop must not
-interpret the dispatch as permission to fetch an external repository, accept an
-external URL, or relax its compiled official origin/ref checks. The merged
-Factory revision contains the validated snapshot, release index, and KMS
-sidecars that Desktop verifies normally.
-
-The dispatched Marketplace contract never represents a local Desktop
-`dev_revision`: local same-version hot reload is private and is not uploaded or
-published. For cloud records, a plugin `plugin.json.version` identifies exactly
-one immutable release/artifact set; different content requires a version bump
-and a canonically recomputed `releaseId`. The developer and Agent procedure is
-documented in the [plugin development and release lifecycle](plugin-development-release-lifecycle.md).
-
-A newly added plugin is Beta-only: its first automatic publication leaves
-`channels.stable` as `null` and never dispatches `stable`. Desktop
-must treat that absent Stable pointer as no Stable release, rather than falling
-back to Beta; only the controlled manual promotion may make it installable from
-the Stable channel.
-
-The Desktop implementation runs this request on Windows, macOS and Linux using
-a fresh temporary profile. Each platform must: refresh the remote index; verify
-the index and release signatures; resolve the dispatched channel; download,
-hash, inspect and install all eleven default plugins; verify that they can be
-disabled and enabled; reload the profile; and delete the temporary profile. It
-must not use an operator profile, marketplace cache or user plugin directory.
-
-The workflow result should include `marketplace_revision`, platform, installed
-IDs, per-plugin failures and elapsed time. A failure blocks a Desktop release
-but does not change this marketplace's published artifacts. Any dispatcher
-token is stored only as a protected CI secret in the repository that sends the
-dispatch; it is never placed in this payload or a plugin package.
+旧 `repository_dispatch`、`official-marketplace-smoke.yml` 和 Cloud smoke callback
+属于保留的历史渠道协议。接收端存在不代表新发布需要回调晋级；当前验收以实际执行报告为准。

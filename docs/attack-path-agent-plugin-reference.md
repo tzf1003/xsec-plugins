@@ -18,7 +18,7 @@ Desktop-managed PLUGIN_DATA/
 ```
 
 artifact root 一经安装即不可变。`PLUGIN_DATA` 由 Desktop 按安装实例拥有并跨升级保留；
-它不是源码或签名 artifact 的一部分。release source tree 不得提交本机编译出的 sidecar。
+它不是源码或不可变 artifact 的一部分。release source tree 不得提交本机编译出的 sidecar。
 
 ## 能力分类
 
@@ -85,7 +85,7 @@ operation ID 跨任务重放。
 `attack_path_*`。兼容投影只有在至少两个稳定版本已经发布，并且全部引用旧契约的历史
 snapshot 已结束保留后才能退出。
 
-## Factory Beta 检查表
+## 原生迁移专项检查表
 
 - Windows x64、Linux x64、macOS arm64/x64 各自打包并运行 sidecar；release record 不能使用 `any/any`。
 - archive 必须包含 `plugin.json`、`mcp.json`、Skill、frontend 与平台 sidecar。
@@ -94,5 +94,5 @@ snapshot 已结束保留后才能退出。
 - 真实 Tauri 边界验证 Agent 写入后的事件、侧边栏重新读取、升级/回滚/重启和
   `PLUGIN_DATA` 保留。
 
-通过 Beta 后，Stable 只提升同一 immutable release；它不重新编译 sidecar，也不替换
-已有 artifact 字节。
+本表用于原生迁移专项验收；实际目标与结果分别记录。日常更新默认不运行跨平台 Host
+Smoke，按[发布生命周期](plugin-development-release-lifecycle.md)发布不可变版本；内容变化须提升 SemVer。

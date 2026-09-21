@@ -32,7 +32,7 @@ agentTools、存储和真实测试。
    permission、可选 `parent`/`sub` 角色和 frontend binding，不复制 Tool schema。
 4. 按需要定义旧 Tool、旧存储和历史会话的有期限 projection。
 5. 增加真实边界验收：SQLite、子进程、loopback MCP、OMP ACP 和 Tauri。
-6. 更新源码 README、Factory 发布输入和平台 artifact 验收；再进入 Beta。
+6. 更新源码 README、Factory 发布输入和平台 artifact 验收；再发布不可变版本。
 
 ## 必须验证的行为
 
@@ -50,7 +50,8 @@ agentTools、存储和真实测试。
   私有数据库副本、无生产权限的上下文与凭据、受限文件系统/子进程和按声明审批的网络。
 - 数据：Host/Sidecar 操作幂等、在途写入栅栏、真实数据库候选迁移、双库无冲突合并、冲突
   停止切换、revision 核对、失败和重启恢复。
-- 交付：对应平台的不可变 archive、签名、Factory Beta smoke 和 Stable 指针提升。
+- 交付：对应 OS/架构的不可变 archive、SHA-256、来源证明及已合并的 Marketplace revision。
+  日常更新默认不运行跨平台 Host Smoke；迁移按影响选择专项运行时验收并记录实际覆盖。
 
 交付报告必须列出最终矩阵、portable/embedded 数据流、manifest/MCP/Skill/Host binding、
-迁移与兼容窗口、已执行的真实测试，以及尚未满足的外部平台门禁。
+迁移与兼容窗口、已执行的真实测试，以及尚未执行的专项验收目标。
