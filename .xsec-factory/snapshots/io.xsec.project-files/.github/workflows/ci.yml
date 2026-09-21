@@ -1,0 +1,32 @@
+name: Plugin smoke
+
+on:
+  push:
+    branches: [beta, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+          - name: macOS Arm
+            runner: macos-15
+          - name: macOS Intel
+            runner: macos-15-intel
+          - name: Windows
+            runner: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm run check

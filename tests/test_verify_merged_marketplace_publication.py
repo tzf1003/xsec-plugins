@@ -29,6 +29,27 @@ def marketplace_index(plugin_id: str) -> dict[str, object]:
     return {"plugins": [{"source": {"path": f"./{snapshot_path(plugin_id)}"}}]}
 
 
+def root_layout_registry(source_path: str) -> dict[str, object]:
+    return {
+        "schemaVersion": 2,
+        "plugins": [
+            {
+                "pluginId": plugin_id,
+                "trustTier": "first-party",
+                "source": {
+                    "repository": f"tzf1003/{plugin_id.replace('.', '-')}",
+                    "path": source_path.format(plugin_id=plugin_id),
+                    "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
+                },
+                "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+                "category": "Security",
+                "status": "active",
+            }
+            for plugin_id in sorted(verifier.FIRST_PARTY_ROOT_PACKAGE_IDS)
+        ],
+    }
+
+
 def git(root: Path, *arguments: str) -> str:
     completed = subprocess.run(["git", *arguments], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
     return completed.stdout.decode("utf-8").strip()
@@ -968,6 +989,18 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
 
             self.assertEqual(verifier.classify_merged_change(root, before, after), {"kind": "maintenance"})
 
+    def test_classifies_release_sidecar_removal_as_maintenance(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-release-sidecar-removal-") as directory:
+            root = Path(directory)
+            before, _, _ = self.make_repository(root)
+            release_sidecar = root / snapshot_path(PLUGIN_ID) / ".xsec-market/releases.json.sig.jws.json"
+            release_sidecar.write_text("retired signature\n", encoding="utf-8")
+            before = self.commit(root, "retain release signature")
+            release_sidecar.unlink()
+            after = self.commit(root, "remove release signature")
+
+            self.assertEqual(verifier.classify_merged_change(root, before, after), {"kind": "maintenance"})
+
     def test_registered_no_pointer_stable_completion_carries_the_current_main_source(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-merged-registered-completion-") as directory:
             root = Path(directory)
@@ -1106,6 +1139,35 @@ class MergedMarketplacePublicationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(verifier.PromotionVerificationError, "exactly one releases.json KMS sidecar"):
                 verifier.verify_retained_sidecar_refresh_candidate(root, before, after)
+
+    def test_root_package_transition_requires_the_complete_registry_marker_and_gitlink_batch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xsec-root-package-transition-") as directory:
+            root = Path(directory)
+            write_json(root / verifier.REGISTRY_PATH, root_layout_registry("plugins/{plugin_id}"))
+            git(root, "init", "--quiet", "--initial-branch=main")
+            git(root, "config", "user.name", "Verifier Test")
+            git(root, "config", "user.email", "verifier@example.invalid")
+            git(root, "add", "--all")
+            for index, plugin_id in enumerate(sorted(verifier.FIRST_PARTY_ROOT_PACKAGE_IDS), start=1):
+                git(root, "update-index", "--add", "--cacheinfo", f"160000,{index:040x},plugins/{plugin_id}")
+            git(root, "commit", "--quiet", "-m", "legacy source layout")
+            before = git(root, "rev-parse", "HEAD")
+            write_json(root / verifier.REGISTRY_PATH, root_layout_registry("."))
+            write_json(
+                root / verifier.ROOT_PACKAGE_LAYOUT_MARKER,
+                {"schemaVersion": 1, "pluginIds": sorted(verifier.FIRST_PARTY_ROOT_PACKAGE_IDS)},
+            )
+            git(root, "add", "--all")
+            for index, plugin_id in enumerate(sorted(verifier.FIRST_PARTY_ROOT_PACKAGE_IDS), start=101):
+                git(root, "update-index", "--add", "--cacheinfo", f"160000,{index:040x},plugins/{plugin_id}")
+            git(root, "commit", "--quiet", "-m", "migrate source packages to repository roots")
+            after = git(root, "rev-parse", "HEAD")
+
+            result = verifier.verify_first_party_root_layout_transition(root, before, after)
+
+            self.assertEqual(result["kind"], "first-party-root-layout")
+            self.assertEqual(len(result["sources"]), len(verifier.FIRST_PARTY_ROOT_PACKAGE_IDS))
+            self.assertEqual(verifier.classify_merged_change(root, before, after), result)
 
 
 if __name__ == "__main__":

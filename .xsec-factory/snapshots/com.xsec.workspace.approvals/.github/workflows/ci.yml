@@ -1,0 +1,31 @@
+name: Plugin source validation
+
+on:
+  push:
+    branches: [main, beta]
+  pull_request:
+    branches: [main, beta]
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Audit dependencies
+        run: npm audit --audit-level=low
+      - name: Validate the Desktop plugin and marketplace manifests
+        run: npm run validate
+
+  source-preflight:
+    needs: manifest
+    uses: tzf1003/xsec-plugins/.github/workflows/first-party-source-preflight.yml@main
+    with:
+      plugin_id: com.xsec.workspace.approvals

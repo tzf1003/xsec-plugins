@@ -20,14 +20,14 @@ SOURCE_PREFLIGHT = ROOT / ".github" / "workflows" / "first-party-source-prefligh
 
 
 class MarketplaceBatchAutomationTests(unittest.TestCase):
-    def test_default_set_maintenance_is_automatic_and_source_batch_stays_ten_plugins(self) -> None:
+    def test_default_set_maintenance_is_automatic_and_source_batch_stays_eleven_plugins(self) -> None:
         registry = json.loads((ROOT / ".xsec-factory" / "official-registry.json").read_text(encoding="utf-8"))
         marketplace = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
         statuses = {entry["pluginId"]: entry["status"] for entry in registry["plugins"]}
         active = [plugin_id for plugin_id, status in statuses.items() if status == "active"]
         market_ids = {entry["name"] for entry in marketplace["plugins"]}
 
-        self.assertEqual(len(active), 10)
+        self.assertEqual(len(active), 11)
         self.assertEqual(statuses["com.xsec.project-workspace"], "disabled")
         self.assertNotIn("com.xsec.project-workspace", market_ids)
         publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
@@ -50,7 +50,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, workflow)
         for rule in (
-            "length == 10",
+            "length == 11",
             "xsec-marketplace-publish-main",
             "permission-contents: read",
             "resolve-native-sidecar-source",
@@ -70,12 +70,12 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             ".inputs | fromjson | .[]",
             "$native_plugin@$target=$binary",
             "git status --porcelain --untracked-files=all",
-            "':(exclude,glob)**/*.sig.jws.json'",
+            "--allow-unsigned-active-release-sidecars",
             'source_revision="$(git rev-parse HEAD)"',
             '"$(git rev-parse origin/main)"',
             "XSEC_MARKETPLACE_SOURCE_REVISION: ${{ steps.current-main.outputs.source_revision }}",
             'git update-index --add --cacheinfo "160000,${beta_sha},plugins/${plugin_id}"',
-            "python scripts/kms_marketplace_publisher.py --root .",
+            "python scripts/external_source_factory.py validate --allow-unsigned-publication-proofs",
             "git add -A .agents/plugins .xsec-factory plugins",
             'branch="xsec-marketplace/batch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
         ):
@@ -96,6 +96,20 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             workflow,
         )
         self.assertNotIn("outputs.event_plugin_id", workflow)
+
+    def test_single_source_publication_retains_untargeted_native_betas(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+
+        for rule in (
+            'TARGET_PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}',
+            '[ "$EXTERNAL" = "true" ] && [ "$native_plugin" != "$TARGET_PLUGIN_ID" ]',
+            "reconcile-retained-native-beta",
+            "--native-sidecar-source-revision-for",
+            "Untargeted native plugin $native_plugin does not reproduce its retained Beta.",
+            ".inputs | fromjson | .[]",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, workflow)
 
     def test_batch_caller_grants_write_scope_only_to_the_publisher(self) -> None:
         """Keep write authority on the reusable publication job."""
@@ -207,7 +221,11 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
 
     def test_shared_preflight_preserves_each_source_repositories_real_ci_contract(self) -> None:
         workflow = SOURCE_PREFLIGHT.read_text(encoding="utf-8")
-        self.assertIn("Validate the registered source manifest, release identity, and whitespace", workflow)
+        self.assertIn("Validate the root plugin package, release identity, and whitespace", workflow)
+        self.assertIn('manifest="plugin.json"', workflow)
+        self.assertIn('codex_manifest=".codex-plugin/plugin.json"', workflow)
+        self.assertIn("Nested plugin packages are not supported", workflow)
+        self.assertIn('[ -f "$codex_manifest" ]', workflow)
         self.assertIn("git diff --check HEAD^", workflow)
         self.assertNotIn("pnpm install", workflow)
         self.assertNotIn("pnpm test", workflow)

@@ -9,3 +9,9 @@ This package owns the signed plugin manifest, permissions and release lifecycle.
 使用当前帐户的登录 Shell。终端主界面显示 PTY 内容和真实错误。界面与设置区均跟随
 XSEC Desktop 的深色或浅色外观。详见
 [插件设置规范](https://github.com/tzf1003/xsec-plugins/blob/main/docs/plugin-settings.md)。
+
+The root manifest uses Agent Plugins v1 with a `com.xsec.desktop` schema v2
+extension. System Terminal remains a Host package: it declares no `agentTools`,
+`mcp.json`, or portable Skill. Shell selection, PTY lifecycle, working
+directory, process execution, and audit stay behind the Desktop capability and
+session boundary.

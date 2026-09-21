@@ -84,6 +84,7 @@ class FactoryLayoutMigrationTests(unittest.TestCase):
         self.assertIn('python scripts/verify_factory_layout_migration.py --root . --baseline-root "$BASELINE_ROOT"', workflow)
         self.assertIn('cmp -- .xsec-factory/layout-migration.json "$BASELINE_ROOT/.xsec-factory/layout-migration.json"', workflow)
         self.assertIn('python scripts/external_source_factory.py validate --baseline-root "$BASELINE_ROOT"', workflow)
+        self.assertEqual(workflow.count("--allow-unsigned-active-release-sidecars"), 2)
 
     def test_pending_layout_marker_blocks_desktop_smoke_dispatch(self) -> None:
         workflow = (ROOT / ".github/workflows/dispatch-reviewed-marketplace-smoke.yml").read_text(encoding="utf-8")

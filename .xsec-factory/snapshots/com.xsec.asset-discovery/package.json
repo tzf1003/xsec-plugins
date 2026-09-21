@@ -1,0 +1,21 @@
+{
+  "name": "@xsec/plugin-asset-discovery",
+  "version": "2.1.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm run typecheck && pnpm run build && node scripts/check-artifact.mjs"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "esbuild": "0.25.10",
+    "typescript": "5.5.4"
+  }
+}

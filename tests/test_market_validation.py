@@ -44,6 +44,26 @@ def traffic_release_contract() -> tuple[dict[str, object], str]:
     return manifest, source
 
 
+def traffic_payload_release_contract() -> tuple[dict[str, object], str]:
+    """Build the API 1.5 Traffic payload contract from reviewed fixtures."""
+
+    manifest, source = traffic_release_contract()
+    manifest["version"] = "2.1.0"
+    desktop = manifest["extensions"]["com.xsec.desktop"]
+    desktop["engines"]["pluginApi"] = "^1.5.0"
+    desktop["frontendApi"]["methods"]["xsec.traffic.payload.open"] = {
+        "capability": "workspace.session.read",
+        "binding": "session",
+    }
+    source = source.replace(
+        "function getTraffic(host,flowId){return",
+        "function getTraffic(host,flowId){openTrafficPayload(host,flowId);return",
+        1,
+    )
+    source += '\nfunction openTrafficPayload(host){return host.request("xsec.traffic.payload.open",{})}\n'
+    return manifest, source
+
+
 TERMINAL_ACTIVATION_PATTERN = re.compile(
     r"(?m)^[ \t]*export\s+(?:async\s+)?function\s+activate\s*\(\s*host\s*\)\s*\{"
 )
@@ -317,6 +337,28 @@ class MarketplaceValidationTests(unittest.TestCase):
         candidate = source.replace("traffic.frontend.activate", "traffic.frontend.1.3.1", 1)
         validate_market.validate_official_frontend(manifest, candidate, "Traffic 1.3.1")
 
+    def test_traffic_payload_contract_accepts_plugin_api_1_5(self) -> None:
+        """Accept the reviewed payload-open RPC on its required API version."""
+
+        manifest, source = traffic_payload_release_contract()
+        validate_market.validate_official_frontend(manifest, source, "Traffic 2.1.0")
+
+    def test_traffic_payload_contract_rejects_an_older_plugin_api(self) -> None:
+        """Keep payload streaming unavailable to hosts below the stream ABI."""
+
+        manifest, source = traffic_payload_release_contract()
+        manifest["extensions"]["com.xsec.desktop"]["engines"]["pluginApi"] = "^1.4.0"
+        with self.assertRaisesRegex(MarketplaceValidationError, "plugin API 1.5"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 2.1.0")
+
+    def test_traffic_payload_contract_rejects_an_uncalled_helper(self) -> None:
+        """Reject a payload RPC helper that no plugin lifecycle can reach."""
+
+        manifest, source = traffic_payload_release_contract()
+        source = source.replace("openTrafficPayload(host,flowId);", "", 1)
+        with self.assertRaisesRegex(MarketplaceValidationError, "lifecycle-reachable"):
+            validate_market.validate_official_frontend(manifest, source, "Traffic 2.1.0")
+
     def test_traffic_contract_rejects_undeclared_rpc_mutation(self) -> None:
         """Reject a source change that expands the approved Traffic surface."""
 
@@ -407,9 +449,11 @@ class MarketplaceValidationTests(unittest.TestCase):
         """The temporary output retains active entries and their default policy."""
 
         expected_defaults = set(validate_market.active_default_official_plugin_ids(ROOT))
+        registry = json.loads((ROOT / marketplace_contract.REGISTRY_RELATIVE_PATH).read_text())
         expected_entries = {
-            plugin_id
-            for plugin_id, _ in marketplace_contract.active_official_plugin_policies(ROOT)
+            entry["pluginId"] for entry in registry["plugins"]
+            if entry["status"] == "active"
+            and (snapshot_dir(ROOT, entry["pluginId"]) / "plugin.json").is_file()
         }
         with tempfile.TemporaryDirectory(prefix="xsec-market-active-default-set-") as directory:
             output = Path(directory) / "marketplace"
@@ -1466,9 +1510,7 @@ class MarketplaceValidationTests(unittest.TestCase):
             self.assertFalse(promote_release.promote_stable(root, "com.example.test", str(beta_id)))
 
     def test_stable_promotion_workflow_detects_snapshot_metadata_changes(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "promote-stable.yml").read_text(encoding="utf-8")
-
-        self.assertIn("git diff --quiet -- .xsec-factory/snapshots", workflow)
+        self.assertFalse((ROOT / ".github" / "workflows" / "promote-stable.yml").exists())
 
     def test_stable_promotion_rejects_an_unknown_release_id(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-stable-promotion-invalid-") as directory:
@@ -1527,7 +1569,9 @@ class MarketplaceValidationTests(unittest.TestCase):
             desktop = manifest["extensions"]["com.xsec.desktop"]
             methods = desktop["frontendApi"]["methods"]
             expected_plugin_api = (
-                "^1.4.0"
+                validate_market.TRAFFIC_PAYLOAD_PLUGIN_API_RANGE
+                if "xsec.traffic.payload.open" in methods
+                else "^1.4.0"
                 if validate_market.frontend_methods_with_capability(methods, "workspace.composer.write")
                 or validate_market.frontend_methods_require_browser_surface_api(methods)
                 else "^1.3.0"
@@ -2226,8 +2270,19 @@ export function renderPlaceholder() {}
         self.assertIn("--package xsec-attack-path-mcp", sidecar_job)
         self.assertIn("--package xsec-asset-discovery-mcp", sidecar_job)
         self.assertIn("xsec-native-sidecars-${{ matrix.rust_target }}", sidecar_job)
-        self.assertIn("com.xsec.asset-discovery@$target=$asset_discovery_binary", steps)
+        self.assertIn('for native_plugin in com.xsec.attack-path com.xsec.asset-discovery', steps)
+        self.assertIn('$native_plugin@$target=$binary', steps)
+        self.assertIn("--native-sidecar-source-revision-for", steps)
         self.assertIn("--native-sidecar-source-revision", steps)
+        self.assertIn("NATIVE_SIDECARS_SOURCE_SHA: ${{ inputs.native_sidecars_source_sha }}", steps)
+        self.assertIn(
+            'build_args=(--clean --native-sidecar-source-revision "$NATIVE_SIDECARS_SOURCE_SHA")',
+            steps,
+        )
+        self.assertNotIn(
+            'build_args=(--clean --native-sidecar-source-revision "${{ inputs.native_sidecars_source_sha }}")',
+            steps,
+        )
 
     def test_disposable_build_rejects_nested_plugin_link_before_copytree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsec-market-copy-link-") as directory:

@@ -37,7 +37,7 @@ function hasActionNotice(state){return state.noticeOwner?.kind==="reference"||st
 function claimActionNotice(state,kind){const navigationRevision=state.navigationRevision,revision=++state.referenceRevision,token=kind+":"+navigationRevision+":"+revision;state.pendingReferences.add(token);state.noticeOwner={kind,revision};return {kind,revision,token,navigationRevision}}
 function finishActionNotice(state,claim,message,error=false){state.pendingReferences.delete(claim.token);if(message===undefined)return;if(claim.navigationRevision===state.navigationRevision&&claim.revision===state.referenceRevision&&ownsNotice(state,claim.kind,claim.revision))setNotice(state,message,error)}
 function replaceContent(state,node){state.viewRevision+=1;state.nodes.content.replaceChildren(node)}
-function contextInfo(context){const workspace=context?.workspace??{},binding=workspace.binding??{},entityId=context?.tool?.entityId;return{tool:context?.tool?.kind??"project-outcomes",mode:workspace.mode,entityId,assignmentId:binding.assignmentId,canAdd:workspace.canAddComposerReference===true,toolCall:workspace.session?.active_tool_calls?.[entityId]}}
+function contextInfo(context){const workspace=context?.workspace??{},binding=workspace.binding??{},entityId=context?.tool?.entityId;return{tool:context?.tool?.kind??"project-outcomes",mode:workspace.mode,entityId,assignmentId:binding.assignmentId,canAdd:workspace.canAddComposerReference===true}}
 function outcomeSource(context,row){const toolId=SOURCE[row.kind],entityId=row.kind==="task-conclusion"?row.assignment_id:row.entity_id;if(context.mode==="observe"&&toolId==="task-detail")return undefined;return toolId&&entityId?{toolId,entityId}:undefined}
 
 function addReference(state,target,outcomeId){
@@ -133,9 +133,10 @@ function renderTaskDetail(state,task){
   const panel=el("article","detail"),badges=el("div","actions"),section=el("section","details"),dl=el("dl");panel.append(el("h2","","任务 "+text(task.id).slice(TASK_ID_DISPLAY_START,TASK_ID_DISPLAY_LENGTH)));badges.append(el("span","tag",text(task.status)));panel.append(badges);
   for(const[label,value]of[["进度",taskProgress(task.progress)],["摘要",task.summary],["绑定 run",task.run_id]])appendDetailField(dl,label,value);section.append(dl);panel.append(section);replaceContent(state,panel);
 }
-function loadTaskDetail(state){request(state,{method:"xsec.outcomes.task.get",params:{},loading:"正在读取任务详情…",success:(task)=>renderTaskDetail(state,task),failure:(error)=>showFailure(state,"读取任务详情失败："+failure(error))})}
+function renderTaskPayload(state,payload){if(payload.type==="tool-call")return renderTaskCall(state,payload);return renderTaskDetail(state,payload)}
+function loadTaskDetail(state){request(state,{method:"xsec.outcomes.task.get",params:{},loading:"正在读取任务详情…",success:(payload)=>renderTaskPayload(state,payload),failure:(error)=>showFailure(state,"读取任务详情失败："+failure(error))})}
 function refreshView(state){
-  if(isOutcomesTool(state))return showOutcomeList(state);if(state.context.toolCall)return renderTaskCall(state,state.context.toolCall);if(state.context.tool==="task-detail"&&state.context.entityId)return loadTaskDetail(state);if(state.context.entityId)return loadBoundDetail(state);if(state.context.tool==="evidence-detail")return loadEvidenceList(state);replaceContent(state,el("div","empty",state.context.tool==="task-detail"?"选中工具调用或任务事件后，会在此展示输入、输出与执行状态。":"请选择成果后查看详情。"));
+  if(isOutcomesTool(state))return showOutcomeList(state);if(state.context.tool==="task-detail"&&state.context.entityId)return loadTaskDetail(state);if(state.context.entityId)return loadBoundDetail(state);if(state.context.tool==="evidence-detail")return loadEvidenceList(state);replaceContent(state,el("div","empty",state.context.tool==="task-detail"?"选中工具调用或任务事件后，会在此展示输入、输出与执行状态。":"请选择成果后查看详情。"));
 }
 
 function appendCollectionAction(state,actions){const collection=button("icon-btn","@",()=>addReference(state,"collection"));collection.setAttribute("aria-label","添加项目成果集合到对话");actions.append(collection)}

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "io.xsec.project-files",
+  "version": "1.0.0",
+  "description": "Read-only project file browser with responsive preview and conversation references",
+  "author": { "name": "XSEC" },
+  "license": "MIT",
+  "extensions": {
+    "com.xsec.desktop": {
+      "schemaVersion": 2,
+      "displayName": "项目文件",
+      "publisher": "XSEC",
+      "icon": "folder-open",
+      "engines": { "xsec": ">=0.1.0", "pluginApi": "^1.4.0" },
+      "entrypoints": { "frontend": "./com.xsec.desktop/frontend/index.js" },
+      "activationEvents": ["onWorkspaceTool:project-file-browser"],
+      "permissions": {
+        "filesystem.workspace.read": { "reason": "浏览并预览当前项目文件" },
+        "workspace.composer.write": { "reason": "将选中的项目文件引用添加到当前会话" }
+      },
+      "frontendApi": {
+        "version": 2,
+        "module": "single-esm",
+        "methods": {
+          "xsec.files.list": { "capability": "filesystem.workspace.read", "binding": "context" },
+          "xsec.files.read": { "capability": "filesystem.workspace.read", "binding": "context" },
+          "xsec.workspace.composer.path.add": { "capability": "workspace.composer.write", "binding": "context" }
+        }
+      },
+      "contributes": {
+        "workspaceTools": {
+          "project-file-browser": {
+            "title": "项目文件",
+            "icon": "folder-open",
+            "scope": "project",
+            "launchable": true,
+            "policy": "singleton",
+            "surface": "standard",
+            "retain": "active",
+            "preferredSideWidth": 520,
+            "preferredBottomHeight": 380,
+            "surfaces": ["interactive-dock"]
+          }
+        }
+      }
+    }
+  }
+}

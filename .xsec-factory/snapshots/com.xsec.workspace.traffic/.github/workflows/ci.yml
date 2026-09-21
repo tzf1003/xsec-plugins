@@ -1,0 +1,82 @@
+name: Plugin source validation
+
+on:
+  push:
+    branches: [main, beta]
+  pull_request:
+    branches: [main, beta]
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.19.0"
+          cache: pnpm
+      - name: Install exact dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify source and generated frontend
+        run: pnpm verify
+      - name: Require generated frontend to match source
+        run: git diff --exit-code -- com.xsec.desktop/frontend/index.js
+      - name: Require the dual plugin manifests
+        run: |
+          test -f plugin.json
+          test -f .codex-plugin/plugin.json
+
+  source-preflight:
+    needs: manifest
+    name: source-preflight / source-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Validate the root plugin package, release identity, and whitespace
+        env:
+          PLUGIN_ID: com.xsec.workspace.traffic
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$PLUGIN_ID" =~ ^com\.xsec\.[a-z0-9.-]+$ ]] || { echo "plugin_id is not a first-party XSEC identifier." >&2; exit 1; }
+          manifest="plugin.json"
+          [ -f "$manifest" ] || { echo "Root plugin manifest is missing." >&2; exit 1; }
+          [ -f ".codex-plugin/plugin.json" ] || { echo "Root Codex plugin manifest is missing." >&2; exit 1; }
+          [ ! -e "plugins/${PLUGIN_ID}/plugin.json" ] || {
+            echo "Nested plugin packages are not supported; the Git root must be the package root." >&2
+            exit 1
+          }
+          node --input-type=module - "$manifest" "$PLUGIN_ID" <<'NODE'
+          import { readFileSync, realpathSync, statSync } from "node:fs";
+          import { dirname, isAbsolute, relative, resolve } from "node:path";
+          const [manifestPath, expectedId] = process.argv.slice(2);
+          const pluginRoot = realpathSync(resolve(dirname(manifestPath)));
+          const manifestTarget = realpathSync(resolve(manifestPath));
+          if (dirname(manifestTarget) !== pluginRoot || !statSync(manifestTarget).isFile()) process.exit(1);
+          const manifest = JSON.parse(readFileSync(manifestTarget, "utf8"));
+          if (manifest.name !== expectedId || typeof manifest.version !== "string" || !manifest.version) process.exit(1);
+          const desktop = manifest.extensions?.["com.xsec.desktop"];
+          if (!desktop || typeof desktop !== "object" || Array.isArray(desktop)) process.exit(1);
+          if (desktop.schemaVersion !== 2 || desktop.contributes?.agentTools !== undefined) process.exit(1);
+          const engines = desktop.engines;
+          if (!engines || typeof engines !== "object" || Array.isArray(engines)) process.exit(1);
+          if (engines.xsec !== ">=0.1.0" || engines.pluginApi !== "^1.5.0") process.exit(1);
+          const frontend = desktop.entrypoints?.frontend;
+          if (typeof frontend !== "string" || !frontend.startsWith("./")) process.exit(1);
+          const frontendTarget = realpathSync(resolve(pluginRoot, frontend));
+          const relativeTarget = relative(pluginRoot, frontendTarget);
+          if (!relativeTarget || relativeTarget === ".." || relativeTarget.startsWith("../") || isAbsolute(relativeTarget)) process.exit(1);
+          if (!statSync(frontendTarget).isFile()) process.exit(1);
+          NODE
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Event base is not a commit SHA." >&2; exit 1; }
+          [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ] || { echo "Event base commit is unavailable." >&2; exit 1; }
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git diff --check "$BASE_SHA"..HEAD

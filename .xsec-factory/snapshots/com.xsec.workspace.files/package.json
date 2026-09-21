@@ -1,0 +1,13 @@
+{
+  "name": "@xsec/plugin-files-source",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "pnpm run build && node scripts/verify-manifest.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}

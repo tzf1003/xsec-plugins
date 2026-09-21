@@ -46,6 +46,81 @@
         "url": "artifacts/com.xsec.workspace.conversation-tree-1.3.2-sha256-db08ffe116ed6144-any-any.xsec-plugin"
       },
       "publisher": "github-actions[bot]"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-90c4495f2f133cc6407fcc5140bb39f393fd19c79aefdd32e42deda8b34111b6",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-conversation-tree",
+        "path": "plugins/com.xsec.workspace.conversation-tree",
+        "ref": "refs/heads/beta",
+        "sha": "32054920d12bfb24ed44fae7ea1c397093db4403"
+      },
+      "artifact": {
+        "sha256": "8b5531740be9fc4c7b80b421f848da01e53cb4542b38c979feef203ac09d1611",
+        "url": "artifacts/com.xsec.workspace.conversation-tree-1.3.3-sha256-8b5531740be9fc4c-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-9d91155891862c412e0e45fe5ae1e45649814f33529e1fff9536a3ddeadd3577",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-conversation-tree",
+        "path": ".",
+        "ref": "refs/heads/beta",
+        "sha": "d77a0fded72cb8d9aa1f620020fd414b5fdbbe12"
+      },
+      "artifact": {
+        "sha256": "271e251df05d72bec21f51135b41ab40962d94967db1ccce9ef53e8d445f6677",
+        "url": "artifacts/com.xsec.workspace.conversation-tree-1.3.4-sha256-271e251df05d72be-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
+    },
+    {
+      "channel": "stable",
+      "releaseId": "sha256-9d91155891862c412e0e45fe5ae1e45649814f33529e1fff9536a3ddeadd3577",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-conversation-tree",
+        "path": ".",
+        "ref": "refs/heads/main",
+        "sha": "c4a6f2794c1eb88712ac93b4efbbc0dfff523307"
+      },
+      "artifact": {
+        "sha256": "271e251df05d72bec21f51135b41ab40962d94967db1ccce9ef53e8d445f6677",
+        "url": "artifacts/com.xsec.workspace.conversation-tree-1.3.4-sha256-271e251df05d72be-any-any.xsec-plugin"
+      },
+      "publisher": "github-actions[bot]"
+    },
+    {
+      "channel": "beta",
+      "releaseId": "sha256-2133daf407ea54ed08145ad922e067eb1f7f0654a8e98b6050bf85c418844945",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-conversation-tree",
+        "path": ".",
+        "ref": "refs/heads/beta",
+        "sha": "bd273a2b7b3cb2295cf01173386d55aeca816418"
+      },
+      "artifact": {
+        "sha256": "12e638d6d9fd44ae6d6c4e96a3f4091fc181cbbde15bf9128105e44ede6ecd49",
+        "url": "artifacts/com.xsec.workspace.conversation-tree-2.0.0-sha256-12e638d6d9fd44ae-any-any.xsec-plugin"
+      },
+      "publisher": "xsec-marketplace-bot"
+    },
+    {
+      "channel": "stable",
+      "releaseId": "sha256-2133daf407ea54ed08145ad922e067eb1f7f0654a8e98b6050bf85c418844945",
+      "source": {
+        "repository": "tzf1003/xsec-plugin-conversation-tree",
+        "path": ".",
+        "ref": "refs/heads/main",
+        "sha": "2a7b220c6fac3d82a4fc62b6403be157166884b6"
+      },
+      "artifact": {
+        "sha256": "12e638d6d9fd44ae6d6c4e96a3f4091fc181cbbde15bf9128105e44ede6ecd49",
+        "url": "artifacts/com.xsec.workspace.conversation-tree-2.0.0-sha256-12e638d6d9fd44ae-any-any.xsec-plugin"
+      },
+      "publisher": "github-actions[bot]"
     }
   ],
   "smokeOutcomes": [
@@ -59,6 +134,30 @@
       "smoke": {
         "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/33576901566",
         "marketplaceRevision": "0497149028afb23adaf0be6fbe69810c137f4335"
+      }
+    },
+    {
+      "betaReleaseId": "sha256-9d91155891862c412e0e45fe5ae1e45649814f33529e1fff9536a3ddeadd3577",
+      "stableReleaseId": "sha256-9d91155891862c412e0e45fe5ae1e45649814f33529e1fff9536a3ddeadd3577",
+      "source": {
+        "betaSha": "d77a0fded72cb8d9aa1f620020fd414b5fdbbe12",
+        "stableSha": "c4a6f2794c1eb88712ac93b4efbbc0dfff523307"
+      },
+      "smoke": {
+        "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/34056774237",
+        "marketplaceRevision": "6d69b623dffc79f696f3872d2fbf048a5b9ffcbc"
+      }
+    },
+    {
+      "betaReleaseId": "sha256-2133daf407ea54ed08145ad922e067eb1f7f0654a8e98b6050bf85c418844945",
+      "stableReleaseId": "sha256-2133daf407ea54ed08145ad922e067eb1f7f0654a8e98b6050bf85c418844945",
+      "source": {
+        "betaSha": "bd273a2b7b3cb2295cf01173386d55aeca816418",
+        "stableSha": "2a7b220c6fac3d82a4fc62b6403be157166884b6"
+      },
+      "smoke": {
+        "runUrl": "https://github.com/tzf1003/xSecDesktop/actions/runs/34123210440",
+        "marketplaceRevision": "688a52a25582706bc4c4a90fffe20fccafb2ed16"
       }
     }
   ]

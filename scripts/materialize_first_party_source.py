@@ -1023,7 +1023,7 @@ def pending_registry_entry(factory_root: Path, plugin_id: str) -> dict[str, obje
         "trustTier": "first-party",
         "source": {
             "repository": FIRST_PARTY_APPROVED_SOURCES[plugin_id],
-            "path": f"plugins/{plugin_id}",
+            "path": ".",
             "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
         },
         "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
@@ -1112,7 +1112,7 @@ def staged_entries() -> list[tuple[str, str, PurePosixPath]]:
 def filter_index_paths(plugin_id: str) -> int:
     """Keep the selected package history and rewrite it to the source layout."""
 
-    destination = PurePosixPath("plugins") / plugin_id
+    destination = PurePosixPath(".")
     destinations: set[PurePosixPath] = set()
     entries = staged_entries()
     if entries:
@@ -1229,29 +1229,53 @@ def replace_plugin_tree(repository: Path, plugin_id: str, artifact: Path, record
     version = record.get("version")
     if not isinstance(version, str):
         fail("selected release version is invalid")
-    destination = repository / "plugins" / plugin_id
-    try:
-        destination.resolve(strict=False).relative_to(repository.resolve(strict=True))
-    except (OSError, ValueError) as error:
-        raise MaterializationError("materialized plugin destination escaped source repository") from error
-    if destination.exists() or destination.is_symlink():
-        if destination.is_symlink() or not destination.is_dir():
-            fail("legacy source plugin path is unsafe")
-        shutil.rmtree(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    extract_verified_artifact(
-        artifact,
-        plugin_id,
-        version,
-        destination,
-        excluded_member=source_sidecar_exclusion(plugin_id, record),
-    )
+    destination = repository.resolve(strict=True)
+    for member in destination.iterdir():
+        if member.name == ".git":
+            continue
+        if member.is_symlink():
+            fail("materialized source tree must not contain symbolic links")
+        if member.is_dir():
+            shutil.rmtree(member)
+        else:
+            member.unlink()
+    with tempfile.TemporaryDirectory(prefix=".xsec-materialized-package-", dir=str(destination.parent)) as temporary:
+        extracted = Path(temporary) / "package"
+        extract_verified_artifact(
+            artifact,
+            plugin_id,
+            version,
+            extracted,
+            excluded_member=source_sidecar_exclusion(plugin_id, record),
+        )
+        for member in extracted.iterdir():
+            shutil.move(str(member), destination)
 
 
 def write_standard_layout(repository: Path, plugin_id: str) -> None:
     source_repository = FIRST_PARTY_APPROVED_SOURCES[plugin_id]
     readme = f"""# {plugin_id}\n\nThis is the public source repository for `{plugin_id}`. It was materialized from\nthe immutable signed XSEC Marketplace release during the first-party source\nmigration. Develop on `beta`; merge reviewed, tested changes to `main` for the\nStable source line.\n\nMarketplace artifacts, release indexes, signatures, and Factory adoption proof\nremain in [tzf1003/xsec-plugins](https://github.com/tzf1003/xsec-plugins).\nThis source repository never stores Factory credentials or KMS material.\n\nSource repository: <https://github.com/{source_repository}>\n"""
-    workflow = f"""name: Plugin source validation\n\non:\n  push:\n    branches: [main, beta]\n  pull_request:\n    branches: [main, beta]\n\npermissions:\n  contents: read\n\njobs:\n  manifest:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Require the dual plugin manifests\n        run: |\n          test -f plugins/{plugin_id}/plugin.json\n          test -f plugins/{plugin_id}/.codex-plugin/plugin.json\n"""
+    workflow = """name: Plugin source validation
+
+on:
+  push:
+    branches: [main, beta]
+  pull_request:
+    branches: [main, beta]
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require the dual plugin manifests
+        run: |
+          test -f plugin.json
+          test -f .codex-plugin/plugin.json
+"""
     (repository / "README.md").write_text(readme, encoding="utf-8", newline="\n")
     ci = repository / ".github" / "workflows" / "ci.yml"
     ci.parent.mkdir(parents=True, exist_ok=True)
@@ -1284,13 +1308,17 @@ def expected_materialized_file_hashes(plugin_id: str, artifact: Path, record: di
         fail("selected release version is invalid")
     with tempfile.TemporaryDirectory(prefix="xsec-materialized-tree-") as directory:
         root = Path(directory)
+        extracted = root / "package"
         extract_verified_artifact(
             artifact,
             plugin_id,
             version,
-            root / "plugins" / plugin_id,
+            extracted,
             excluded_member=source_sidecar_exclusion(plugin_id, record),
         )
+        for member in extracted.iterdir():
+            shutil.move(str(member), root)
+        extracted.rmdir()
         write_standard_layout(root, plugin_id)
         return regular_file_hashes(root)
 

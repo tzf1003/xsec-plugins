@@ -30,7 +30,7 @@ def registry_entry(
         "trustTier": "first-party",
         "source": {
             "repository": f"tzf1003/{plugin_id}",
-            "path": f"plugins/{plugin_id}",
+            "path": "plugins/com.xsec.project-workspace" if plugin_id == maintenance.PROJECT_WORKSPACE_PLUGIN_ID else ".",
             "refs": {"beta": "refs/heads/beta", "stable": "refs/heads/main"},
         },
         "policy": {"installation": installation, "authentication": "ON_INSTALL"},

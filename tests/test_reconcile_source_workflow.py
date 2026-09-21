@@ -14,6 +14,9 @@ WORKFLOW = ROOT / ".github" / "workflows" / "reconcile-source.yml"
 
 
 class ReconcileSourceWorkflowTests(unittest.TestCase):
+    def test_smoke_publisher_accepts_github_active_run_states(self) -> None:
+        self.assertFalse((WORKFLOW.parent / "reconcile-smoke.yml").exists())
+
     def test_smoke_candidate_selection_uses_only_changed_statuses(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
 
