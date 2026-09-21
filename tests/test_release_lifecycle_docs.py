@@ -37,6 +37,19 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, document)
 
+    def test_lifecycle_contract_keeps_local_and_cloud_identities_distinct(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        for required_rule in (
+            "`dev_revision`",
+            "`releaseId`",
+            "一个 `plugin.json.version`（SemVer）只能对应一个不可变 release",
+            "必须先提高 `plugin.json.version`",
+            "上传到 Marketplace 或任何云端 preview",
+            "规范 JSON 重新计算 `releaseId`",
+        ):
+            with self.subTest(required_rule=required_rule):
+                self.assertIn(required_rule, document)
+
     def test_lifecycle_documents_automatic_source_updates(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
         readme = README.read_text(encoding="utf-8")
@@ -45,10 +58,57 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "推送到注册的源码分支",
             "自动拉取最新源码，构建插件并更新 Marketplace",
             "尚未接入 webhook 的插件",
+            "source gate",
+            "exact-head Finalizer",
+            "reconcile-source.yml",
+            "Cloud dispatcher",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, document)
         self.assertIn("Factory automatically pulls the latest source", readme)
+        self.assertIn("source gate", readme)
+        self.assertIn("exact-head Finalizer", readme)
+        self.assertIn("reconcile-source.yml", readme)
+        self.assertIn("Cloud-dispatcher gated", readme)
+
+    def test_lifecycle_contract_explains_publication_evidence_and_on_demand_smoke(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        for required_rule in (
+            "交付证据",
+            "`source_sha`",
+            "releaseId",
+            "按需 Desktop Smoke",
+        ):
+            with self.subTest(required_rule=required_rule):
+                self.assertIn(required_rule, document)
+        self.assertIn("Publication evidence and on-demand Host Smoke", readme)
+        self.assertIn("event SHA", readme)
+        self.assertIn("unsigned publication", readme)
+
+    def test_external_source_transport_boundary_is_documented(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("Git transport", document)
+        self.assertIn("verified ref", document)
+        self.assertIn("https://github.com", readme)
+        self.assertIn("insteadOf", readme)
+        self.assertIn("local verified ref", readme)
+
+    def test_disabled_external_history_retains_immutable_publication_evidence(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("Marketplace KMS/JWS signing was retired", readme)
+        self.assertIn("set `disabled` (not deleted)", readme)
+        self.assertIn("设为 `disabled`", document)
+        self.assertIn("provenance", document)
+
+    def test_published_external_registry_removal_is_blocked_against_the_trusted_baseline(self) -> None:
+        document = LIFECYCLE.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("trusted pre-change\nFactory revision", readme)
+        self.assertIn("同一 PR 同时删除 registry、快照和证据", document)
+        self.assertIn("设为 `disabled`", document)
 
     def test_current_signing_contract_is_documented(self) -> None:
         document = LIFECYCLE.read_text(encoding="utf-8")
@@ -67,6 +127,7 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
 
     def test_current_publication_policy_and_legacy_status_verifier_are_documented(self) -> None:
         readme = README.read_text(encoding="utf-8")
+        lifecycle = LIFECYCLE.read_text(encoding="utf-8")
         publisher = (ROOT / "scripts" / "kms_marketplace_publisher.py").read_text(encoding="utf-8")
         verifier = (ROOT / "scripts" / "verify_merged_stable_promotion.py").read_text(encoding="utf-8")
         dispatcher = POST_MERGE_DISPATCHER.read_text(encoding="utf-8")
@@ -76,9 +137,15 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
             "Plugins must support Windows, macOS and Linux",
             "updates and publication do not require cross-platform Desktop Host\nSmoke by default",
             "Desktop installer/updater and Managed Skill signing",
+            "on-demand Host Smoke",
+            "unsigned publication",
+            "Marketplace KMS/JWS signing was retired",
+            "Optional Host acceptance is recorded separately from publication",
         ):
             with self.subTest(readme_rule=required_rule):
                 self.assertIn(required_rule, readme)
+        self.assertIn("按需 Desktop Smoke", lifecycle)
+        self.assertIn("Smoke callback 晋级", lifecycle)
         self.assertIn("OFFICIAL_STATUS_PURPOSE", publisher)
         self.assertIn("OFFICIAL_STATUS_PROOFS_RELATIVE_PATH", publisher)
         self.assertIn("STATUS_PROOF_PATTERN", verifier)
@@ -175,9 +242,12 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertIn("branches/main/protection", protection)
         self.assertIn("factory_main_protection_policy.py", protection)
         self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", protection)
+        self.assertIn("XSEC_MARKETPLACE_ADMIN_TOKEN", readme)
+        self.assertIn("factory-final-merge-gate", readme)
         self.assertIn("factory-final-merge-gate", finalizer_ruleset_document)
         self.assertIn("验证 release diff、注册来源当前 ref 与 source gate", factory_document)
         self.assertIn("绝不写 success", factory_document)
+        self.assertIn("xsec-marketplace-final-exact-head", factory_document)
         self.assertIn("xsec-marketplace-final-exact-head", finalizer_ruleset_document)
         self.assertIn("remains pending through final revalidation and merge", finalizer_ruleset_document)
         self.assertIn("never\nwrites a success status", finalizer_ruleset_document)
@@ -280,6 +350,11 @@ class ReleaseLifecycleDocumentationTests(unittest.TestCase):
         self.assertNotIn("@coderabbitai review", workflow)
         self.assertNotIn("review_body=", workflow)
         self.assertNotIn("\n\nThis PR was generated", workflow)
+        # KMS repair is retired as an operator contract; the workflow remains a
+        # legacy in-tree path that still must never auto-merge.
+        self.assertIn("refresh-retained-sidecars.yml", readme)
+        self.assertIn("intentionally **never merges**\n", readme)
+        self.assertIn("Marketplace KMS/JWS signing was retired", readme)
 
     def test_adoption_workflows_do_not_request_bot_review(self) -> None:
         workflow = ADOPTION_WORKFLOW.read_text(encoding="utf-8")

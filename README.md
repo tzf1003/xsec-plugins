@@ -8,8 +8,10 @@ and source provenance.
 ## Plugin updates
 
 For registered plugins connected to the source webhook, push the updated plugin source
-and version to its registered branch. Factory automatically pulls the latest source,
-builds the package and updates the Marketplace. Desktop discovers the published update.
+and version to its registered branch. Factory automatically pulls the latest source
+through protected Factory workflows, the source gate, and exact-head Finalizer
+(`reconcile-source.yml` remains Cloud-dispatcher gated), builds the package and
+updates the Marketplace. Desktop discovers the published update.
 
 ## Current release contract
 
@@ -30,6 +32,37 @@ OS/architecture combinations: Windows x64, Linux x64, macOS arm64 and macOS x86_
 Routine development, updates and publication do not require cross-platform Desktop Host
 Smoke by default. Run source/package checks and verification appropriate to the change.
 Optional Host acceptance is recorded separately from publication.
+
+## Non-negotiable boundaries
+
+These operator rules remain live after KMS/JWS marketplace signing retirement:
+
+- Local Desktop `dev_revision` is not marketplace identity: it never creates a
+  release, artifact, channel update, or cloud upload.
+- Content changes require a SemVer bump before publication; Factory canonically
+  recomputes `releaseId` from version, engine range, and artifact digests.
+- Published registry rows must be set `disabled` (not deleted). The protected
+  source gate materializes the trusted pre-change
+Factory revision so deleting registry, snapshot, and evidence together cannot
+  erase a published authorization.
+- External source fetch stays sealed HTTPS to `https://github.com` only: reject
+  plain-HTTP origins and local Git URL rewrites (`insteadOf`), and write a
+  local verified ref. This Git transport boundary protects the short-lived
+  reader token; it does not make external source trusted or executable.
+- Finalizer/admin credentials stay separate. Optional protection administration
+  uses `XSEC_MARKETPLACE_ADMIN_TOKEN`; exact-head merge uses the Finalizer App
+  while `factory-final-merge-gate` remains arm-owned and pending. Publisher
+  tokens are never reused for final merge.
+
+## Publication evidence and on-demand Host Smoke
+
+Record workflow `source_sha`, Factory revision, SemVer, `releaseId`, and
+artifact SHA-256 as publication evidence. Do not treat a historical GitHub
+event SHA as a standalone release. Optional Desktop Host Smoke is on-demand and
+recorded separately from unsigned publication; retired KMS status proofs and
+smoke-callback promotion are historical only (`refresh-retained-sidecars.yml`
+remains in-tree for legacy sidecar maintenance and intentionally **never merges**
+generated PRs itself).
 
 ## Documentation
 
