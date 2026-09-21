@@ -52,9 +52,13 @@ Desktop revision，见[运行时合约](agent-plugins-runtime-contract.md)。
 已有 release record 是不可变前缀；同版本不得替换 bytes，已有 artifact 必须仍能校验。
 普通 PR 不能删除历史来源证明，也不能用状态文本替代 artifact 或 source gate 证据。
 
-Finalizer 合并前重新读取候选的来源分支头和 Factory main，验证确切 PR head、审查与
-必需检查。来源前进或验证失败须生成/验证新的候选；具体 Ruleset 与令牌职责见
-[Finalizer policy](factory-finalizer-ruleset-policy.md)。
+Finalizer 合并前重新读取候选的来源分支头和 Factory main，使用精确 head SHA，
+验证 release diff、注册来源当前 ref 与 source gate。Factory candidate 的
+`factory-final-merge-gate` 始终由 arm workflow 保持 pending：final workflow
+绝不写 success。全部检查通过后，临时创建独立 Finalizer App token 做 exact-head
+合并；不复用 Publisher token。`xsec-marketplace-final-exact-head` Ruleset 与令牌
+职责见 [Finalizer policy](factory-finalizer-ruleset-policy.md)。来源前进或验证失败
+须生成/验证新的候选。
 
 历史 adoption assertion 和 materializer 用于解释拆仓时的来源映射。其旧 KMS 签署与
 两阶段 activation 操作已退役；当前注册和发布使用上述流程，历史证据保留在 Git 历史及
