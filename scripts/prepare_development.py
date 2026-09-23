@@ -12,12 +12,19 @@ import stat
 import subprocess
 import tempfile
 
-from native_sidecars import RECIPES, recipe_for_source, require_regular_input, sha256_file
+from native_sidecars import (
+    RECIPES,
+    recipe_for_source,
+    require_regular_input,
+    sha256_file,
+    source_declares_native_sidecar_contract,
+)
 
 
 FACTORY_ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLE_MODE = 0o755
 SUPPORTED_HOST_SUFFIXES = ("-apple-darwin", "-unknown-linux-gnu")
+DESKTOP_SOURCE_REPOSITORY = "tzf1003/xSecDesktop"
 
 
 def run_output(args: list[str], cwd: Path) -> str:
@@ -38,7 +45,11 @@ def source_plan(factory: Path) -> dict[str, Path]:
     for plugin_id, recipe in RECIPES.items():
         source = regular_directory(plugins / plugin_id)
         manifest = json.loads((source / "plugin.json").read_text(encoding="utf-8"))
-        if manifest.get("name") != plugin_id or recipe_for_source(plugin_id, source) != recipe:
+        if manifest.get("name") != plugin_id:
+            raise ValueError(f"unexpected native source contract: {source}")
+        if not source_declares_native_sidecar_contract(source, plugin_id):
+            continue
+        if recipe_for_source(plugin_id, source) != recipe:
             raise ValueError(f"unexpected native source contract: {source}")
         git_root = run_output(["git", "rev-parse", "--show-toplevel"], source)
         if Path(git_root).resolve() != source:
@@ -72,18 +83,31 @@ def desktop_host(desktop: Path) -> str:
     return hosts[0]
 
 
-def build_sidecars(desktop: Path, host: str) -> dict[str, Path]:
-    packages = {plugin_id: f"xsec-{recipe.archive_path.name}" for plugin_id, recipe in RECIPES.items()}
+def build_sidecars(desktop: Path, host: str, destinations: dict[str, Path]) -> dict[str, Path]:
+    packages: dict[Path, dict[str, str]] = {}
+    for plugin_id, destination in destinations.items():
+        recipe = RECIPES[plugin_id]
+        desktop_source = recipe.source_repository == DESKTOP_SOURCE_REPOSITORY
+        source = desktop if desktop_source else destination.parent.parent
+        package = f"xsec-{recipe.archive_path.name}" if desktop_source else recipe.archive_path.name
+        packages.setdefault(source, {})[plugin_id] = package
+    binaries: dict[str, Path] = {}
+    for source, package_ids in packages.items():
+        binaries.update(build_source_sidecars(source, host, package_ids))
+    return binaries
+
+
+def build_source_sidecars(source: Path, host: str, package_ids: dict[str, str]) -> dict[str, Path]:
     command = ["cargo", "build", "--locked", "--target", host, "--message-format=json-render-diagnostics"]
-    for package in packages.values():
+    for package in package_ids.values():
         command.extend(["--package", package])
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as output:
-        subprocess.run(command, cwd=desktop, check=True, stdout=output)
+        subprocess.run(command, cwd=source, check=True, stdout=output)
         output.seek(0)
-        binaries = cargo_executables(output, set(packages.values()))
-    if set(binaries) != set(packages.values()):
+        binaries = cargo_executables(output, set(package_ids.values()))
+    if set(binaries) != set(package_ids.values()):
         raise ValueError("Cargo did not report every requested native executable")
-    return {plugin_id: require_regular_input(binaries[package]) for plugin_id, package in packages.items()}
+    return {plugin_id: require_regular_input(binaries[package]) for plugin_id, package in package_ids.items()}
 
 
 def cargo_executables(lines, packages: set[str]) -> dict[str, Path]:
@@ -140,7 +164,7 @@ def prepare(factory: Path, desktop: Path) -> None:
     destinations = source_plan(factory)
     host = desktop_host(desktop)
     print(f"Building native development entrypoints for {host}", flush=True)
-    binaries = build_sidecars(desktop, host)
+    binaries = build_sidecars(desktop, host, destinations)
     if source_plan(factory) != destinations:
         raise ValueError("native source destinations changed during compilation")
     for plugin_id, destination in destinations.items():

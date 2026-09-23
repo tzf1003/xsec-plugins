@@ -76,6 +76,7 @@ handle 不进入快照。历史恢复验收必须覆盖成员权限降低、插�
 | --- | --- | --- | --- |
 | `com.xsec.attack-path` | `xsec-attack-path-mcp` | `bin/attack-path-mcp` | `aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-unknown-linux-gnu`、`x86_64-pc-windows-msvc` |
 | `com.xsec.asset-discovery` | `xsec-asset-discovery-mcp` | `bin/asset-discovery-mcp` | `aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-unknown-linux-gnu`、`x86_64-pc-windows-msvc` |
+| `com.xsec.system-terminal` | `system-terminal-mcp` | `bin/system-terminal-mcp` | `aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-unknown-linux-gnu`、`x86_64-pc-windows-msvc` |
 
 资产发现的一个 binary 精确承载三个 logical server：`asset-normalize` 无参数运行；
 `asset-hunter` 使用 `--provider hunter` 与声明的 Hunter API 地址；`asset-fofa` 使用
@@ -106,6 +107,11 @@ python3 scripts/build_market.py --clean --output-root "$FACTORY_OUTPUT" \
 checkout、分支名或可变 tag。受保护 workflow 使用专用只读 GitHub App 取得该精确
 revision，复核 checkout 的 `HEAD` 与 Desktop `main` 一致后才在各目标 runner 编译。该
 App 只读 Desktop 内容，不能发布或修改任一仓库。
+
+`com.xsec.system-terminal` 使用单独的固定 recipe：构建来源必须是登记的
+`tzf1003/xsec-plugin-system-terminal` Beta 精确提交，构建包名为 `system-terminal-mcp`；其
+sidecar provenance 记录该插件提交 SHA，Desktop sidecar 则继续记录 `DESKTOP_MAIN_SHA`。
+Factory 先验证来源 ref 与 SHA，再按 recipe 在四个目标 runner 构建，不读取插件提供的构建命令。
 
 runner 的发布证明必须把 Desktop source revision、每个 Rust target、每个输入二进制的
 SHA-256、以及每个生成 artifact 的 SHA-256 关联到同一次构建。`build_market.py` 会拒绝
