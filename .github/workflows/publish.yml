@@ -372,7 +372,7 @@ jobs:
             cargo build --locked --release --package system-terminal-mcp --target $env:RUST_TARGET --manifest-path .xsec-system-terminal-source/Cargo.toml
             $terminalBinary = Join-Path $env:CARGO_TARGET_DIR "$env:RUST_TARGET\release\system-terminal-mcp.exe"
             if (-not (Test-Path -LiteralPath $terminalBinary -PathType Leaf)) { throw 'System Terminal MCP binary is unavailable' }
-            Copy-Item -LiteralPath $terminalBinary -Destination (Join-Path $outputDirectory 'system-terminal-mcp.exe')
+            Copy-Item -LiteralPath $terminalBinary -Destination (Join-Path $outputDirectory 'system-terminal-mcp')
           }
       - name: Upload the reviewed native MCP sidecars
         uses: actions/upload-artifact@v4
@@ -774,7 +774,9 @@ jobs:
             native_plugins+=(com.xsec.system-terminal)
           fi
           for native_plugin in "${native_plugins[@]}"; do
-            if [ "$EXTERNAL" = "true" ] && [ "$native_plugin" != "$TARGET_PLUGIN_ID" ]; then
+            if [ "$native_plugin" != "$TARGET_PLUGIN_ID" ] && {
+              [ "$EXTERNAL" = "true" ] || [ "$native_plugin" = "com.xsec.system-terminal" ];
+            }; then
               retained_source_root="$RUNNER_TEMP/xsec-retained-native-source/$native_plugin"
               retained_root="$RUNNER_TEMP/xsec-retained-native-beta/$native_plugin"
               mkdir -p "$retained_source_root/plugins"

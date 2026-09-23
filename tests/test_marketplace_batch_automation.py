@@ -64,6 +64,7 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
             "repository: tzf1003/xsec-plugin-system-terminal",
             "--package system-terminal-mcp",
             "system-terminal-mcp.exe",
+            "Copy-Item -LiteralPath $terminalBinary -Destination (Join-Path $env:RUNNER_TEMP 'xsec-native-sidecars\\system-terminal-mcp')",
             "system_terminal_source_sha: ${{ steps.terminal-source.outputs.source_sha }}",
             "system_terminal_native: ${{ steps.terminal-source.outputs.native }}",
             "TERMINAL_SOURCE_SHA: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_source_sha }}",
@@ -110,7 +111,8 @@ class MarketplaceBatchAutomationTests(unittest.TestCase):
 
         for rule in (
             'TARGET_PLUGIN_ID: ${{ steps.external-request.outputs.plugin_id }}',
-            '[ "$EXTERNAL" = "true" ] && [ "$native_plugin" != "$TARGET_PLUGIN_ID" ]',
+            '[ "$native_plugin" != "$TARGET_PLUGIN_ID" ] && {',
+            '[ "$EXTERNAL" = "true" ] || [ "$native_plugin" = "com.xsec.system-terminal" ];',
             "reconcile-retained-native-beta",
             "--native-sidecar-source-revision-for",
             "Untargeted native plugin $native_plugin does not reproduce its retained Beta.",

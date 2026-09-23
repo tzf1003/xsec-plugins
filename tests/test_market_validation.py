@@ -2272,9 +2272,15 @@ export function renderPlaceholder() {}
         self.assertIn("repository: tzf1003/xsec-plugin-system-terminal", sidecar_job)
         self.assertIn("--package system-terminal-mcp", sidecar_job)
         self.assertIn("system-terminal-mcp.exe", sidecar_job)
+        self.assertIn(
+            "Copy-Item -LiteralPath $terminalBinary -Destination (Join-Path $outputDirectory 'system-terminal-mcp')",
+            sidecar_job,
+        )
         self.assertIn("xsec-native-sidecars-${{ matrix.rust_target }}", sidecar_job)
         self.assertIn("native_plugins=(com.xsec.attack-path com.xsec.asset-discovery)", steps)
         self.assertIn("native_plugins+=(com.xsec.system-terminal)", steps)
+        self.assertIn('[ "$native_plugin" != "$TARGET_PLUGIN_ID" ] && {', steps)
+        self.assertIn('[ "$native_plugin" = "com.xsec.system-terminal" ];', steps)
         self.assertIn('"com.xsec.system-terminal=$SOURCE_SHA"', steps)
         self.assertIn('$native_plugin@$target=$binary', steps)
         self.assertIn("--native-sidecar-source-revision-for", steps)

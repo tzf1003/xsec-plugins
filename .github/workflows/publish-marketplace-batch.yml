@@ -272,7 +272,7 @@ jobs:
           cargo build --locked --release --package system-terminal-mcp --target $env:RUST_TARGET --manifest-path .xsec-system-terminal-source/Cargo.toml
           $terminalBinary = Join-Path $env:CARGO_TARGET_DIR "$env:RUST_TARGET\release\system-terminal-mcp.exe"
           if (-not (Test-Path -LiteralPath $terminalBinary -PathType Leaf)) { throw 'System Terminal MCP binary is unavailable' }
-          Copy-Item -LiteralPath $terminalBinary -Destination (Join-Path $env:RUNNER_TEMP 'xsec-native-sidecars\system-terminal-mcp.exe')
+          Copy-Item -LiteralPath $terminalBinary -Destination (Join-Path $env:RUNNER_TEMP 'xsec-native-sidecars\system-terminal-mcp')
       - name: Upload the reviewed native MCP sidecars
         uses: actions/upload-artifact@v4
         with:
