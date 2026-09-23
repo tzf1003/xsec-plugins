@@ -58,15 +58,49 @@ class NativeSidecarSourceContractTests(unittest.TestCase):
             with self.subTest(plugin_id=plugin_id), tempfile.TemporaryDirectory(prefix="xsec-source-contract-") as directory:
                 output = Path(directory) / plugin_id
                 self.assertEqual(recipe is not None, declared_native)
+                if not declared_native:
+                    build_market.build_plugin(source, output)
+                    validate_market.validate_release(plugin_id, output)
+                    release = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))
+                    artifacts = release["releases"][0]["artifacts"]
+                    self.assertEqual({(item["os"], item["arch"]) for item in artifacts}, {("any", "any")})
+                    continue
                 if recipe is not None:
                     self.assertEqual(recipe, expected_recipe)
                     with self.assertRaisesRegex(ValueError, f"missing native sidecar input: {plugin_id}@"):
                         build_market.build_plugin(source, output, native_sidecar_source_revision=SOURCE_REVISION)
-                    continue
-                build_market.build_plugin(source, output)
-                validate_market.validate_release(plugin_id, output)
-                release = json.loads((output / ".xsec-market" / "releases.json").read_text(encoding="utf-8"))
-                self.assertEqual({(item["os"], item["arch"]) for item in release["releases"][0]["artifacts"]}, {("any", "any")})
+
+    def test_system_terminal_native_contract_builds_all_platform_artifacts(self) -> None:
+        recipe = native_sidecars.SYSTEM_TERMINAL_RECIPE
+        server = {"system-terminal": {
+            "type": "stdio",
+            "command": "./bin/system-terminal-mcp",
+            "cwd": "${PLUGIN_DATA}",
+        }}
+        with tempfile.TemporaryDirectory(prefix="xsec-system-terminal-native-") as directory:
+            root = Path(directory)
+            source = write_native_source(root, recipe, server)
+            self.assertEqual(native_sidecars.recipe_for_source(recipe.plugin_id, source), recipe)
+            inputs = sidecar_inputs(root, recipe)
+            source_files = build_market.iter_plugin_files(source)
+            for target in recipe.targets:
+                with self.subTest(target=target.rust_target):
+                    artifact = root / f"{target.rust_target}.xsec-plugin"
+                    binary = inputs[(recipe.plugin_id, target.rust_target)]
+                    with native_sidecars.staged_plugin(source, source_files, recipe, target, binary) as staging:
+                        expected = native_sidecars.mcp_command_for(recipe, target)
+                        actual = json.loads((staging / "mcp.json").read_text(encoding="utf-8"))
+                        self.assertEqual(actual["mcpServers"]["system-terminal"]["command"], expected)
+                        build_market.write_zip(staging, artifact)
+                    validate_market.validate_archive(
+                        artifact,
+                        recipe.plugin_id,
+                        "2.1.0",
+                        os_name=target.os_name,
+                        arch=target.arch,
+                        require_native_sidecar_contract=True,
+                        require_current_official_frontend_contract=False,
+                    )
 
     def test_native_contract_rejects_a_legacy_node_mcp_declaration(self) -> None:
         recipe = native_sidecars.ATTACK_PATH_RECIPE

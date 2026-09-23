@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import prepare_development as development
-from native_sidecars import RECIPES, sha256_file
+from native_sidecars import RECIPES, mcp_command_for, sha256_file
 
 
 class DevelopmentPreparationTests(unittest.TestCase):
@@ -22,15 +22,70 @@ class DevelopmentPreparationTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.factory = self.root / "factory"
-        for plugin_id in RECIPES:
+        for plugin_id, recipe in RECIPES.items():
             source = self.factory / "plugins" / plugin_id
             source.mkdir(parents=True)
-            for name in ("plugin.json", "mcp.json"):
-                shutil.copyfile(ROOT / ".xsec-factory" / "snapshots" / plugin_id / name, source / name)
+            manifest = {
+                "name": plugin_id,
+                "version": "3.0.0",
+                "extensions": {"com.xsec.desktop": {
+                    "schemaVersion": 2,
+                    "permissions": {"mcp.servers.register": {}, "native.execute": {}},
+                }},
+            }
+            servers = {}
+            for server in recipe.servers:
+                declaration = {
+                    "type": "stdio",
+                    "command": mcp_command_for(recipe),
+                    "cwd": "${PLUGIN_DATA}",
+                }
+                if server.args:
+                    declaration["args"] = list(server.args)
+                if server.env:
+                    declaration["env"] = dict(server.env)
+                servers[server.server_id] = declaration
+            (source / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (source / "mcp.json").write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
             subprocess.run(["git", "init", "--quiet", str(source)], check=True)
 
     def destination(self) -> Path:
         return next(iter(development.source_plan(self.factory).values()))
+
+    def add_cargo_binary(self, root: Path, package: str) -> None:
+        crate = root / package
+        (crate / "src").mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            f'[package]\nname = "{package}"\nversion = "0.1.0"\nedition = "2021"\n',
+            encoding="utf-8",
+        )
+        (crate / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+    def test_native_sidecars_build_from_their_declared_source_repositories(self) -> None:
+        desktop = self.root / "desktop"
+        desktop.mkdir()
+        (desktop / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["xsec-attack-path-mcp", "xsec-asset-discovery-mcp"]\nresolver = "2"\n',
+            encoding="utf-8",
+        )
+        for package in ("xsec-attack-path-mcp", "xsec-asset-discovery-mcp"):
+            self.add_cargo_binary(desktop, package)
+        subprocess.run(["cargo", "generate-lockfile"], cwd=desktop, check=True)
+
+        terminal_source = self.factory / "plugins" / "com.xsec.system-terminal"
+        (terminal_source / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["system-terminal-mcp"]\nresolver = "2"\n',
+            encoding="utf-8",
+        )
+        self.add_cargo_binary(terminal_source, "system-terminal-mcp")
+        subprocess.run(["cargo", "generate-lockfile"], cwd=terminal_source, check=True)
+
+        plan = development.source_plan(self.factory)
+        host = development.desktop_host(desktop)
+        binaries = development.build_sidecars(desktop, host, plan)
+
+        self.assertEqual(set(binaries), set(RECIPES))
+        self.assertTrue(all(path.is_file() and path.stat().st_size > 0 for path in binaries.values()))
 
     def test_real_source_contract_accepts_missing_generated_entrypoints(self) -> None:
         plan = development.source_plan(self.factory)

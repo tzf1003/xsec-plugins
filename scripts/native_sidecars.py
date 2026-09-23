@@ -96,9 +96,24 @@ ASSET_DISCOVERY_RECIPE = NativeSidecarRecipe(
     ),
 )
 
+SYSTEM_TERMINAL_RECIPE = NativeSidecarRecipe(
+    plugin_id="com.xsec.system-terminal",
+    skill_id="system-terminal",
+    source_repository="tzf1003/xsec-plugin-system-terminal",
+    archive_path=PurePosixPath("bin/system-terminal-mcp"),
+    servers=(NativeStdioServer("system-terminal"),),
+    targets=(
+        NativeTarget("aarch64-apple-darwin", "macos", "aarch64"),
+        NativeTarget("x86_64-apple-darwin", "macos", "x86_64"),
+        NativeTarget("x86_64-unknown-linux-gnu", "linux", "x86_64"),
+        NativeTarget("x86_64-pc-windows-msvc", "windows", "x86_64"),
+    ),
+)
+
 RECIPES = {
     ATTACK_PATH_RECIPE.plugin_id: ATTACK_PATH_RECIPE,
     ASSET_DISCOVERY_RECIPE.plugin_id: ASSET_DISCOVERY_RECIPE,
+    SYSTEM_TERMINAL_RECIPE.plugin_id: SYSTEM_TERMINAL_RECIPE,
 }
 
 

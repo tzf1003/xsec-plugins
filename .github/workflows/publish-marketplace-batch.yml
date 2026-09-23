@@ -31,6 +31,8 @@ jobs:
       contents: read
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
+      system_terminal_source_sha: ${{ steps.terminal-source.outputs.source_sha }}
+      system_terminal_native: ${{ steps.terminal-source.outputs.native }}
     steps:
       - name: Require the dedicated read-only Desktop source App
         env:
@@ -58,6 +60,56 @@ jobs:
           source_sha="$(gh api repos/tzf1003/xSecDesktop/commits/main --jq .sha)"
           [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Desktop main did not resolve to a canonical commit SHA." >&2; exit 1; }
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+      - name: Require the read-only System Terminal source App
+        env:
+          APP_ID: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          APP_KEY: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "XSEC_MARKETPLACE_SOURCE_APP_ID is not configured." >&2; exit 1; }
+          [ -n "$APP_KEY" ] || { echo "XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY is not configured." >&2; exit 1; }
+      - name: Create a scoped System Terminal source token
+        id: terminal-source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+          owner: tzf1003
+          repositories: xsec-plugin-system-terminal
+          permission-contents: read
+      - name: Check out the registered System Terminal Beta source
+        uses: actions/checkout@v4
+        with:
+          repository: tzf1003/xsec-plugin-system-terminal
+          github-server-url: https://github.com
+          ref: refs/heads/beta
+          token: ${{ steps.terminal-source-token.outputs.token }}
+          path: .xsec-system-terminal-source
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Resolve and classify the exact System Terminal Beta source
+        id: terminal-source
+        env:
+          GH_TOKEN: ${{ steps.terminal-source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git -C .xsec-system-terminal-source rev-parse HEAD)"
+          beta_sha="$(gh api repos/tzf1003/xsec-plugin-system-terminal/commits/beta --jq .sha)"
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ && "$source_sha" = "$beta_sha" ]] || {
+            echo "System Terminal checkout is not the current registered Beta source." >&2
+            exit 1
+          }
+          native="$(jq -r '
+            (.extensions["com.xsec.desktop"].permissions // {}) as $permissions
+            | (.name == "com.xsec.system-terminal"
+              and .extensions["com.xsec.desktop"].schemaVersion == 2
+              and ($permissions | type == "object" and has("mcp.servers.register") and has("native.execute")))
+          ' .xsec-system-terminal-source/plugin.json)"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          case "$native" in true|false) ;; *) echo "System Terminal source classification is invalid." >&2; exit 1 ;; esac
+          echo "native=$native" >> "$GITHUB_OUTPUT"
   build-native-sidecars:
     needs: resolve-native-sidecar-source
     runs-on: ${{ matrix.runner }}
@@ -113,6 +165,52 @@ jobs:
             echo "Checked-out Desktop source does not match the resolved revision." >&2
             exit 1
           }
+      - name: Require the read-only System Terminal source App
+        if: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_native == 'true' }}
+        env:
+          APP_ID: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          APP_KEY: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "XSEC_MARKETPLACE_SOURCE_APP_ID is not configured." >&2; exit 1; }
+          [ -n "$APP_KEY" ] || { echo "XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY is not configured." >&2; exit 1; }
+      - name: Create a scoped System Terminal source token
+        if: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_native == 'true' }}
+        id: terminal-source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_ID }}
+          private-key: ${{ secrets.XSEC_MARKETPLACE_SOURCE_APP_PRIVATE_KEY }}
+          owner: tzf1003
+          repositories: xsec-plugin-system-terminal
+          permission-contents: read
+      - name: Check out the exact System Terminal Beta source
+        if: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_native == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: tzf1003/xsec-plugin-system-terminal
+          github-server-url: https://github.com
+          ref: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_source_sha }}
+          token: ${{ steps.terminal-source-token.outputs.token }}
+          path: .xsec-system-terminal-source
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Verify the exact System Terminal Beta source
+        if: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_native == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.terminal-source-token.outputs.token }}
+          EXPECTED_SOURCE_SHA: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git -C .xsec-system-terminal-source rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA" ]
+          beta_sha="$(gh api repos/tzf1003/xsec-plugin-system-terminal/commits/beta --jq .sha)"
+          [ "$beta_sha" = "$EXPECTED_SOURCE_SHA" ] || {
+            echo "System Terminal Beta changed after the sidecar source was resolved." >&2
+            exit 1
+          }
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the reviewed native MCP sidecars
         if: ${{ matrix.shell == 'bash' }}
@@ -133,6 +231,19 @@ jobs:
           cp "$asset_discovery_binary" "$output_dir/asset-discovery-mcp"
           chmod 0755 "$output_dir/attack-path-mcp"
           chmod 0755 "$output_dir/asset-discovery-mcp"
+      - name: Build the System Terminal MCP sidecar
+        if: ${{ matrix.shell == 'bash' && needs.resolve-native-sidecar-source.outputs.system_terminal_native == 'true' }}
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/xsec-native-sidecars-cargo
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --package system-terminal-mcp --target "$RUST_TARGET" --manifest-path .xsec-system-terminal-source/Cargo.toml
+          terminal_binary="$CARGO_TARGET_DIR/$RUST_TARGET/release/system-terminal-mcp"
+          [ -f "$terminal_binary" ] && [ ! -L "$terminal_binary" ] && [ -s "$terminal_binary" ]
+          cp "$terminal_binary" "$RUNNER_TEMP/xsec-native-sidecars/system-terminal-mcp"
+          chmod 0755 "$RUNNER_TEMP/xsec-native-sidecars/system-terminal-mcp"
       - name: Build the reviewed native MCP sidecars
         if: ${{ matrix.shell == 'pwsh' }}
         shell: pwsh
@@ -150,6 +261,18 @@ jobs:
           if (-not (Test-Path -LiteralPath $assetDiscoveryBinary -PathType Leaf)) { throw 'Asset-discovery MCP binary is unavailable' }
           Copy-Item -LiteralPath $attackPathBinary -Destination (Join-Path $outputDirectory 'attack-path-mcp')
           Copy-Item -LiteralPath $assetDiscoveryBinary -Destination (Join-Path $outputDirectory 'asset-discovery-mcp')
+      - name: Build the System Terminal MCP sidecar
+        if: ${{ matrix.shell == 'pwsh' && needs.resolve-native-sidecar-source.outputs.system_terminal_native == 'true' }}
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/xsec-native-sidecars-cargo
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --locked --release --package system-terminal-mcp --target $env:RUST_TARGET --manifest-path .xsec-system-terminal-source/Cargo.toml
+          $terminalBinary = Join-Path $env:CARGO_TARGET_DIR "$env:RUST_TARGET\release\system-terminal-mcp.exe"
+          if (-not (Test-Path -LiteralPath $terminalBinary -PathType Leaf)) { throw 'System Terminal MCP binary is unavailable' }
+          Copy-Item -LiteralPath $terminalBinary -Destination (Join-Path $env:RUNNER_TEMP 'xsec-native-sidecars\system-terminal-mcp')
       - name: Upload the reviewed native MCP sidecars
         uses: actions/upload-artifact@v4
         with:
@@ -277,12 +400,37 @@ jobs:
           RECORDS: ${{ steps.sources.outputs.records }}
           DELIVERY_KEY: ${{ inputs.delivery_key }}
           NATIVE_SIDECARS_SOURCE_SHA: ${{ needs.resolve-native-sidecar-source.outputs.source_sha }}
+          TERMINAL_SOURCE_SHA: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_source_sha }}
+          TERMINAL_NATIVE: ${{ needs.resolve-native-sidecar-source.outputs.system_terminal_native }}
         run: |
           set -euo pipefail
+          [[ "$TERMINAL_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "System Terminal source revision is invalid." >&2; exit 1; }
+          case "$TERMINAL_NATIVE" in true|false) ;; *) echo "System Terminal source classification is invalid." >&2; exit 1 ;; esac
+          terminal_record="$(jq -ce '.[] | select(.plugin_id == "com.xsec.system-terminal")' "$RECORDS")"
+          terminal_beta_sha="$(printf '%s' "$terminal_record" | jq -er .beta_sha)"
+          [ "$terminal_beta_sha" = "$TERMINAL_SOURCE_SHA" ] || {
+            echo "System Terminal Beta changed after the complete source batch was resolved." >&2
+            exit 1
+          }
+          terminal_snapshot=".xsec-factory/snapshots/com.xsec.system-terminal/plugin.json"
+          terminal_native_now="$(jq -r '
+            (.extensions["com.xsec.desktop"].permissions // {}) as $permissions
+            | (.name == "com.xsec.system-terminal"
+              and .extensions["com.xsec.desktop"].schemaVersion == 2
+              and ($permissions | type == "object" and has("mcp.servers.register") and has("native.execute")))
+          ' "$terminal_snapshot")"
+          [ "$terminal_native_now" = "$TERMINAL_NATIVE" ] || {
+            echo "System Terminal native source classification changed during publication." >&2
+            exit 1
+          }
           sidecar_root="$RUNNER_TEMP/xsec-native-sidecars"
           native_inputs=()
           retained_revisions=()
-          for native_plugin in com.xsec.attack-path com.xsec.asset-discovery; do
+          native_plugins=(com.xsec.attack-path com.xsec.asset-discovery)
+          if [ "$TERMINAL_NATIVE" = "true" ]; then
+            native_plugins+=(com.xsec.system-terminal)
+          fi
+          for native_plugin in "${native_plugins[@]}"; do
             record="$(jq -ce --arg plugin_id "$native_plugin" '.[] | select(.plugin_id == $plugin_id)' "$RECORDS")"
             source_root="$(printf '%s' "$record" | jq -er .source_root)"
             retained_root="$RUNNER_TEMP/xsec-retained-native-beta/${native_plugin}"
@@ -303,8 +451,12 @@ jobs:
             case "$native_plugin" in
               com.xsec.attack-path) binary_name="attack-path-mcp" ;;
               com.xsec.asset-discovery) binary_name="asset-discovery-mcp" ;;
+              com.xsec.system-terminal) binary_name="system-terminal-mcp" ;;
               *) echo "Unknown native plugin: $native_plugin" >&2; exit 1 ;;
             esac
+            if [ "$native_plugin" = "com.xsec.system-terminal" ]; then
+              retained_revisions+=("--native-sidecar-source-revision-for" "$native_plugin=$TERMINAL_SOURCE_SHA")
+            fi
             for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
               binary="$sidecar_root/xsec-native-sidecars-$target/$binary_name"
               [ -f "$binary" ] && [ ! -L "$binary" ] && [ -s "$binary" ] || { echo "Protected builder did not provide a $native_plugin sidecar for $target." >&2; exit 1; }
